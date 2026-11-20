@@ -1,12 +1,33 @@
 // 库模式：一个不依赖外部包的 ES 模块，写到 web/assets/gpu/engine.js。产物提交进仓库，
 // 这样双击「GXR Studio.command」不需要 Node；CI 会重新构建并核对产物和源码一致（scripts/check_frontend.py）。
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
+import { expandPairColorWgsl } from './src/pair_wgsl.ts';
 
 // GXR_GPU_OUT：scripts/check_frontend.py 构建到临时目录再和提交的产物比较
 const out = process.env.GXR_GPU_OUT || fileURLToPath(new URL('../web/assets/gpu', import.meta.url));
+const commonWgslPath = fileURLToPath(new URL('src/shaders/common.wgsl', import.meta.url));
+const pairColorWgslPath = fileURLToPath(new URL('src/shaders/pair_color.wgsl', import.meta.url));
+
+function pairShaderPlugin(): Plugin {
+  return {
+    name: 'gxr-pair-recipe-chain2',
+    enforce: 'pre',
+    load(id) {
+      if (!id.endsWith('/shaders/pair_color.wgsl?raw') && !id.endsWith('\\shaders\\pair_color.wgsl?raw')) return null;
+      this.addWatchFile(commonWgslPath);
+      this.addWatchFile(pairColorWgslPath);
+      const commonSrc = readFileSync(commonWgslPath, 'utf8');
+      const pairSrc = readFileSync(pairColorWgslPath, 'utf8');
+      const expanded = expandPairColorWgsl(commonSrc, pairSrc);
+      return `export default ${JSON.stringify(expanded)};`;
+    },
+  };
+}
 
 export default defineConfig({
+  plugins: [pairShaderPlugin()],
   build: {
     outDir: out,
     emptyOutDir: true,

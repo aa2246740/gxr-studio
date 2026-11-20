@@ -499,7 +499,8 @@ def test_crop_panel_guides_dropdown_size_in_corner_ruler_row_and_sticky_footer()
 def test_import_banner_and_photo_bar_wording():
     """导入完成的提示条只留结果（不写「请先推出存储卡」）；照片条的日期在前、时间在后。"""
     import_js = (ASSETS / "import.js").read_text(encoding="utf-8")
-    viewer = (ASSETS / "viewer.js").read_text(encoding="utf-8")
+    # 照片条（标题栏）的代码在 P1b-ui 拆到了 viewer_chrome.js
+    viewer = "".join((ASSETS / n).read_text(encoding="utf-8") for n in ("viewer.js", "viewer_chrome.js"))
     stage = (ASSETS / "stage.js").read_text(encoding="utf-8")
     assert "请先推出存储卡" not in import_js
     assert "fmtDate(p.date)} ${fmtClock(p.captured_at)}" in viewer
@@ -574,7 +575,8 @@ def test_export_always_asks_the_server_to_choose_the_source():
 def test_render_labels_are_translated_and_machine_values_never_show():
     """R2-05：X-GXR-Label 是机器值，界面换成中文；没校准（X-GXR-Calibrated=0）的电脑预测再加「未校准」；原图不加小标签。"""
     preview = (ASSETS / "preview.js").read_text(encoding="utf-8")
-    body = _function_body(preview, "export function stageLabels(view)")
+    # stageLabels 在 P1b-ui 搬到了 preview_recipe.js；读响应头的代码还在 preview.js
+    body = _function_body((ASSETS / "preview_recipe.js").read_text(encoding="utf-8"), "export function stageLabels(view)")
     assert "'X-GXR-Calibrated'" in preview
     assert "label === 'original'" in body and "label === 'prediction'" in body and "label === 'approx'" in body
     assert "LABEL_WORDS[label]" in body

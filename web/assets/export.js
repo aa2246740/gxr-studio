@@ -5,7 +5,7 @@
 
 import { api } from './api.js';
 import { refreshLogos } from './logo_catalog.js';
-import { state } from './state.js';
+import { state, bus } from './state.js';
 import { h, openModal, fmtBytes, toast, toastError, errorBody, platform, setFraction, outOfView } from './dom.js';
 import { camdataGuide, camdataReady } from './camdata.js';
 import { toggle } from './controls.js';
@@ -14,6 +14,15 @@ import { trackJob } from './jobs.js';
 import { delayed, busyButton, SHOW_AFTER_MS, DETAIL_AFTER_MS } from './busy.js';
 import { exportSizePreview } from './output_size.js';
 import { exportDestination } from './export_destination.js';
+import {
+  HALFFRAME_MODES,
+  PAIR_EXPORT_NOTE,
+  isPairFirst,
+  isPairSecond,
+  partnerOf,
+  selectionStats,
+  batchExportHeadline,
+} from './halfframe.js';
 
 export const SIZES = [
   ['original', '原始尺寸'],
@@ -31,10 +40,12 @@ export const QUALITIES = [
 // 按日期导出时不知道当天有没有 RAW，开关照常可用，没有 RAW 的那几张照常导出、结果里说明。
 // 开关的勾选记在应用数据里，下次导出沿用；第一次默认关。
 export const HDR_NO_RAW = 'HDR 需要 RAW 文件';
+// 半格一对：看第 2 张上的配对标志（两张都有 RAW 才是 true），不看第 1 张自己的文件。
 export function hdrAvailable(ids, photos, scope) {
   if (scope === 'date') return true;
   return (ids || []).some((id) => {
     const p = photos.find((q) => q.id === id);
+    if (p && isPairFirst(p)) return false;
     return !p || p.has_raw;
   });
 }
@@ -67,6 +78,20 @@ function hdrPossible(photo) {
 }
 
 export const NAME_SUFFIX_NOTE = '重名时自动加 -2、-3，不会盖掉已有的文件。';
+
+// 半格一对的文件名，和后端 halfframe_export 一致：做成 HDR 的那个文件在最后加 _hdr。
+function pairExportNameText(pair, partner, mode, hdr) {
+  const stem = (p, fb) => (p && p.name ? p.name.replace(/\.[^.]+$/, '') : fb);
+  const s2 = stem(pair, '第 2 张原名');
+  const s1 = stem(partner, '第 1 张原名');
+  const names = (tag) => {
+    if (mode === 'singles') return `${s1}_gxr_half${tag}.jpg · ${s2}_gxr_half${tag}.jpg`;
+    if (mode === 'both') return `${s2}_gxr${tag}.jpg · ${s1}_gxr_half${tag}.jpg · ${s2}_gxr_half${tag}.jpg`;
+    return `${s2}_gxr${tag}.jpg`;
+  };
+  if (!hdr || !hdrPossible(pair)) return names('');
+  return `${names('_hdr')}（做不成 HDR 时是 ${names('')}）`;
+}
 
 // 对话框里「文件名」一行。单张写具体的名字；开了 HDR、照片有 RAW 时，括号里写做不成 HDR 时的名字。
 // 多张写通用的写法：开了 HDR 时哪些带 _hdr；没导入相机配方文件时，只有 RAW 的照片是中性转换（_neutral）。
@@ -103,11 +128,38 @@ function segOf(options, value, onPick, label) {
   return h('div', { class: 'seg block', role: 'group', 'aria-label': label }, btns);
 }
 
+function findSinglePair(ids, photos) {
+  const stats = selectionStats(ids || [], photos, state.partners);
+  if (stats.items !== 1 || stats.pairs !== 1) return null;
+  const tid = stats.targets[0];
+  return photos.find((p) => p && p.id === tid)
+    || state.partners?.get(tid)
+    || state.photos.find((p) => p && p.id === tid)
+    || null;
+}
+
+function normalizedHalfframeMode(raw) {
+  return raw === 'singles' || raw === 'both' ? raw : 'diptych';
+}
+
 // photos：已知的照片对象（有 has_raw / has_jpg 字段）；ids 是要导出的；date 是"这一天的全部"
 // beforeSubmit：提交前要做的事（等草稿保存完）；onCancel：取消（关对话框）；onStarted：批量任务已经交给后台
-export function exportForm({ ids, label, photos = [], date = null, dayLabel = null, beforeSubmit = null, onCancel = null, onStarted = null }) {
+export function exportForm({ ids, label, photos = [], date = null, dayLabel = null, beforeSubmit = null, onCancel = null, onStarted = null, onScopeChange = null }) {
+  const stats = selectionStats(ids || [], photos, state.partners);
+  const singlePair = findSinglePair(ids, photos);
+  const singlePairPartner = singlePair ? partnerOf(singlePair, photos.length ? photos : state.photos, state.partners) : null;
+  const scopeHasPairs = (sc) => {
+    if (sc === 'ids') return stats.pairs > 0;
+    if (sc === 'date') {
+      return state.photos.some((p) => isPairSecond(p) && (!date || p.date === date))
+        || photos.some((p) => isPairSecond(p) && (!date || p.date === date));
+    }
+    return false;
+  };
+  const hasPairsAny = scopeHasPairs('ids') || (!!date && scopeHasPairs('date'));
+
   const scopes = [];
-  if (ids && ids.length) scopes.push({ key: 'ids', label, count: ids.length });
+  if (ids && ids.length) scopes.push({ key: 'ids', label, count: stats.items || ids.length });
   if (date) scopes.push({ key: 'date', label: dayLabel || '这一天的全部', count: null });
 
   let scope = scopes[0] ? scopes[0].key : 'ids';
@@ -117,6 +169,7 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   const precise = false;
   let remembered = !!(state.prefs && state.prefs.export_hdr);
   let hdr = false;
+  let halfframe = normalizedHalfframeMode(state.prefs && state.prefs.export_halfframe);
 
   function rememberHdr(on) {
     remembered = on;
@@ -130,16 +183,39 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     );
   }
 
+  function rememberHalfframe(mode) {
+    halfframe = normalizedHalfframeMode(mode);
+    const prefs = state.prefs || (state.prefs = {});
+    prefs.export_halfframe = halfframe;
+    sizePreview.paint();
+    paintName();
+    api('/api/prefs', { method: 'PUT', body: { export_halfframe: halfframe } }).then(
+      (saved) => { state.prefs = saved; },
+      (error) => toastError(error, '没有记住半格导出方式，下次导出要重新选择。'),
+    );
+  }
+
   const scopeRow = scopes.length > 1
     ? fieldRow('范围', segOf(scopes.map((s) => [s.key, s.label]), scope, (v) => { scope = v; refresh(); }, '范围'))
     : date ? fieldRow('范围', h('span', {}, scopes[0].label)) : null;
+
+  const hfRow = hasPairsAny
+    ? fieldRow('半格', segOf(HALFFRAME_MODES, halfframe, rememberHalfframe, '半格'))
+    : null;
+  const hfNote = hasPairsAny ? h('p', { class: 'small dim hf-note' }, PAIR_EXPORT_NOTE) : null;
 
   const destination = exportDestination(state.settings ? state.settings.export_dir : '');
   const destInput = destination.input;
 
   const nameText = h('span', { class: 'dim num' });
   const single = ids && ids.length === 1 ? photos.find((p) => p.id === ids[0]) : null;
-  const paintName = () => { nameText.textContent = exportNameText({ single: scope === 'ids' ? single : null, hdr, camdata: camdataReady() }); };
+  const paintName = () => {
+    if (scope === 'ids' && singlePair) {
+      nameText.textContent = pairExportNameText(singlePair, singlePairPartner, halfframe, hdr);
+      return;
+    }
+    nameText.textContent = exportNameText({ single: scope === 'ids' ? single : null, hdr, camdata: camdataReady() });
+  };
 
   const hdrField = h('div', { class: 'ctl' });
   function hdrRow() {
@@ -159,12 +235,19 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
   const cancelBtn = onCancel ? h('button', { class: 'btn', type: 'button', onclick: onCancel }, '取消') : null;
   const result = h('div', { class: 'export-result', role: 'status' });
   const guide = h('div', {});
-  const sizePreview = exportSizePreview({ ids, getScope: () => scope, getSize: () => size });
+  const sizePreview = exportSizePreview({
+    ids,
+    getScope: () => scope,
+    getSize: () => size,
+    getHalfframe: () => halfframe,
+    singlePair,
+  });
 
   const body = h(
     'div',
     { class: 'export-form' },
     scopeRow,
+    hfRow,
     fieldRow('格式', h('span', {}, 'JPG')),
     fieldRow('尺寸', segOf(SIZES.map(([v, text, title]) => [v, text, title]), size, (v) => { size = v; sizePreview.paint(); }, '尺寸')),
     fieldRow('成品', sizePreview.line),
@@ -172,12 +255,17 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     h('div', { class: 'row form' }, h('span', { class: 'lab' }, 'HDR'), hdrField),
     fieldRow('导出到', destination.el),
     fieldRow('文件名', h('div', {}, nameText, h('div', { class: 'small dim' }, NAME_SUFFIX_NOTE))),
+    hfNote,
     guide,
     result,
     h('div', { class: 'modal-foot' }, cancelBtn, button),
   );
 
   function refresh() {
+    onScopeChange?.(scope);
+    const showHf = scopeHasPairs(scope);
+    if (hfRow) hfRow.hidden = !showHf;
+    if (hfNote) hfNote.hidden = !showHf;
     hdrRow();
     sizePreview.paint();
     // 没导入也能导出，只是不套相机配方：写明白，免得和下面的「已导出」看起来矛盾
@@ -219,11 +307,14 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
       return;
     }
     // 点导出这一刻把范围和选项定下来：等保存的过程中再切范围也不影响这一次，等的和导的是同一批（N01）
+    const opts = { size, quality_tier: qualityTier, dest_dir: dest.trim(), source: 'auto', precise, hdr };
+    if (scopeHasPairs(scope)) opts.halfframe = halfframe;
     const sub = {
       scope,
       ids: scope === 'ids' ? [...ids] : [],
       date: scope === 'date' ? date : null,
-      opts: { size, quality_tier: qualityTier, dest_dir: dest.trim(), source: 'auto', precise, hdr },
+      opts,
+      halfframe,
     };
     running = sub;
     lock(true);
@@ -234,27 +325,27 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
       // 按这次真正要导出的范围等保存（F02）：这一天的全部要等这一天所有改过的照片，不只是打开对话框时的那几张
       await refreshLogos().catch(() => {});
       if (beforeSubmit) await beforeSubmit({ scope: sub.scope, ids: sub.ids, date: sub.date });
-      const { opts } = sub;
+      const { opts: runOpts } = sub;
       if (sub.scope === 'ids' && sub.ids.length === 1) {
         // 单张超过 1 秒（大尺寸、HDR）：写出在做什么，不让人以为卡住了
         const slow = delayed(() => result.replaceChildren(h('div', { class: 'progress indet' }, h('i')),
-          h('span', { class: 'small' }, opts.hdr ? '正在导出，生成 HDR 版本要多等几秒…' : '正在导出…')), DETAIL_AFTER_MS);
+          h('span', { class: 'small' }, runOpts.hdr ? '正在导出，生成 HDR 版本要多等几秒…' : '正在导出…')), DETAIL_AFTER_MS);
         let r;
         try {
-          r = await api(`/api/photos/${sub.ids[0]}/export`, { method: 'POST', body: opts });
+          r = await api(`/api/photos/${sub.ids[0]}/export`, { method: 'POST', body: runOpts });
         } finally {
           slow.cancel();
         }
-        destination.remember(opts.dest_dir);
+        destination.remember(runOpts.dest_dir);
         result.replaceChildren(resultBox('ok', singleResult(r)));
         // 单张导出不能中途取消；对话框已经关了就用提示告诉结果（F10）
         if (closed) singleToast(r);
       } else {
-        const body = sub.scope === 'date' ? { ...opts, date: sub.date } : { ...opts, ids: sub.ids };
+        const body = sub.scope === 'date' ? { ...runOpts, date: sub.date } : { ...runOpts, ids: sub.ids };
         const job = await api('/api/export', { method: 'POST', body });
         if (onStarted) onStarted(job);
-        const exportedCount = await followBatch(job, result, photos);
-        if (exportedCount > 0) destination.remember(opts.dest_dir);
+        const exportedCount = await followBatch(job, result, photos, sub.halfframe);
+        if (exportedCount > 0) destination.remember(runOpts.dest_dir);
       }
     } catch (e) {
       // 有修改没写进去（R05）：导出停止，不拿服务器上的旧编辑出图；给「重试保存」，保存成功后可以再导出
@@ -281,9 +372,13 @@ export function exportForm({ ids, label, photos = [], date = null, dayLabel = nu
     }
   }
 
+  const onCamdataReady = () => { if (!closed) refresh(); };
+  bus.addEventListener('camdata-ready-changed', onCamdataReady);
+
   // 对话框在单张导出途中被关掉：告诉用户它会照常做完（openExportDialog 的 onClose 调用）
   body.closedWhileBusy = () => {
     closed = true;
+    bus.removeEventListener('camdata-ready-changed', onCamdataReady);
     if (busy && running && running.scope === 'ids' && running.ids.length === 1) toast('导出会照常做完，完成后会提示你。', 'info');
   };
   return body;
@@ -293,7 +388,8 @@ function singleToast(r) {
   const btn = revealButton(r.export_id);
   const actions = btn ? [{ label: revealLabel(), run: () => btn.click() }]
     : (r.path && globalThis.navigator && navigator.clipboard ? [{ label: '复制路径', run: () => copyPath(r.path) }] : []);
-  toast(`已导出 1 张：${r.path}`, 'ok', { actions });
+  const head = Array.isArray(r.files) && r.files.length > 1 ? `已导出 ${r.files.length} 个文件` : '已导出 1 张';
+  toast(`${head}：${r.path}`, 'ok', { actions });
 }
 
 function copyPath(path) {
@@ -301,6 +397,16 @@ function copyPath(path) {
 }
 
 function singleResult(r) {
+  if (Array.isArray(r.files) && r.files.length > 1) {
+    // 半格一对导出多个文件时，哪个没做成 HDR 就把原因写出来（同样的原因只写一次）
+    const hdrNotes = [...new Set([r, ...r.files].filter((f) => f.hdr === false && f.hdr_note).map((f) => f.hdr_note))];
+    return h('div', {},
+      h('p', { class: 'res-main' }, `已导出 ${r.files.length} 个文件`),
+      ...r.files.map((f) => h('p', { class: 'small num path' }, `${f.path}（${f.width} × ${f.height} · ${fmtBytes(f.bytes)}）`)),
+      r.warning ? h('p', { class: 'small warn-text' }, r.warning) : null,
+      ...hdrNotes.map((note) => h('p', { class: 'small dim' }, note)),
+      h('div', { class: 'res-acts' }, revealButton(r.export_id) || copyPathButton(r.path)));
+  }
   return h('div', {},
     h('p', { class: 'res-main' }, '已导出 1 张'),
     h('p', { class: 'small num path' }, r.path),
@@ -342,7 +448,7 @@ function copyPathButton(path) {
 }
 
 // 批量导出：进度交给顶栏（jobs.js）。关掉对话框后用提示条告诉结果。返回成功导出的张数。
-async function followBatch(job, out, photos = []) {
+async function followBatch(job, out, photos = [], halfframe = 'diptych') {
   const bar = h('i');
   const label = h('span', { class: 'small num' }, '正在准备导出…');
   const paint = (cur) => {
@@ -356,7 +462,7 @@ async function followBatch(job, out, photos = []) {
   const p = cur.progress;
   const ok = p.results.filter((r) => !r.error);
   const bad = p.results.filter((r) => r.error);
-  const parts = [`已导出 ${ok.length} 张`];
+  const parts = [batchExportHeadline(p, photos, halfframe)];
   const warned = ok.filter((r) => r.warning).length;
   if (warned) parts.push('无法读取编辑记录，已按原图显示');
   const noHdr = ok.filter((r) => r.hdr === false).length;
@@ -391,13 +497,21 @@ export function barrierFor({ scope, ids, date }) {
 // 导出对话框：图库的「导出」、大图的 ⌘E 都从这里打开
 export function openExportDialog({ ids, label, date = null, dayLabel = null, photos = null, beforeSubmit = null }) {
   const known = photos || state.photos.slice();
+  const singlePair = findSinglePair(ids, known);
+  const titleFor = (sc) => (sc === 'ids' && singlePair ? '导出 1 项（半格一对）' : '导出');
   let close = null;
+  let form = null;
   // 选中的照片里有刚才在大图里改过、还没写完（或没写进去）的：先等它们，失败就停
-  const form = exportForm({
+  form = exportForm({
     ids, label, photos: known, date, dayLabel,
     beforeSubmit: beforeSubmit || barrierFor,
     onCancel: () => close && close(),
+    onScopeChange: (sc) => {
+      const h2 = form?.closest?.('.dialog')?.querySelector('.dh h2');
+      if (h2) h2.textContent = titleFor(sc);
+    },
   });
-  close = openModal('导出', form, { wide: false, onClose: () => form.closedWhileBusy?.() });
+  const initialScope = ids && ids.length ? 'ids' : 'date';
+  close = openModal(titleFor(initialScope), form, { wide: false, onClose: () => form.closedWhileBusy?.() });
   return close;
 }

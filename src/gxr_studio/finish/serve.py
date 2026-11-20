@@ -507,16 +507,7 @@ def export_finish(
     from ..halfframe_pairs import has_pair_raw, is_pair_second
 
     ExportOptions(long_edge, quality, fmt).validate()
-    files = shot["files"]
-    pair_hdr_refused = hdr and is_pair_second(shot)
-    track = (
-        HdrTrack(
-            lib.abspath(files["dng"]["relpath"]) if "dng" in files else None,
-            jpeg=lib.abspath(files["jpg"]["relpath"]) if "jpg" in files else None,
-        )
-        if hdr and not pair_hdr_refused
-        else None
-    )
+    track = HdrTrack.for_shot(lib, shot) if hdr else None
     # 没有编辑的相机 JPG（不做 HDR、不缩长边）：和以前一样先只读字节，目标目录检查通过之后再解码，
     # 这样损坏的 JPG 加上不能用的目录仍然先报目录错误（Sol desktop-export r1 P2）
     original_bytes: bytes | None = None
@@ -553,7 +544,7 @@ def export_finish(
     # 只在最后写文件时编码一次：长边直接在数组上缩，HDR 增益也在这份数组上拟合
     rgb = _fit(rgb, long_edge)
     ext = FORMATS[fmt][1]
-    hdr_info: dict[str, Any] = {"hdr": False, "reason": "halfframe_pair"} if pair_hdr_refused else {}
+    hdr_info: dict[str, Any] = {}
     payload = write_rgb_with_exif(rgb, _source_path(lib, shot), note, quality=quality, fmt=fmt)
     if track is not None:
         payload, hdr_info = finish_hdr(payload, track, fmt, rgb)
@@ -585,7 +576,7 @@ def export_finish(
         render_kind=kind,
         calibrated=calibrated,
         detail=labels.get("detail") or "",
-        hdr=hdr_info.get("hdr") if (track is not None or pair_hdr_refused) else None,
+        hdr=hdr_info.get("hdr") if track is not None else None,
         hdr_reason=hdr_info.get("reason"),
         recipe_binding={
             k: labels[k] for k in ("record_sha256", "entry_sha256", "binding_sha256", "selection_id", "quality_state", "assessed_entry")

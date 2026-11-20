@@ -44,7 +44,6 @@ HDR_NOTES = {
     "not_jpeg": "HDR 需要 JPEG 格式",
     "capture_mismatch": "RAW 与 JPG 不是同一次拍摄",
     "frame_layout": "这个边框样式不能存 HDR",
-    "halfframe_pair": "半格一对暂时做不了 HDR",
 }
 DENIED_NOTE = "需要访问存储卡的权限。请在“系统设置 › 隐私与安全性 › 文件与文件夹”中允许。"
 

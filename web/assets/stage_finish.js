@@ -8,6 +8,7 @@ import { logosRevision, refreshLogos } from './logo_catalog.js';
 import { drawDecor } from './finish_draw.js';
 import { photoSize } from './output_photo_size.js';
 import { primeBlur } from './finish_background.js';
+import { isSinglePairView } from './halfframe.js';
 
 const rgb = (c) => `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
 
@@ -34,9 +35,10 @@ export function makeDeco(ed, frameSpec, stampSpec, ew, eh, onFonts, cropPreset =
 }
 
 // 这张照片现在要画的边框和时间戳（取自 view.ed）。ew、eh：导出时（已裁切）照片的像素宽高。
+// 半格单张视图只看这一张的裁切与调色，不画边框和时间戳（和后端 render_routes 剥离 frame/stamp 一致）。
 export function decorOf(view, ew, eh) {
   const ed = view.ed;
-  if (!ed || !ed.v2 || !(ew > 0) || !(eh > 0)) return null;
+  if (!ed || !ed.v2 || !(ew > 0) || !(eh > 0) || isSinglePairView(view)) return null;
   const frameSpec = ed.frame && ed.frame.style && ed.frame.style !== 'none' ? ed.frame : null;
   const stampSpec = ed.stamp && ed.stamp.enabled ? ed.stamp : null;
   if (!frameSpec && !stampSpec) return null;

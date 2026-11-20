@@ -295,10 +295,10 @@ def test_e2e_pair_raw_composite_modes_prefs_batch_and_hdr_refusal(
     by_idx = _index_shots_by_jpg_sha(lib, card250_pairs[:6])
     assert len(by_idx) == 6
 
-    # HDR 导入衍生任务跳过全部第 2 张
+    # P1c：带双 DNG 的半格一对第 2 张进入 HDR 导入衍生任务
     pending_ids = {s["shot_id"] for s in hdr_derived.pending(lib, lib.list_shots(limit=100))}
     for i2 in (2, 4, 6):
-        assert by_idx[i2]["shot_id"] not in pending_ids
+        assert by_idx[i2]["shot_id"] in pending_ids
     lib.close()
 
     with TestClient(create_app(settings), base_url=f"http://127.0.0.1:{PORT}", headers={"X-GXR-Token": settings.token}) as client:
@@ -464,15 +464,15 @@ def test_e2e_pair_raw_composite_modes_prefs_batch_and_hdr_refusal(
         exported_ids = {item["id"] for item in prog["results"]}
         assert exported_ids == {by_idx[2]["shot_id"], by_idx[4]["shot_id"], by_idx[6]["shot_id"]}
 
-        # 5) HDR 导出：半格一对退回 SDR 并附带指定提示
+        # 5) HDR 导出（P1c）：带双 DNG 的半格一对成功输出 HDR
         r_hdr = client.post(
             f"/api/photos/{sid2}/export",
-            json={"hdr": True, "size": "small", "dest_dir": str(tmp_path / "hdr_refuse")},
+            json={"hdr": True, "size": "small", "dest_dir": str(tmp_path / "hdr_pair")},
         )
         assert r_hdr.status_code == 200, r_hdr.text
         hdr_body = r_hdr.json()
-        assert hdr_body["hdr"] is False
-        assert hdr_body["hdr_note"] == "半格一对暂时做不了 HDR"
+        assert hdr_body["hdr"] is True
+        assert hdr_body.get("hdr_note") is None
 
 
 # --------------------------------------------------------------------------- 验收 4：非半格第 2 张导出与 1e8e9ac 逐字节一致
@@ -656,7 +656,21 @@ def test_pair_editor_gates_paste_and_local_recipe(
         assert isinstance(unit, str) and unit, rinfo
 
         gpu0 = client.get(f"/api/photos/{sid2}/gpu")
-        assert gpu0.status_code == 200 and gpu0.json() == {"enabled": False}, gpu0.text
+        g = gpu0.json()
+        assert gpu0.status_code == 200 and g["enabled"] is True and g["raw"] is None, gpu0.text
+        pair = g["pair"]
+        geo = hfc.proxy_geometry(pair["window"]["width"])
+        assert pair["first_half"] == by_idx[2]["pair"]["first_half"] and pair["orientation"] == by_idx[2]["orientation"]
+        assert pair["window"] == {
+            "width": geo.width,
+            "height": pair["window"]["height"],
+            "half_w": geo.half_w,
+            "strip_x0": geo.strip_x0,
+            "seam_x0": geo.seam_x0,
+            "seam_w": geo.seam_w,
+            "right_x0": geo.right_x0,
+        }
+        assert [s["half"] for s in pair["sources"]] == [0, 1] and all(f"raw?half={s['half']}&" in s["raw"]["url"] for s in pair["sources"])
 
         up = client.post(
             "/api/lut/upload",

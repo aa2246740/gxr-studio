@@ -233,19 +233,21 @@ def test_pre_backfill_multi_row_no_decode_and_render_export_batch_hdr_lut(
     ordered = sorted(shots, key=lambda r: r["name"])
     s1, s2 = ordered[0], ordered[1]
 
-    # 2. HDR 衍生 pending / run_pending（回填前）在锁外单张补算并跳过双联
+    # 2. HDR 衍生 pending / run_pending（回填前）在锁外单张补算；已配对且具备双 RAW 的半格第 2 张（P1c）同样进入待处理并产出 HDR
     _reset_verdict_state(lib)
     pending_list = hdr_derived.pending(lib, lib.list_shots(limit=100))
-    assert [s["shot_id"] for s in pending_list] == [s1["shot_id"]]
+    assert {s["shot_id"] for s in pending_list} == {s1["shot_id"], s2["shot_id"]}
     assert len(calls) == 2
 
     _reset_verdict_state(lib)
     calls.clear()
     prog = hdr_derived.run_pending(lib, hdr_derived.HdrProgress(), threading.Event())
-    assert prog.state == "done" and prog.done == 1
-    assert hdr_derived.status_of(lib, s2) in ("pending", "none")
-    assert not lib.abspath(f".studio/hdr/{s2['shot_id']}.jpg").exists()
-    assert not lib.abspath(f".studio/hdr/{s2['shot_id']}.json").exists()
+    assert prog.state == "done" and prog.done == 2 and prog.ready == 2
+    s2_resolved = lib.get_shot(s2["shot_id"])
+    assert s2_resolved is not None
+    assert hdr_derived.status_of(lib, s2_resolved) == hdr_derived.READY
+    assert hdr_derived.hdr_path(lib, s2["shot_id"], pair=True).is_file()
+    assert not hdr_derived.status_path(lib, s2["shot_id"], pair=True).exists()
 
     # 3. LUT pick_photos(ids=None)（回填前）不会挑选双联做 RAW LUT 拟合
     _reset_verdict_state(lib)

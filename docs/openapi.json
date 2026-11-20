@@ -3479,6 +3479,22 @@
               ],
               "title": "Recipe"
             }
+          },
+          {
+            "in": "query",
+            "name": "half",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Half"
+            }
           }
         ],
         "responses": {
@@ -4166,6 +4182,22 @@
               "title": "Shot Id",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "half",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Half"
+            }
           }
         ],
         "responses": {
@@ -4193,7 +4225,7 @@
     },
     "/api/photos/{shot_id}/render": {
       "get": {
-        "description": "按 sidecar 里的编辑渲染。`stage=final` 是成片，`uncropped` 是裁剪页的整幅画面。",
+        "description": "按 sidecar 里的编辑渲染。`stage=final` 是成片，`uncropped` 是裁剪页的整幅画面，`view=first|second` 预览半格单张整幅。",
         "operationId": "get_render_api_photos__shot_id__render_get",
         "parameters": [
           {
@@ -4281,6 +4313,22 @@
                 }
               ],
               "title": "Size"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
             }
           }
         ],
@@ -4395,6 +4443,22 @@
                 }
               ],
               "title": "Size"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
             }
           }
         ],

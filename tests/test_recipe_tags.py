@@ -396,9 +396,11 @@ def test_copyright_survives_the_reduced_exif_fallback(tmp_path, monkeypatch):
 def test_info_panel_displays_recipe_fallback_copyright_and_tweaks(tmp_path):
     modules = tmp_path / "modules"
     modules.mkdir()
-    for name in ("info_panel.js", "dom.js"):
+    for name in ("info_panel.js", "dom.js", "halfframe.js"):
         shutil.copyfile(ROOT / "web/assets" / name, modules / name)
     (modules / "package.json").write_text('{"type":"module"}\n')
+    # 只有半格一对才去读第 1 张；这里没有一对，api 不该被叫到
+    (modules / "api.js").write_text("export const api = () => Promise.reject(new Error('api not expected'));\n")
     (modules / "caps.js").write_text("export const loadMeta = () => Promise.resolve({state:'ok', data:{lens:'A12'}});\n")
     (modules / "preview.js").write_text(
         "export const slotName=()=>'电脑配方'; export const recipeInfo=()=>null;\n"

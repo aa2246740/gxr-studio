@@ -1,10 +1,13 @@
 // 「信息」标签（I）：拍摄配方、电脑编辑、拍摄信息。只读。
 // 拍摄配方来自导入时保存的 EXIF 标签，与电脑编辑分开。
 
+import { api } from './api.js';
+import { state } from './state.js';
 import { h } from './dom.js';
 import { loadMeta } from './caps.js';
 import { slotName, recipeInfo, KNOB_NAMES } from './preview.js';
 import { fmtSigned } from './controls.js';
+import { isPairSecond, partnerOf } from './halfframe.js';
 
 function kv(rows) {
   return h('dl', { class: 'kv' }, ...rows.filter(Boolean).flatMap(([k, v, cls = '']) => [h('dt', {}, k), h('dd', { class: cls }, v)]));
@@ -59,7 +62,22 @@ function editSection(view) {
   return section('电脑编辑', kv(rows));
 }
 
-function shotSection(photo, meta) {
+function shootingRecipeRows(photo, keyLabel = '配方') {
+  if (!photo) return [[keyLabel, '读取中…', 'dim']];
+  const tag = photo.recipe_tag;
+  const position = tag ? String(tag.position).padStart(2, '0') : '';
+  const recorded = tag ? `GXR1 ${tag.catalog_identity} ${tag.unit} ${position}` : '';
+  const label = !tag ? '未标记' : tag.name ? `${tag.name}（${tag.unit_label} · ${position}）` : recorded;
+  const changes = tag ? Object.entries(tag.changes || {}).map(([name, value]) =>
+    `${KNOB_NAMES[name] || name} ${name === 'amount' ? `${value}%` : fmtSigned(value)}`) : [];
+  const detail = tag && tag.levels === null ? '微调未知' : changes.join(' · ');
+  return [
+    [keyLabel, [label, detail, tag?.amount_unknown ? '强度未知' : ''].filter(Boolean).join(' · '), tag ? '' : 'dim'],
+    tag && !tag.catalogued ? ['', '（相机记录，Studio 目录里没有）', 'dim small'] : null,
+  ];
+}
+
+function shotSection(photo, meta, title = '拍摄信息') {
   const files = [photo.has_raw ? 'RAW' : null, photo.has_jpg ? 'JPG' : null].filter(Boolean).join(' + ');
   const exposure = meta ? [meta.shutter, meta.aperture, meta.iso ? `ISO ${meta.iso}` : null].filter(Boolean).join(' · ') : '';
   const when = (meta && meta.captured_at) || photo.captured_at;
@@ -73,30 +91,62 @@ function shotSection(photo, meta) {
     photo.hdr === 'ready' ? ['HDR', '已生成，可在导出时选择'] : null,
     photo.width && photo.height ? ['尺寸', `${photo.width} × ${photo.height}`, 'num'] : null,
   ];
-  return section('拍摄信息', kv(rows));
+  return section(title, kv(rows));
 }
 
 export function infoPanel(view) {
   const photo = view.photo;
-  const shot = h('div', {}, shotSection(photo, null));
+  const pair = isPairSecond(photo);
+  if (!pair) {
+    const shot = h('div', {}, shotSection(photo, null));
+    loadMeta(photo.id).then((res) => {
+      if (res.state === 'ok' && shot.isConnected !== false) shot.replaceChildren(shotSection(photo, res.data));
+    });
+    const recipe = section('拍摄配方', kv(shootingRecipeRows(photo)));
+    const el = h('div', { class: 'pane info-pane' }, recipe, editSection(view), shot);
+    el.dataset.ready = '1';
+    el.sync = () => {
+      el.replaceChildren(recipe, editSection(view), shot);
+    };
+    return el;
+  }
+
+  let p1 = partnerOf(photo, state.photos, state.partners);
+  const recipeWrap = h('div', {});
+  const shot1 = h('div', {});
+  const shot2 = h('div', {}, shotSection(photo, null, '第 2 张'));
+  const paintPairRecipe = () => {
+    recipeWrap.replaceChildren(section('拍摄配方', kv([
+      ...shootingRecipeRows(p1, '第 1 张'),
+      ...shootingRecipeRows(photo, '第 2 张'),
+    ])));
+  };
+  const mountP1 = (first) => {
+    p1 = first;
+    paintPairRecipe();
+    shot1.replaceChildren(shotSection(first, null, '第 1 张'));
+    loadMeta(first.id).then((res) => {
+      if (res.state === 'ok' && shot1.isConnected !== false) shot1.replaceChildren(shotSection(first, res.data, '第 1 张'));
+    });
+  };
+  paintPairRecipe();
+  if (p1) {
+    mountP1(p1);
+  } else if (photo.pair && photo.pair.partner_id) {
+    shot1.replaceChildren(section('第 1 张', h('div', { class: 'skel line' })));
+    api(`/api/photos/${photo.pair.partner_id}`).then((first) => {
+      if (!first || !first.id) return;
+      state.partners.set(first.id, first);
+      if (shot1.isConnected !== false) mountP1(first);
+    }).catch(() => {});
+  }
   loadMeta(photo.id).then((res) => {
-    if (res.state === 'ok' && shot.isConnected !== false) shot.replaceChildren(shotSection(photo, res.data));
+    if (res.state === 'ok' && shot2.isConnected !== false) shot2.replaceChildren(shotSection(photo, res.data, '第 2 张'));
   });
-  const tag = photo.recipe_tag;
-  const position = tag ? String(tag.position).padStart(2, '0') : '';
-  const recorded = tag ? `GXR1 ${tag.catalog_identity} ${tag.unit} ${position}` : '';
-  const label = !tag ? '未标记' : tag.name ? `${tag.name}（${tag.unit_label} · ${position}）` : recorded;
-  const changes = tag ? Object.entries(tag.changes || {}).map(([name, value]) =>
-    `${KNOB_NAMES[name] || name} ${name === 'amount' ? `${value}%` : fmtSigned(value)}`) : [];
-  const detail = tag && tag.levels === null ? '微调未知' : changes.join(' · ');
-  const recipe = section('拍摄配方', kv([
-    ['配方', [label, detail, tag?.amount_unknown ? '强度未知' : ''].filter(Boolean).join(' · '), tag ? '' : 'dim'],
-    tag && !tag.catalogued ? ['', '（相机记录，Studio 目录里没有）', 'dim small'] : null,
-  ]));
-  const el = h('div', { class: 'pane info-pane' }, recipe, editSection(view), shot);
+  const el = h('div', { class: 'pane info-pane' }, recipeWrap, editSection(view), shot1, shot2);
   el.dataset.ready = '1';
   el.sync = () => {
-    el.replaceChildren(recipe, editSection(view), shot);
+    el.replaceChildren(recipeWrap, editSection(view), shot1, shot2);
   };
   return el;
 }

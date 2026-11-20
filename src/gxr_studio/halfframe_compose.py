@@ -90,6 +90,9 @@ def proxy_geometry(width: int) -> PairGeometry:
     )
 
 
+_INVERSE_ORIENTATION = {6: 8, 8: 6}
+
+
 def compose_strips(
     strip1: np.ndarray,
     strip2: np.ndarray,
@@ -97,17 +100,19 @@ def compose_strips(
     first_half: str,
     seam_w: int,
     orientation: int,
+    seam_value: int | float = 0,
 ) -> np.ndarray:
-    """在传感器坐标系下拼接两张半格条带（接缝为 0），再按共享 EXIF 方向转正。"""
+    """在传感器坐标系下拼接两张半格条带（接缝填 `seam_value`，默认 0），再按共享 EXIF 方向转正。支持 2D 或 3D 条带。"""
     ori = validate_orientation(orientation)
     if first_half not in ("left", "right"):
         raise ValueError(f"invalid first_half: {first_half}")
-    if strip1.ndim != 3 or strip2.ndim != 3 or strip1.shape != strip2.shape:
-        raise ValueError(f"strip shapes must match (H, half_w, C): {strip1.shape} vs {strip2.shape}")
+    if strip1.ndim not in (2, 3) or strip1.shape != strip2.shape:
+        raise ValueError(f"strip shapes must match (H, half_w[, C]): {strip1.shape} vs {strip2.shape}")
     if seam_w < 0:
         raise ValueError(f"invalid seam_w: {seam_w}")
-    h, half_w, ch = strip1.shape
-    canvas = np.zeros((h, 2 * half_w + seam_w, ch), dtype=strip1.dtype)
+    h, half_w = strip1.shape[:2]
+    shape = (h, 2 * half_w + seam_w, *strip1.shape[2:])
+    canvas = np.full(shape, seam_value, dtype=strip1.dtype)
     if first_half == "left":
         canvas[:, :half_w] = strip1
         canvas[:, half_w + seam_w :] = strip2
@@ -121,6 +126,27 @@ def orient_half(strip: np.ndarray, orientation: int) -> np.ndarray:
     """将传感器坐标系下的单格条带按共享 EXIF 方向转正。"""
     ori = validate_orientation(orientation)
     return np.ascontiguousarray(orient_array(strip, ori))
+
+
+def split_diptych_halves(
+    oriented: np.ndarray,
+    *,
+    first_half: str,
+    orientation: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """将已按共享 EXIF 方向转正的双联数组（2D 或 3D）切回两张已转正的单格，复用唯一半格几何。"""
+    ori = validate_orientation(orientation)
+    if first_half not in ("left", "right"):
+        raise ValueError(f"invalid first_half: {first_half}")
+    if oriented.ndim not in (2, 3):
+        raise ValueError(f"expected 2D or 3D array, got {oriented.shape}")
+    sensor = orient_array(oriented, _INVERSE_ORIENTATION.get(ori, ori))
+    w = sensor.shape[1]
+    geo = full_geometry() if w == FULL_WIDTH else proxy_geometry(w)
+    left = sensor[:, : geo.half_w]
+    right = sensor[:, geo.right_x0 : geo.right_x0 + geo.half_w]
+    strip1, strip2 = (left, right) if first_half == "left" else (right, left)
+    return orient_half(strip1, ori), orient_half(strip2, ori)
 
 
 def camera_jpg_singles(

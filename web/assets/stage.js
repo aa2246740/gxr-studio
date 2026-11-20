@@ -12,19 +12,44 @@ import { moveRect, resizeRect } from './geom.js';
 import { gpuCanvas } from './gpu_stage.js';
 import { fitPhoto, fitImage, applyDecor, clearDecor } from './stage_finish.js';
 import { refreshFrameSource } from './finish_source.js';
+import { state } from './state.js';
+import { isSinglePairView, halfFirstCropRect, partnerOf } from './halfframe.js';
 
 const pct = (v) => `${(v * 100).toFixed(4)}%`;
 
+function paintPairStripMask(view, pv, media, mode) {
+  if (!pv) return;
+  const old = pv.querySelector('.pair-strip-mask');
+  if (!isSinglePairView(view) || mode !== 'final') {
+    if (old) old.remove();
+    return;
+  }
+  const mw = media?.naturalWidth || media?.width || view.photo?.width || 4288;
+  const mh = media?.naturalHeight || media?.height || view.photo?.height || 2848;
+  const p1 = view.pairView === 'first' ? partnerOf(view.photo, state.photos, state.partners) : null;
+  const target = view.pairView === 'first' ? (p1 || view.photo) : view.photo;
+  const raw = !!(target ? target.has_raw : true);
+  const r = halfFirstCropRect(mw, mh, { raw, orientation: target?.orientation });
+  const mask = old || h('div', { class: 'pair-strip-mask', 'aria-hidden': 'true' });
+  Object.assign(mask.style, {
+    left: pct(r.x),
+    top: pct(r.y),
+    width: pct(r.w),
+    height: pct(r.h),
+  });
+  if (!old) pv.append(mask);
+}
+
 // 边框和时间戳（stage_finish.js）：显卡画布按「整张成片放得下」的大小放，再把边框和日期戳叠上去
 function decorGpu(view, pv, cv, fit) {
-  refreshFrameSource(view);
+  if (!isSinglePairView(view)) refreshFrameSource(view);
   if (!fit) clearDecor(pv, cv);
   else applyDecor(view, pv, cv, fit.deco, parseFloat(cv.style.width), parseFloat(cv.style.height));
 }
 
 // 服务器出的图是没有边框的照片：边框和日期戳同样叠上去。没有装饰时恢复成图自己的大小。
 function decorImage(view, pv, img, mode, maxW, maxH, natural) {
-  if(mode==='final') refreshFrameSource(view,{media:img});
+  if (mode === 'final' && !isSinglePairView(view)) refreshFrameSource(view, { media: img });
   const fit = fitImage(view, mode, img, maxW, maxH, natural);
   if (fit) {
     Object.assign(img.style, { maxWidth: 'none', maxHeight: 'none', width: `${fit.cssW}px`, height: `${fit.cssH}px` });
@@ -41,6 +66,7 @@ function decorImage(view, pv, img, mode, maxW, maxH, natural) {
 
 export function stageMode(view) {
   if (view.showOriginal) return 'orig';
+  if (isSinglePairView(view)) return 'final';
   return view.tab === 'crop' ? 'uncropped' : 'final';
 }
 
@@ -68,6 +94,7 @@ export function paintStage(view) {
     paintGpu(view, area, cv, mode);
     paintSplit(view, area.firstChild, mode);
     decorGpu(view, area.firstChild, cv, fit);
+    paintPairStripMask(view, area.firstChild, cv, mode);
     return;
   }
   let src = null;
@@ -87,6 +114,7 @@ export function paintStage(view) {
     }
     decorImage(view, cur, curImg, mode, maxW, maxH, natural);
     paintSplit(view, cur, mode);
+    paintPairStripMask(view, cur, curImg, mode);
     paintProblem(view, area, mode);
     return;
   }
@@ -125,6 +153,7 @@ export function paintStage(view) {
   img.addEventListener('load', () => {
     if (natural) img.style.width = `${Math.round(img.naturalWidth / (globalThis.devicePixelRatio || 1))}px`;
     decorImage(view, pv, img, mode, maxW, maxH, natural);
+    paintPairStripMask(view, pv, img, mode);
     if (mode !== 'uncropped') return;
     const prev = view.canvas;
     const next = { w: img.naturalWidth, h: img.naturalHeight };
@@ -146,6 +175,7 @@ export function paintStage(view) {
   // 裁切的尺寸放在画面右下角，只写数字（COPY 3.1）
   if (mode === 'uncropped' && view.crop && (view.crop.frame || view.canvas)) pv.append(h('div', { class: 'crop-size' }, pixelsText(view)));
   paintSplit(view, pv, mode);
+  paintPairStripMask(view, pv, img, mode);
 
   // 换图：旧画面留着，新图解码好了再换上（交叉淡入，不经过空白）；模式变了（进出裁剪、原图）直接换
   const swap = () => {
@@ -153,6 +183,7 @@ export function paintStage(view) {
     const keep = childWith(area, 'pv');
     const fade = !!keep && keep !== pv;
     decorImage(view, pv, img, mode, maxW, maxH, natural);
+    paintPairStripMask(view, pv, img, mode);
     area.replaceChildren(pv);
     if (fade) {
       const under = keep.querySelector('.pv-img');

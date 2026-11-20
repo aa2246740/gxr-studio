@@ -26,6 +26,8 @@ const out = {
   steps: {},
   puts: [],
   renders: [],
+  rawReqs: [],
+  bakeReqs: [],
   exports: [],
   cameraJpgReqs: [],
   gpuResponses: [],
@@ -46,8 +48,8 @@ try {
   page.on('pageerror', (e) => out.pageErrors.push(line(e)));
   page.on('request', (rq) => {
     const u = new URL(rq.url());
-    if (u.pathname.includes('/camera-jpg')) {
-      out.cameraJpgReqs.push(`${rq.method()} ${u.pathname.replace(m.p2, 'P2')}`);
+    if (u.pathname === `/api/photos/${m.p2}/camera-jpg`) {
+      out.cameraJpgReqs.push(`${rq.method()} /api/photos/P2/camera-jpg`);
     }
   });
   page.on('response', async (res) => {
@@ -73,17 +75,38 @@ try {
         render: res.headers()['x-gxr-render'] || null,
       });
     }
+    if (p === `/api/photos/${m.p2}/raw`) {
+      out.rawReqs.push({ status: res.status(), half: u.searchParams.get('half') });
+    }
+    if (p === `/api/photos/${m.p2}/bake`) {
+      out.bakeReqs.push({
+        status: res.status(),
+        half: u.searchParams.get('half'),
+        hasRecipe: u.searchParams.has('recipe'),
+      });
+    }
     if (p === `/api/photos/${m.p2}/gpu`) {
       let body = null;
       try { body = await res.json(); } catch { /* ignore */ }
       out.gpuResponses.push({ status: res.status(), body });
     }
-    if (req.method() === 'POST' && p === `/api/photos/${m.p2}/export`) {
-      let body = null;
-      try { body = await res.json(); } catch { /* ignore */ }
-      out.exports.push({ status: res.status(), body });
-    }
   });
+  await page.route(
+    (u) => u.pathname === `/api/photos/${m.p2}/export`,
+    async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      try {
+        const res = await route.fetch({ timeout: 90000 });
+        let body = null;
+        try { body = await res.json(); } catch { /* ignore */ }
+        out.exports.push({ status: res.status(), body });
+        await route.fulfill({ response: res });
+      } catch (err) {
+        out.exports.push({ status: 0, body: null, error: line(err) });
+        await route.abort().catch(() => {});
+      }
+    },
+  );
 
   const api = (path, opts) =>
     page.evaluate(
@@ -96,6 +119,32 @@ try {
     );
 
   const captureStageImage = async (destPath) => {
+    if (m.gpu) {
+      const info = await page.evaluate(async () => {
+        const { gpuEngine } = await import('/assets/gpu_stage.js');
+        const eng = gpuEngine();
+        if (!eng) throw new Error('gpuEngine missing');
+        const rb = await eng.readback();
+        const c = document.createElement('canvas');
+        c.width = rb.w;
+        c.height = rb.h;
+        const ctx = c.getContext('2d');
+        const imgData = new ImageData(
+          new Uint8ClampedArray(rb.data.buffer, rb.data.byteOffset, rb.data.byteLength),
+          rb.w,
+          rb.h,
+        );
+        ctx.putImageData(imgData, 0, 0);
+        const dataUrl = c.toDataURL('image/png');
+        return {
+          b64: dataUrl.slice(dataUrl.indexOf(',') + 1),
+          w: rb.w,
+          h: rb.h,
+        };
+      });
+      writeFileSync(destPath, Buffer.from(info.b64, 'base64'));
+      return { w: info.w, h: info.h };
+    }
     await page.waitForFunction(() => {
       const img = document.querySelector('.stage-area img');
       return !!img && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0;
@@ -121,7 +170,9 @@ try {
   };
 
   const panelState = async () =>
-    page.evaluate(() => {
+    page.evaluate(async () => {
+      const { currentView } = await import('/assets/viewer.js');
+      const v = currentView();
       const cards = [...document.querySelectorAll('.lcard')];
       return {
         cards: cards.length,
@@ -131,6 +182,10 @@ try {
         notices: [...document.querySelectorAll('.notice')].map((n) => n.textContent.trim().slice(0, 120)),
         stageLabels: document.querySelector('.stage-labels')?.textContent.trim().slice(0, 120) || '',
         gpuActive: !!document.querySelector('.gpu'),
+        viewGpuActive: v?.gpuActive || null,
+        edLabel: v?.ed?.label || null,
+        edCalibrated: v?.ed?.calibrated ?? null,
+        gpuFinishKey: v?.gpuFinishKey || null,
         lutDisabled: [...document.querySelectorAll('select[aria-label="LUT"] option')]
           .filter((o) => o.disabled)
           .map((o) => o.value),
@@ -158,7 +213,22 @@ try {
     );
     await page.waitForSelector('.edit-panel', { timeout: 90000 });
     await page.waitForFunction(() => document.querySelectorAll('.lcard').length > 0, null, { timeout: 90000 });
-    await waitFor(() => out.renders.some(isStageRender), 60000, 'initial stage render');
+    if (m.gpu) {
+      await waitFor(
+        () =>
+          page.evaluate(() =>
+            Promise.all([import('/assets/viewer.js'), import('/assets/gpu_stage.js')]).then(([v, gs]) => {
+              const c = v.currentView();
+              const eng = gs.gpuEngine();
+              return !!c && c.gpuActive === 'final' && !!c.gpuFinishKey && !!eng && !!eng.currentKey();
+            }),
+          ),
+        60000,
+        'initial GPU stage frame',
+      );
+    } else {
+      await waitFor(() => out.renders.some(isStageRender), 60000, 'initial stage render');
+    }
     await sleep(600);
   };
 
@@ -170,11 +240,16 @@ try {
   out.steps.initialPanel = await panelState();
   out.steps.initialStage = await captureStageImage(m.stageInitialPath);
   out.steps.initialRenders = out.renders.filter(isStageRender);
+  out.steps.initialRawReqs = [...out.rawReqs];
+  out.steps.initialBakeReqs = [...out.bakeReqs];
 
   // 1) Choose a non-pressed builtin recipe card -> saves & re-renders composite
   const putsBeforePick = out.puts.length;
   const rendersBeforePick = out.renders.length;
-  const prevStageSrc = await page.evaluate(() => document.querySelector('.stage-area img')?.src || '');
+  const prevStageSrc = m.gpu ? '' : await page.evaluate(() => document.querySelector('.stage-area img')?.src || '');
+  const prevFinishKey = m.gpu
+    ? await page.evaluate(() => import('/assets/viewer.js').then((v) => v.currentView()?.gpuFinishKey || ''))
+    : '';
   const pick = await page.evaluate(() => {
     const cards = [...document.querySelectorAll('.lcard')].filter(
       (c) => c.dataset.look && c.dataset.look.startsWith('builtin:') && c.getAttribute('aria-pressed') !== 'true',
@@ -185,19 +260,35 @@ try {
     return { look: c.dataset.look, disabled: !!c.disabled };
   });
   await waitFor(() => out.puts.length > putsBeforePick, 30000, 'recipe PUT /edit');
-  await waitFor(
-    () => out.renders.slice(rendersBeforePick).some(isStageRender),
-    60000,
-    'recipe full stage re-render',
-  );
-  await page.waitForFunction(
-    (prev) => {
-      const img = document.querySelector('.stage-area img');
-      return !!img && img.complete && img.naturalWidth > 0 && img.src !== prev;
-    },
-    prevStageSrc,
-    { timeout: 90000 },
-  );
+  if (m.gpu) {
+    await waitFor(
+      () =>
+        page.evaluate(
+          (prev) =>
+            import('/assets/viewer.js').then((v) => {
+              const c = v.currentView();
+              return !!c && c.gpuActive === 'final' && !!c.gpuFinishKey && c.gpuFinishKey !== prev;
+            }),
+          prevFinishKey,
+        ),
+      60000,
+      'recipe GPU stage re-render',
+    );
+  } else {
+    await waitFor(
+      () => out.renders.slice(rendersBeforePick).some(isStageRender),
+      60000,
+      'recipe full stage re-render',
+    );
+    await page.waitForFunction(
+      (prev) => {
+        const img = document.querySelector('.stage-area img');
+        return !!img && img.complete && img.naturalWidth > 0 && img.src !== prev;
+      },
+      prevStageSrc,
+      { timeout: 90000 },
+    );
+  }
   await sleep(300);
   out.steps.recipePick = {
     pick,
@@ -272,7 +363,7 @@ try {
 
   // 3b) Startup race: the viewer's panel is drawn before the first camera-data status arrives.
   // Delay /api/camdata/status so the recipe cards are drawn disabled; they must come alive once
-  // the status lands (app.js redraws the side panel on 'camdata-ready-changed').
+  // the status lands (viewer_camdata.js rebuilds the recipe pane on 'camdata-ready-changed').
   await page.route('**/api/camdata/status', async (route) => {
     await sleep(8000);
     // A poll still waiting here when the route is removed must not crash the driver.
@@ -324,11 +415,92 @@ try {
     const kept = !!before && before.isConnected && document.querySelector('.lcard') === before;
     const deferred = view.panesStale === true;
     pv.endChange(view);
-    return { kept, deferred, flushed: view.panesStale === false };
+    const after = document.querySelector('.lcard');
+    return { kept, deferred, flushed: view.panesStale === false, rebuilt: !!after && after !== before };
+  });
+
+  // 3d) On another tab the event must not touch the open pane; the recipe pane is rebuilt when shown again.
+  out.steps.otherTabGuard = await page.evaluate(async () => {
+    const [v, st] = await Promise.all([import('/assets/viewer.js'), import('/assets/state.js')]);
+    const view = v.currentView();
+    const oldCard = document.querySelector('.lcard');
+    v.openViewerTab('adjust');
+    await new Promise((r) => setTimeout(r, 50));
+    const slider = document.querySelector('input[type=range]');
+    st.emit('camdata-ready-changed');
+    const untouched = !!slider && slider.isConnected;
+    const dirty = view.panes.recipe.dirty === true;
+    v.openViewerTab('recipe');
+    await new Promise((r) => setTimeout(r, 50));
+    const card = document.querySelector('.lcard');
+    return { untouched, dirty, rebuiltOnShow: !!card && card !== oldCard };
+  });
+
+  // 3d2) Focus inside the recipe pane: the rebuild waits until focus leaves the pane (not on an internal move).
+  out.steps.recipeFocusGuard = await page.evaluate(async () => {
+    const [v, st] = await Promise.all([import('/assets/viewer.js'), import('/assets/state.js')]);
+    v.openViewerTab('recipe');
+    await new Promise((r) => setTimeout(r, 50));
+    const view = v.currentView();
+    const content = view.panes.recipe.content;
+    const fields = [...content.querySelectorAll('select, input, button')].filter((el) => !el.disabled);
+    if (fields.length < 2) return { field: false, count: fields.length };
+    const [field, other] = fields;
+    const before = document.querySelector('.lcard');
+    field.focus();
+    st.emit('camdata-ready-changed');
+    await new Promise((r) => setTimeout(r, 30));
+    const waited = document.querySelector('.lcard') === before;
+    other.focus(); // a move inside the pane must keep waiting
+    await new Promise((r) => setTimeout(r, 50));
+    const waitedAfterMove = document.querySelector('.lcard') === before && document.activeElement === other;
+    other.blur();
+    await new Promise((r) => setTimeout(r, 50));
+    const after = document.querySelector('.lcard');
+    return { field: true, waited, waitedAfterMove, rebuiltAfterBlur: !!after && after !== before };
+  });
+
+  // 3e) A change in progress on another tab (e.g. stamp text) must not have its pane rebuilt when it ends.
+  out.steps.stampTabGuard = await page.evaluate(async () => {
+    const [v, pv, st] = await Promise.all([import('/assets/viewer.js'), import('/assets/preview.js'), import('/assets/state.js')]);
+    const view = v.currentView();
+    v.openViewerTab('stamp');
+    await new Promise((r) => setTimeout(r, 50));
+    const node = view.panes.stamp.content;
+    pv.beginChange(view);
+    st.emit('camdata-ready-changed');
+    pv.endChange(view);
+    await new Promise((r) => setTimeout(r, 50));
+    const same = !!node && view.panes.stamp.content === node && node.isConnected;
+    const dirty = view.panes.recipe.dirty === true;
+    v.openViewerTab('recipe');
+    await new Promise((r) => setTimeout(r, 50));
+    return { same, dirty };
+  });
+
+  // 3f) Focus in a text field outside the recipe pane (e.g. a settings dialog) must not leave the recipe pane stale.
+  out.steps.focusGuard = await page.evaluate(async () => {
+    const [v, st] = await Promise.all([import('/assets/viewer.js'), import('/assets/state.js')]);
+    const oldCard = document.querySelector('.lcard');
+    v.openViewerTab('adjust');
+    await new Promise((r) => setTimeout(r, 50));
+    const field = document.createElement('input');
+    field.type = 'text';
+    document.body.append(field);
+    field.focus();
+    st.emit('camdata-ready-changed');
+    field.blur();
+    field.remove();
+    v.openViewerTab('recipe');
+    await new Promise((r) => setTimeout(r, 50));
+    const card = document.querySelector('.lcard');
+    return { rebuiltOnShow: !!card && card !== oldCard };
   });
 
   // 4) Reload -> check stage, recipe state, and edited thumbnail
   out.renders.length = 0;
+  const rawBeforeReload = out.rawReqs.length;
+  const bakeBeforeReload = out.bakeReqs.length;
   await page.goto(`${m.base}/`);
   await page.waitForSelector('.top, .grid, .empty', { timeout: 90000 });
   await openPhoto();
@@ -345,6 +517,8 @@ try {
     edit: (await api(`/api/photos/${m.p2}/edit`)).body,
     panel: await panelState(),
     renders: out.renders.filter(isStageRender),
+    rawReqs: out.rawReqs.slice(rawBeforeReload),
+    bakeReqs: out.bakeReqs.slice(bakeBeforeReload),
     stage: await captureStageImage(m.stageAfterReloadPath),
   };
 
@@ -360,6 +534,82 @@ try {
   });
   await waitFor(() => out.exports.length > exBefore, 90000, 'export POST response');
   out.steps.export = { clicked, results: out.exports.slice(exBefore) };
+
+  // 6) GPU on: 第 2 张 (server) → 双联 (GPU) → 第 1 张 must never show the leftover 第 2 张 image
+  if (m.gpu) {
+    await page.evaluate(() => document.querySelector('.dialog .dh button')?.click());
+    await sleep(300);
+    const viewState = () =>
+      page.evaluate(() =>
+        import('/assets/viewer.js').then((v) => {
+          const c = v.currentView();
+          const img = document.querySelector('.stage-area .pv-img');
+          return {
+            pv: c?.pairView || 'diptych',
+            gpuActive: c?.gpuActive ?? null,
+            busy: !!c?.ed?.busy,
+            finalUrl: c?.ed?.urls?.final || null,
+            imgSrc: img ? img.getAttribute('src') : null,
+            imgReady: !!img && img.complete && img.naturalWidth > 0,
+          };
+        }),
+      );
+    const pick = (idx) => page.click(`.viewbar [aria-label="半格视图"] button:nth-child(${idx})`);
+    await pick(3);
+    await waitFor(async () => {
+      const s = await viewState();
+      return s.pv === 'second' && !s.busy && s.imgReady && !!s.finalUrl && s.imgSrc === s.finalUrl;
+    }, 90000, 'second view render');
+    const leftover = (await viewState()).finalUrl;
+    await pick(1);
+    await waitFor(async () => {
+      const s = await viewState();
+      return s.pv === 'diptych' && s.gpuActive === 'final' && !s.busy;
+    }, 90000, 'diptych back on the GPU');
+    await pick(2);
+    const seen = [];
+    let reachedFirst = false;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 90000) {
+      const s = await viewState();
+      seen.push(s.imgSrc);
+      if (s.pv === 'first' && !s.busy && s.imgReady && s.imgSrc && s.imgSrc === s.finalUrl && s.imgSrc !== leftover) {
+        reachedFirst = true;
+        break;
+      }
+      await sleep(25);
+    }
+    out.steps.pairViewStale = { leftover: !!leftover, showedLeftover: seen.includes(leftover), reachedFirst, samples: seen.length };
+
+    // 6b) 第 2 张 → 双联 (GPU), then the diptych falls back to the server (GPU switched off here):
+    // the stage must not show the leftover 第 2 张 image under 双联 while the server diptych loads
+    await pick(3);
+    await waitFor(async () => {
+      const s = await viewState();
+      return s.pv === 'second' && !s.busy && s.imgReady && !!s.finalUrl && s.imgSrc === s.finalUrl;
+    }, 90000, 'second view render (fallback case)');
+    const leftover2 = (await viewState()).finalUrl;
+    await pick(1);
+    await waitFor(async () => {
+      const s = await viewState();
+      return s.pv === 'diptych' && s.gpuActive === 'final' && !s.busy;
+    }, 90000, 'diptych on the GPU (fallback case)');
+    await page.evaluate(() => import('/assets/gpu_pref.js').then((g) => g.setGpuPreference(false)));
+    const seen2 = [];
+    let reachedServer = false;
+    const t1 = Date.now();
+    while (Date.now() - t1 < 90000) {
+      const s = await viewState();
+      seen2.push(s.imgSrc);
+      if (s.pv === 'diptych' && s.gpuActive === null && !s.busy && s.imgReady && s.imgSrc && s.imgSrc === s.finalUrl && s.imgSrc !== leftover2) {
+        reachedServer = true;
+        break;
+      }
+      await sleep(25);
+    }
+    await page.evaluate(() => import('/assets/gpu_pref.js').then((g) => g.setGpuPreference(true)));
+    out.steps.pairFallbackStale = { leftover: !!leftover2, showedLeftover: seen2.includes(leftover2), reachedServer, samples: seen2.length };
+  }
 
   await page.close();
 } catch (e) {
