@@ -325,6 +325,7 @@ class PairStore(hf.CoalescedStore):
         self._rejected: set[tuple[str, str]] = set()
         # 只在内存里：本次运行中单张读取已经查过 ±1 邻居、没配上的 JPG SHA（不落盘；导入走自己的路径，不看它）
         self._neighbors_checked: set[str] = set()
+        self._neighbors_verdict_rev = 0
 
     def neighbors_checked(self, sha: str) -> bool:
         with self._lock:
@@ -338,6 +339,12 @@ class PairStore(hf.CoalescedStore):
         with self._lock:
             self._neighbors_checked.clear()
 
+    def sync_verdict_rev(self, rev: int) -> None:
+        with self._lock:
+            if self._neighbors_verdict_rev != rev:
+                self._neighbors_checked.clear()
+                self._neighbors_verdict_rev = rev
+
     def _rebuild_reverse_locked(self) -> None:
         self._by_first = {rec["first_sha"]: sec_sha for sec_sha, rec in self._pairs.items()}
 
@@ -348,7 +355,12 @@ class PairStore(hf.CoalescedStore):
         rej_map: dict[str, list[str]] = {}
         for first_sha, sec_sha in sorted(rej_snap):
             rej_map.setdefault(sec_sha, []).append(first_sha)
-        payload: dict[str, Any] = {"version": PAIRS_VERSION, "first_like": fl_snap, "pairs": p_snap}
+        payload: dict[str, Any] = {
+            "version": PAIRS_VERSION,
+            "rule": hf.VERDICT_RULE_VERSION,
+            "first_like": fl_snap,
+            "pairs": p_snap,
+        }
         if rej_map:
             payload["rejected"] = rej_map
         return payload, (fl_snap, p_snap, rej_snap)
@@ -372,6 +384,8 @@ class PairStore(hf.CoalescedStore):
             if isinstance(ver, int) and not isinstance(ver, bool) and ver > PAIRS_VERSION:
                 future_version = ver
             elif ver == PAIRS_VERSION:
+                raw_rule = data.get("rule")
+                rule_current = isinstance(raw_rule, int) and not isinstance(raw_rule, bool) and raw_rule >= hf.VERDICT_RULE_VERSION
                 raw_fl = data.get("first_like")
                 if isinstance(raw_fl, dict):
                     for k, v in raw_fl.items():
@@ -384,7 +398,7 @@ class PairStore(hf.CoalescedStore):
                             norm = _normalize_pair_entry(k, v)
                             if norm is not None:
                                 loaded_pairs[k] = norm
-                raw_rejected = data.get("rejected")
+                raw_rejected = data.get("rejected") if rule_current else None
                 if isinstance(raw_rejected, dict):
                     for sec_sha, firsts in raw_rejected.items():
                         if isinstance(sec_sha, str) and sec_sha and isinstance(firsts, list):
