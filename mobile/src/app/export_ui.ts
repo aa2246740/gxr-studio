@@ -24,7 +24,15 @@ import {
   stateAnnouncement,
   type ReadyEntry,
 } from './export_ready';
-import { applyAdoptedAndLogos, buildBatchItems, buildExportThumbs, cardsFor, requestPhoto } from './export_request_prep';
+import {
+  applyAdoptedAndLogos,
+  applyHalfframeFirstNeighbors,
+  buildBatchItems,
+  buildExportThumbs,
+  cardsFor,
+  requestPhoto,
+  resolveHalfframeFirstNeighbors,
+} from './export_request_prep';
 import { ExportDetailsSheet } from './export_sheet';
 import { cachedFontPack, ensureFontPack, replaceFontBytesForDev } from './font_loader';
 import { logoStore } from './logo_store';
@@ -279,7 +287,7 @@ export class ExportFlow {
     this.launch(photos, options);
   }
 
-  private launch(photos: Photo[], options: ExportOptions): void {
+  private launch(photos: Photo[], options: ExportOptions, onlyIds?: readonly string[]): void {
     this.revokeUrls();
     const hooks = dev();
     const binding = hooks?.binding;
@@ -299,7 +307,7 @@ export class ExportFlow {
       cards: cardsFor(book, photo),
       note: cameraRecipeErrorOf(photo, dat)?.message,
     }));
-    const items = buildBatchItems(snapshots, options, __GXR_BUILD__, binding);
+    const items = buildBatchItems(snapshots, options, __GXR_BUILD__, binding, onlyIds);
     const cubeIds = [...new Set(snapshots.map((s) => s.reqPhoto.lut).filter((id): id is string => Boolean(id)))];
     const fontKeys = [...new Set(snapshots.flatMap((s) => fontsNeeded(s.reqPhoto.border, s.reqPhoto.stamp)))];
     const logoIds = [...new Set(snapshots.map((s) => usedLogoId(s.reqPhoto.border)).filter((id): id is string => id !== null))];
@@ -346,7 +354,8 @@ export class ExportFlow {
     const syncFonts = cachedFontPack(fontKeys);
     const logosReady = !logoIds.length || logoStore.loaded();
     const needAdopt = photos.some((p) => needsCameraRecipe(p, dat, { checkMissingDat: true }));
-    if (!needAdopt && (!cubeIds.length || !lutBook) && syncFonts && logosReady) {
+    const needNeighbors = items.some((it) => it.halfframeRole === 'first');
+    if (!needAdopt && !needNeighbors && (!cubeIds.length || !lutBook) && syncFonts && logosReady) {
       begin({}, syncFonts);
       return;
     }
@@ -357,11 +366,13 @@ export class ExportFlow {
       : Promise.resolve({ fontIndex: '', fontPack: null });
     const logoTask = logoIds.length && !logoStore.loaded() ? logoStore.ensureLoaded().catch(() => []) : Promise.resolve([]);
     const adoptTask = needAdopt ? ensureCameraRecipes(photos, book, { checkMissingDat: true }) : Promise.resolve();
-    void Promise.all([lutTask, fontTask, logoTask, adoptTask]).then(([luts, fonts0]) => {
+    const neighborTask = needNeighbors ? resolveHalfframeFirstNeighbors(photos, this.app.photos(), items) : Promise.resolve(new Map());
+    void Promise.all([lutTask, fontTask, logoTask, adoptTask, neighborTask]).then(([luts, fonts0, , , neighbors]) => {
       if (this.batch !== batch || batch.phase !== 'running') return;
       if (needAdopt || logoIds.length) {
         applyAdoptedAndLogos(photos, snapshots, items, dat, needAdopt, logoIds.length > 0, options, __GXR_BUILD__, binding);
       }
+      if (neighbors.size) applyHalfframeFirstNeighbors(snapshots, items, neighbors, options, __GXR_BUILD__, binding);
       begin(luts, fonts0);
     });
   }
@@ -376,7 +387,8 @@ export class ExportFlow {
       dng: item.dng,
       jpg: item.jpg,
       req: item.req,
-      ...(item.halfframeRole ? { halfframeRole: item.halfframeRole } : {}),
+      ...(item.halfframeSource ? { halfframeSource: item.halfframeSource } : {}),
+      ...(item.stripCopyright ? { stripCopyright: true } : {}),
       ...(trap ? { devTrap: true } : {}),
       ...(inkTrap ? { devInkTrap: true } : {}),
       ...(canvasReport ? { devCanvasReport: canvasReport } : {}),
@@ -455,7 +467,7 @@ export class ExportFlow {
         this.batch = null;
         batch.cancel();
       }
-      this.launch(next.photos, next.options);
+      this.launch(next.photos, next.options, next.onlyIds);
       return;
     }
     const batchLive = Boolean(batch && batch.phase !== 'closed');
@@ -659,8 +671,8 @@ export class ExportFlow {
       this.batch = null;
       batch.cancel();
     }
-    this.queue.beginBatch(first.photos, first.options);
-    this.launch(first.photos, first.options);
+    this.queue.beginBatch(first.photos, first.options, first.onlyIds);
+    this.launch(first.photos, first.options, first.onlyIds);
   }
 
   private clearFailures(batch: ExportBatch | null): void {

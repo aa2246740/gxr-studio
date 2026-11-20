@@ -19,7 +19,7 @@ import init, {
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { mapInkError, shouldDecodeCameraJpg, shouldRetryWithCameraJpg } from '../lib/export_request';
 import { momentFromIso } from '../lib/frame_spec';
-import { sliceDiptychHalfRgb } from '../lib/halfframe';
+import { sliceDiptychHalfRgb, sliceFirstHalfStripRgb, stripExifCopyrightFromJpeg } from '../lib/halfframe';
 import { shotSize, jpegSize, dngSize } from '../lib/photo_size';
 import { isDisplaySpace, LUT_ERRORS } from '../lib/lut';
 import type { ExportIn, ExportJob, ExportMemory, ExportOut, ExportSetup, FailKind, SizesJob } from './export_protocol';
@@ -177,9 +177,12 @@ async function runJob(job: ExportJob): Promise<void> {
   const isLogLut = Boolean(lutId && isLogLutSpace(spaceText));
   const isLocalRecipe = (req.side as { recipe?: { kind?: unknown } }).recipe?.kind === 'local';
   let jpg: { data: Uint8Array; width: number; height: number } | null = null;
-  if (job.halfframeRole && jpgBytes) {
+  if (job.halfframeSource && jpgBytes) {
     const decoded = await decodeJpeg(jpgBytes);
-    jpg = sliceDiptychHalfRgb(decoded.data, decoded.width, decoded.height, job.halfframeRole);
+    jpg =
+      job.halfframeSource === 'first-strip'
+        ? sliceFirstHalfStripRgb(decoded.data, decoded.width, decoded.height)
+        : sliceDiptychHalfRgb(decoded.data, decoded.width, decoded.height, job.halfframeSource === 'diptych-first' ? 'first' : 'second');
     shot.width = jpg.width;
     shot.height = jpg.height;
     shotText = JSON.stringify(shot);
@@ -311,11 +314,14 @@ async function runJob(job: ExportJob): Promise<void> {
       .catch(() => undefined);
   }
   const completeState = json.prepared.state as { labels?: Record<string, unknown> };
-  if (job.halfframeRole && completeState && typeof completeState === 'object') {
+  if (job.halfframeSource && completeState && typeof completeState === 'object') {
     const labels = completeState.labels && typeof completeState.labels === 'object' ? { ...completeState.labels } : {};
     const prevTag = typeof labels.tag === 'string' ? labels.tag : '';
     labels.tag = `${prevTag}_half`;
     completeState.labels = labels;
+  }
+  if (job.stripCopyright && source.length) {
+    source = stripExifCopyrightFromJpeg(source);
   }
   const done = export_complete(canvas, width, height, JSON.stringify(completeState), source, layer, stampMask, maskWidth, maskHeight);
   canvas = EMPTY;

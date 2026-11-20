@@ -237,9 +237,12 @@ export const HALF_WIDTH = 2088;
 export const SEAM_X0 = 2088;
 export const SEAM_X1 = 2199;
 export const RIGHT_X0 = 2200;
+export const STRIP_X0_JPG = 1100;
+export const VALID_HALFFRAME_ORIENTATIONS: ReadonlySet<number> = new Set([1, 3, 6, 8]);
 
 export type HalfframeMode = 'diptych' | 'singles' | 'both';
 export type HalfframeRole = 'first' | 'second';
+export type HalfframeSource = 'first-strip' | 'diptych-first' | 'diptych-second';
 
 /** 桌面 web/assets/halfframe.js 的导出选项文案。 */
 export const HALFFRAME_MODES: Array<[HalfframeMode, string]> = [
@@ -338,6 +341,120 @@ export function sliceDiptychHalfRgb(
     return { data: rgb.slice(start, end), width: outW, height: outH };
   }
   throw new Error(`unexpected diptych RGB dimensions: ${width}x${height}`);
+}
+
+/**
+ * 照桌面 halfframe_compose.camera_jpg_singles：从第 1 张相机 JPG（已按 EXIF 转正）切出中间半格条带。
+ * 传感器列 1100..3187 关于 4288 对称（1100 + 2088 + 1100 = 4288），因此 ori 1/3/6/8 转正后均为：
+ * - 横向 4288×2848：列 1100..3187，产出 2088×2848；
+ * - 竖向 2848×4288：行 1100..3187，产出 2848×2088。
+ */
+export function sliceFirstHalfStripRgb(
+  rgb: Uint8Array,
+  width: number,
+  height: number,
+): { data: Uint8Array; width: number; height: number } {
+  if (width === FULL_WIDTH && height === FULL_HEIGHT) {
+    const outW = HALF_WIDTH;
+    const outH = FULL_HEIGHT;
+    const out = new Uint8Array(outW * outH * 3);
+    const rowBytes = outW * 3;
+    const srcStride = width * 3;
+    const xByte = STRIP_X0_JPG * 3;
+    for (let y = 0; y < outH; y += 1) {
+      const srcOff = y * srcStride + xByte;
+      out.set(rgb.subarray(srcOff, srcOff + rowBytes), y * rowBytes);
+    }
+    return { data: out, width: outW, height: outH };
+  }
+  if (width === FULL_HEIGHT && height === FULL_WIDTH) {
+    const outW = FULL_HEIGHT;
+    const outH = HALF_WIDTH;
+    const rowBytes = outW * 3;
+    const start = STRIP_X0_JPG * rowBytes;
+    const end = start + outH * rowBytes;
+    return { data: rgb.slice(start, end), width: outW, height: outH };
+  }
+  throw new Error(`unexpected first-half RGB dimensions: ${width}x${height}`);
+}
+
+function writeU16(bytes: Uint8Array, off: number, value: number, le: boolean): void {
+  if (le) {
+    bytes[off] = value & 0xff;
+    bytes[off + 1] = (value >> 8) & 0xff;
+  } else {
+    bytes[off] = (value >> 8) & 0xff;
+    bytes[off + 1] = value & 0xff;
+  }
+}
+
+/**
+ * 从相机 JPEG 的 APP1 Exif IFD0 移除 Copyright（0x8298）标签，保留其余全部 EXIF（机身、镜头、曝光、时间等）。
+ * 第 1 张不在库里时用于第 1 格单格导出，避免把第 2 张的拍摄配方误标给第 1 格。
+ */
+export function stripExifCopyrightFromJpeg(bytes: Uint8Array): Uint8Array {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return bytes;
+  let out: Uint8Array | null = null;
+  let pos = 2;
+  while (pos + 4 <= bytes.length) {
+    if (bytes[pos] !== 0xff) break;
+    while (pos < bytes.length && bytes[pos] === 0xff) pos += 1;
+    if (pos >= bytes.length) break;
+    const marker = bytes[pos++];
+    if (marker === 0xda || marker === 0xd9) break;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    const segLen = readU16(bytes, pos, false);
+    if (segLen === null || segLen < 2 || pos + segLen > bytes.length) break;
+    const payloadStart = pos + 2;
+    const payloadEnd = pos + segLen;
+    if (
+      marker === 0xe1 &&
+      payloadEnd - payloadStart >= 14 &&
+      bytes[payloadStart] === 0x45 &&
+      bytes[payloadStart + 1] === 0x78 &&
+      bytes[payloadStart + 2] === 0x69 &&
+      bytes[payloadStart + 3] === 0x66 &&
+      bytes[payloadStart + 4] === 0x00 &&
+      bytes[payloadStart + 5] === 0x00
+    ) {
+      const tiffBase = payloadStart + 6;
+      const le = bytes[tiffBase] === 0x49 && bytes[tiffBase + 1] === 0x49;
+      const be = bytes[tiffBase] === 0x4d && bytes[tiffBase + 1] === 0x4d;
+      if ((le || be) && readU16(bytes, tiffBase + 2, le) === 42) {
+        const ifdOff = readU32(bytes, tiffBase + 4, le);
+        const ifdPos = ifdOff !== null ? tiffBase + ifdOff : -1;
+        const count = ifdPos >= tiffBase ? readU16(bytes, ifdPos, le) : null;
+        if (count !== null && count > 0 && ifdPos + 2 + count * 12 <= payloadEnd) {
+          let hasCopyright = false;
+          for (let i = 0; i < count; i += 1) {
+            if (readU16(bytes, ifdPos + 2 + i * 12, le) === 0x8298) {
+              hasCopyright = true;
+              break;
+            }
+          }
+          if (hasCopyright) {
+            out ??= bytes.slice();
+            let kept = 0;
+            for (let i = 0; i < count; i += 1) {
+              const src = ifdPos + 2 + i * 12;
+              if (readU16(out, src, le) === 0x8298) continue;
+              const dst = ifdPos + 2 + kept * 12;
+              if (dst !== src) out.copyWithin(dst, src, src + 12);
+              kept += 1;
+            }
+            const oldTail = ifdPos + 2 + count * 12;
+            const newTail = ifdPos + 2 + kept * 12;
+            const hasNext = oldTail + 4 <= payloadEnd;
+            if (hasNext) out.copyWithin(newTail, oldTail, oldTail + 4);
+            out.fill(0, newTail + (hasNext ? 4 : 0), oldTail + (hasNext ? 4 : 0));
+            writeU16(out, ifdPos, kept, le);
+          }
+        }
+      }
+    }
+    pos = payloadEnd;
+  }
+  return out ?? bytes;
 }
 
 // --- 连续编号相邻第 1 张（与桌面 halfframe_pairs.py 同规则） ---
@@ -489,6 +606,60 @@ export async function isFirstLikeBlob(blob: Blob): Promise<boolean> {
   } finally {
     bm?.close();
   }
+}
+
+const firstLikeCache = new WeakMap<Blob, Promise<boolean>>();
+const orientationCache = new WeakMap<Blob, Promise<number | null>>();
+
+export function cachedFirstLikeBlob(blob: Blob): Promise<boolean> {
+  let pending = firstLikeCache.get(blob);
+  if (!pending) {
+    pending = isFirstLikeBlob(blob).catch(() => false);
+    firstLikeCache.set(blob, pending);
+  }
+  return pending;
+}
+
+function cachedOrientation(blob: Blob): Promise<number | null> {
+  let pending = orientationCache.get(blob);
+  if (!pending) {
+    pending = readFrameFromBlob(blob).then((f) => f?.orientation ?? null, () => null);
+    orientationCache.set(blob, pending);
+  }
+  return pending;
+}
+
+export interface HalfframeNeighborCandidate {
+  id: string;
+  stem: string;
+  diptych?: boolean;
+  jpg: File | null;
+  frame?: { orientation: number } | null;
+}
+
+/**
+ * 找半格双联对应的第 1 张原片：与桌面 halfframe_pairs 同规则（编号 -1、非双联、EXIF 方向一致且在 {1,3,6,8}、
+ * MPF 预览为 first-like）。供照片信息与单格导出共用。
+ */
+export async function findFirstHalfNeighbor<T extends HalfframeNeighborCandidate>(
+  photo: T,
+  photos: readonly T[],
+  checkFirstLike: (blob: Blob) => Promise<boolean> = cachedFirstLikeBlob,
+): Promise<T | null> {
+  if (!photo.diptych || !photo.jpg) return null;
+  const prevNames = new Set(neighborNames(photo.stem, -1).map((s) => s.toLowerCase()));
+  if (!prevNames.size) return null;
+  const candidates = photos.filter((p) => p.id !== photo.id && !p.diptych && p.jpg !== null && prevNames.has(p.stem.toLowerCase()));
+  if (!candidates.length) return null;
+  const dipOri = photo.frame?.orientation ?? (await cachedOrientation(photo.jpg));
+  if (dipOri === null || !VALID_HALFFRAME_ORIENTATIONS.has(dipOri)) return null;
+  for (const cand of candidates) {
+    if (!cand.jpg) continue;
+    const candOri = cand.frame?.orientation ?? (await cachedOrientation(cand.jpg));
+    if (candOri !== dipOri) continue;
+    if (await checkFirstLike(cand.jpg)) return cand;
+  }
+  return null;
 }
 
 // --- EXIF Copyright GXR1 拍摄配方标签解析与展示（与桌面 recipe_tags.py / catalog_names.py / info_panel.js 同规则） ---

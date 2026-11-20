@@ -210,67 +210,77 @@ try {
     const mixedFiles = await sharedFiles(page, manifest.outDir, 'mixed-', beforeMixed);
     out.mixed = { ready: mixedReady, shared: mixedShared, files: mixedFiles };
   } else if (manifest.mode === 'labels') {
+    const readPhotoInfo = async () => {
+      await openEditorMore(page);
+      await page.locator('.paste-sheet[data-state="editor-more"] .lrow', { hasText: '照片信息' }).click();
+      await page.waitForSelector('.paste-sheet[data-state="photo-info"]', { timeout: 10_000 });
+      await page
+        .waitForFunction(
+          () => {
+            const row = document.querySelector('.paste-sheet[data-state="photo-info"] [data-role="halfframe-recipes"]');
+            return Boolean(row && row.dataset.firstChecked);
+          },
+          null,
+          { timeout: 15_000 },
+        )
+        .catch(() => undefined);
+      const info = await page.locator('.paste-sheet[data-state="photo-info"]').evaluate((sheet) => {
+        const rows = Array.from(sheet.querySelectorAll('.lrow')).map((r) => ({
+          role: r.dataset.role || '',
+          firstChecked: r.dataset.firstChecked || '',
+          label: r.querySelector('b')?.textContent || '',
+          values: Array.from(r.querySelectorAll('small')).map((s) => ({
+            half: s.dataset.half || '',
+            text: s.textContent || '',
+          })),
+        }));
+        return { rows };
+      });
+      await page.locator('.paste-sheet[data-state="photo-info"] .nb').click().catch(() => {});
+      await page.waitForSelector('.paste-sheet[data-state="photo-info"]', { state: 'detached', timeout: 10_000 }).catch(() => {});
+      return info;
+    };
+
+    const exportSinglesFromOpenEditor = async (prefix) => {
+      await openExportOptionsFromEditor(page);
+      const sheet = page.locator('.ms.export');
+      await sheet.locator('[data-role="halfframe-row"] .seg button[data-value="singles"]').click();
+      const before = await page.evaluate(() => window.__shareLog.calls.length);
+      await sheet.locator('.go').click();
+      const ready = await waitPhase(page, ['ready']);
+      const shared = await shareAll(page);
+      const files = await sharedFiles(page, manifest.outDir, prefix, before);
+      return { ready, shared, files };
+    };
+
+    // 1. With matching ori=1 photo 1 present
     await page.goto(url);
     await settle(page);
     await pickAll(page, { count: manifest.withFirstCount }, manifest.withFirstFiles);
     await openPhoto(page, manifest.diptychStem);
     const topLabelWith = await page.locator('.editor .nav .t b').innerText();
     const statusLabelWith = await page.locator('.editor .panel.recipe [data-act="recipe-status"]').innerText().catch(() => '');
-    await openEditorMore(page);
-    await page.locator('.paste-sheet[data-state="editor-more"] .lrow', { hasText: '照片信息' }).click();
-    await page.waitForSelector('.paste-sheet[data-state="photo-info"]', { timeout: 10_000 });
-    await page.waitForFunction(
-      () => {
-        const row = document.querySelector('.paste-sheet[data-state="photo-info"] [data-role="halfframe-recipes"]');
-        return Boolean(row && row.dataset.firstChecked);
-      },
-      null,
-      { timeout: 15_000 },
-    ).catch(() => undefined);
-    const infoWith = await page.locator('.paste-sheet[data-state="photo-info"]').evaluate((sheet) => {
-      const rows = Array.from(sheet.querySelectorAll('.lrow')).map((r) => ({
-        role: r.dataset.role || '',
-        firstChecked: r.dataset.firstChecked || '',
-        label: r.querySelector('b')?.textContent || '',
-        values: Array.from(r.querySelectorAll('small')).map((s) => ({
-          half: s.dataset.half || '',
-          text: s.textContent || '',
-        })),
-      }));
-      return { rows };
-    });
+    const infoWith = await readPhotoInfo();
     out.withFirst = { topLabel: topLabelWith, statusLabel: statusLabelWith, info: infoWith };
 
-    // Second run: reload and import ONLY photo 2 (no photo 1)
+    // 2. Without photo 1 (only diptych imported) — omit 第 1 格 + export singles strips Copyright from 第 1 格
     await page.reload();
     await settle(page);
     await pickAll(page, { count: 1 }, manifest.onlySecondFiles);
     await openPhoto(page, manifest.diptychStem);
     const topLabelAlone = await page.locator('.editor .nav .t b').innerText();
-    await openEditorMore(page);
-    await page.locator('.paste-sheet[data-state="editor-more"] .lrow', { hasText: '照片信息' }).click();
-    await page.waitForSelector('.paste-sheet[data-state="photo-info"]', { timeout: 10_000 });
-    await page.waitForFunction(
-      () => {
-        const row = document.querySelector('.paste-sheet[data-state="photo-info"] [data-role="halfframe-recipes"]');
-        return Boolean(row && row.dataset.firstChecked);
-      },
-      null,
-      { timeout: 15_000 },
-    ).catch(() => undefined);
-    const infoAlone = await page.locator('.paste-sheet[data-state="photo-info"]').evaluate((sheet) => {
-      const rows = Array.from(sheet.querySelectorAll('.lrow')).map((r) => ({
-        role: r.dataset.role || '',
-        firstChecked: r.dataset.firstChecked || '',
-        label: r.querySelector('b')?.textContent || '',
-        values: Array.from(r.querySelectorAll('small')).map((s) => ({
-          half: s.dataset.half || '',
-          text: s.textContent || '',
-        })),
-      }));
-      return { rows };
-    });
-    out.onlySecond = { topLabel: topLabelAlone, info: infoAlone };
+    const infoAlone = await readPhotoInfo();
+    const aloneExport = await exportSinglesFromOpenEditor('alone-');
+    out.onlySecond = { topLabel: topLabelAlone, info: infoAlone, export: aloneExport };
+
+    // 3. Orientation-mismatched neighbour (photo 1 patched to ori=6, diptych ori=1) — must reject in BOTH 照片信息 and export!
+    await page.reload();
+    await settle(page);
+    await pickAll(page, { count: manifest.mismatchCount }, manifest.mismatchFiles);
+    await openPhoto(page, manifest.diptychStem);
+    const infoMismatch = await readPhotoInfo();
+    const mismatchExport = await exportSinglesFromOpenEditor('mismatch-');
+    out.oriMismatch = { info: infoMismatch, export: mismatchExport };
   } else if (manifest.mode === 'parity') {
     await page.goto(url);
     await settle(page);
@@ -286,23 +296,48 @@ try {
       const before = await page.evaluate(() => window.__shareLog.calls.length);
       await sheet.locator('.go').click();
       const ready = await waitPhase(page, ['ready']);
+      const reqSides = await page.evaluate(() => {
+        const b = window.__devExport?.flow?.current?.();
+        return b ? b.items.map((it) => ({ id: it.id, stem: it.stem, side: it.req.side })) : [];
+      });
       const shared = await shareAll(page);
       const files = await sharedFiles(page, manifest.outDir, prefix, before);
       await backToGrid(page);
-      return { ready, shared, files };
+      return { ready, shared, files, reqSides };
     };
 
-    // 1. Unedited ori=1 diptych -> singles (original / high)
+    // 1. Mixed-recipe hf258 pair (p1 + p2): unedited singles
+    out.hf258Singles = await exportOne(manifest.hf258Stem, 'hf258-singles-', { halfframe: '两张单格' });
+
+    // 2. card250 ori=1, ori=6, ori=8 pairs + derived ori=3 pair: unedited singles
     out.uneditedOri1 = await exportOne(manifest.ori1Stem, 'unedited-ori1-', { halfframe: '两张单格' });
-
-    // 2. Unedited ori=6 diptych -> singles (original / high)
     out.uneditedOri6 = await exportOne(manifest.ori6Stem, 'unedited-ori6-', { halfframe: '两张单格' });
+    out.uneditedOri8 = await exportOne(manifest.ori8Stem, 'unedited-ori8-', { halfframe: '两张单格' });
+    out.uneditedOri3 = await exportOne(manifest.ori3Stem, 'unedited-ori3-', { halfframe: '两张单格' });
 
-    // 3. Edit ori=1 diptych: adjust exposure +0.3, contrast +12, plus border & stamp (singles must apply adjust only, diptych in both applies all!)
+    // 3. Edit card250 ori=1 diptych: adjust (exposure + contrast + vignette) + curve + gallery border
     await openPhoto(page, manifest.ori1Stem);
     const expVal = await setKnob(page, 'exposure_ev', 0.3);
     const conVal = await setKnob(page, 'contrast', 12);
-    // Enable frame (gallery / 白边) via 更多 -> 边框
+    const vigVal = await setKnob(page, 'vignette', 35);
+    // Drag master curve midpoint upward via real curves sheet UI
+    await page.locator('.editor .band .panel.adjust button', { hasText: '曲线' }).click();
+    await page.waitForSelector('.editor svg.curve', { timeout: 10_000 });
+    const box = await page.locator('.editor svg.curve').boundingBox();
+    if (!box) throw new Error('curve svg boundingBox missing');
+    const cx = box.x + box.width * 0.5;
+    const cy = box.y + box.height * 0.5;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx, cy - box.height * 0.14, { steps: 6 });
+    await page.mouse.up();
+    const stageTop = await page.locator('.editor .stage').boundingBox();
+    if (stageTop) {
+      await page.mouse.click(stageTop.x + stageTop.width * 0.5, stageTop.y + 40);
+    }
+    await page.waitForSelector('.curves-sheet', { state: 'detached', timeout: 10_000 }).catch(() => {});
+
+    // Enable gallery border via 更多 -> 边框
     await page.locator('.editor .toolbar [data-tool="more"]').click();
     await page.waitForSelector('.more-sheet', { timeout: 10_000 });
     await page.locator('.more-sheet [data-more="frame"]').click();
@@ -310,13 +345,25 @@ try {
     await page.locator('.editor .band .panel.frame .strip .rc[data-style="gallery"]').click();
     await backToGrid(page);
 
-    out.editedKnobs = { exposure_ev: expVal, contrast: conVal };
+    out.editedKnobs = { exposure_ev: expVal, contrast: conVal, vignette: vigVal };
     out.editedBoth = await exportOne(manifest.ori1Stem, 'edited-both-', { halfframe: '都要' });
     out.editedSmallSingles = await exportOne(manifest.ori1Stem, 'edited-small-', {
       size: '小',
       quality: '低',
       halfframe: '两张单格',
     });
+
+    // 4. Display-space .cube LUT on hf258 diptych -> singles
+    await openPhoto(page, manifest.hf258Stem);
+    await page.locator('.editor .toolbar [data-tool="recipe"]').click();
+    await page.locator('.editor .band .panel.recipe [data-mode="lut"]').click();
+    await page.waitForSelector('.editor .band .panel.lut:not([hidden])', { timeout: 10_000 });
+    await page.locator('input.lutpick').setInputFiles([manifest.lutPath]);
+    await page.waitForSelector(`.editor .band .panel.lut .strip .rc[data-lut="${manifest.lutCubeId}"]`, { timeout: 20_000 });
+    await page.locator(`.editor .band .panel.lut .strip .rc[data-lut="${manifest.lutCubeId}"]`).click();
+    await page.waitForFunction((want) => document.querySelector('.app')?.dataset.settled === want, manifest.hf258Stem, { timeout: 60_000 });
+    await backToGrid(page);
+    out.lutSingles = await exportOne(manifest.hf258Stem, 'lut-singles-', { halfframe: '两张单格' });
   } else {
     throw new Error(`unknown mode: ${manifest.mode}`);
   }

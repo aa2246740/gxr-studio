@@ -3,7 +3,7 @@
 import { unitOfLens } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { buildRequest, usedLogoId, type RequestPhoto } from '../lib/export_request';
-import { normalizedHalfframeMode, type HalfframeRole } from '../lib/halfframe';
+import { findFirstHalfNeighbor, normalizedHalfframeMode, type HalfframeRole } from '../lib/halfframe';
 import { isDisplaySpace } from '../lib/lut';
 import { adoptedSelectionOf, cameraRecipeErrorOf, photoWithAdopted, recipeUnitOf, shelf, shelves, type Card } from '../lib/recipes';
 import type { Book } from './book';
@@ -74,17 +74,32 @@ export interface ExportSnapshot {
   note?: string;
 }
 
+export interface HalfframeFirstNeighbor {
+  id: string;
+  stem: string;
+  version: number;
+  jpg: File | null;
+}
+
 /**
- * 照桌面 halfframe_export.py:300-316 构造单格请求：保留调色（adjust / curve / display-space lut），
- * 关闭裁剪、拉直、边框、时间戳、配方与 HDR，文件名按 `_1` / `_2` 区分并在 Worker 里追加 `_half` 。
+ * 照桌面 halfframe_export.py:300-396 构造单格请求：保留调色（adjust / curve / display-space lut），
+ * 关闭裁剪、拉直、边框、时间戳、配方与 HDR；文件名对齐桌面：
+ * - 第 1 格：库里有第 1 张原片时用 `<photo1>_gxr_half.jpg`，缺第 1 张时用 `<photo2>_1_gxr_half.jpg`；
+ * - 第 2 格：一律用 `<photo2>_gxr_half.jpg`。
  */
-export function singleHalfRequestPhoto(reqPhoto: RequestPhoto, role: HalfframeRole): RequestPhoto {
-  const suffix = role === 'first' ? '_1' : '_2';
+export function singleHalfRequestPhoto(
+  reqPhoto: RequestPhoto,
+  role: HalfframeRole,
+  firstNeighbor?: { stem: string; jpg: File | null } | null,
+): RequestPhoto {
+  const stem = role === 'first' ? (firstNeighbor ? firstNeighbor.stem : `${reqPhoto.stem}_1`) : reqPhoto.stem;
   const keepLut = Boolean(reqPhoto.lut && isDisplaySpace(reqPhoto.lutInputSpace));
   return {
     ...reqPhoto,
-    stem: `${reqPhoto.stem}${suffix}`,
+    stem,
     dngName: null,
+    jpgName: role === 'first' && firstNeighbor?.jpg ? firstNeighbor.jpg.name : reqPhoto.jpgName,
+    sourceModified: role === 'first' && firstNeighbor?.jpg ? firstNeighbor.jpg.lastModified : reqPhoto.sourceModified,
     choice: null,
     lut: keepLut ? reqPhoto.lut : null,
     lutInputSpace: keepLut ? reqPhoto.lutInputSpace : null,
@@ -99,29 +114,33 @@ export function singleHalfRequestPhoto(reqPhoto: RequestPhoto, role: HalfframeRo
   };
 }
 
-/** 将一批快照按半格导出模式展开为 1（双联一张/普通）、2（两张单格）或 3（都要）条 BatchItem。 */
+/** 将一批快照按半格导出模式展开为 1（双联一张/普通）、2（两张单格）或 3（都要）条 BatchItem；传 `onlyIds` 时只保留指定失败条目。 */
 export function buildBatchItems(
   snapshots: readonly ExportSnapshot[],
   options: ExportOptions,
   build: string,
   binding?: string,
+  onlyIds?: readonly string[],
 ): BatchItem[] {
   const hfMode = normalizedHalfframeMode(options.halfframe);
+  const allow = onlyIds ? new Set(onlyIds) : null;
   const items: BatchItem[] = [];
   for (const s of snapshots) {
     if (!s.diptych || hfMode === 'diptych') {
-      items.push({
-        id: s.id,
-        stem: s.stem,
-        version: s.version,
-        dng: s.dng,
-        jpg: s.jpg,
-        req: buildRequest(s.reqPhoto, s.cards, options, build, binding),
-        ...(s.note ? { cameraRecipeNote: s.note } : {}),
-      });
+      if (!allow || allow.has(s.id)) {
+        items.push({
+          id: s.id,
+          stem: s.stem,
+          version: s.version,
+          dng: s.dng,
+          jpg: s.jpg,
+          req: buildRequest(s.reqPhoto, s.cards, options, build, binding),
+          ...(s.note ? { cameraRecipeNote: s.note } : {}),
+        });
+      }
       continue;
     }
-    if (hfMode === 'both') {
+    if (hfMode === 'both' && (!allow || allow.has(s.id))) {
       items.push({
         id: s.id,
         photoId: s.id,
@@ -138,11 +157,15 @@ export function buildBatchItems(
       ['first', '1'],
       ['second', '2'],
     ] as const) {
+      const entryId = `${s.id}#half:${idx}`;
+      if (allow && !allow.has(entryId)) continue;
       const halfPhoto = singleHalfRequestPhoto(s.reqPhoto, role);
       items.push({
-        id: `${s.id}#half:${idx}`,
+        id: entryId,
         photoId: s.id,
         halfframeRole: role,
+        halfframeSource: role === 'first' ? 'diptych-first' : 'diptych-second',
+        stripCopyright: role === 'first',
         stem: halfPhoto.stem,
         version: s.version,
         dng: null,
@@ -152,6 +175,53 @@ export function buildBatchItems(
     }
   }
   return items;
+}
+
+/** 查清本批里要导出「第 1 格」的双联各自在库里是否有配对的第 1 张原片（同桌面编号/方向/MPF 规则）。 */
+export async function resolveHalfframeFirstNeighbors(
+  photos: readonly Photo[],
+  library: readonly Photo[],
+  items: readonly BatchItem[],
+): Promise<Map<string, HalfframeFirstNeighbor>> {
+  const wantIds = new Set(items.filter((it) => it.halfframeRole === 'first').map((it) => batchPhotoId(it)));
+  const targets = photos.filter((p) => wantIds.has(p.id));
+  const found = await Promise.all(targets.map(async (p) => [p.id, await findFirstHalfNeighbor(p, library)] as const));
+  const map = new Map<string, HalfframeFirstNeighbor>();
+  for (const [id, neighbor] of found) {
+    if (neighbor?.jpg) {
+      map.set(id, { id: neighbor.id, stem: neighbor.stem, version: neighbor.version, jpg: neighbor.jpg });
+    }
+  }
+  return map;
+}
+
+/** 库里有配对的第 1 张原片时，把「第 1 格」条目切换为切第 1 张中心条带、保留第 1 张原 EXIF 与文件名。 */
+export function applyHalfframeFirstNeighbors(
+  snapshots: readonly ExportSnapshot[],
+  items: BatchItem[],
+  neighbors: ReadonlyMap<string, HalfframeFirstNeighbor>,
+  options: ExportOptions,
+  build: string,
+  binding?: string,
+): void {
+  if (!neighbors.size) return;
+  const snapById = new Map(snapshots.map((s) => [s.id, s]));
+  const singleOpts = { size: options.size, quality: options.quality, hdr: false };
+  for (const item of items) {
+    if (item.halfframeRole !== 'first') continue;
+    const pid = batchPhotoId(item);
+    const neighbor = neighbors.get(pid);
+    const snap = snapById.get(pid);
+    if (!neighbor?.jpg || !snap) continue;
+    const halfPhoto = singleHalfRequestPhoto(snap.reqPhoto, 'first', neighbor);
+    item.halfframeSource = 'first-strip';
+    item.stripCopyright = false;
+    item.sourcePhotoId = neighbor.id;
+    item.sourceVersion = neighbor.version;
+    item.stem = halfPhoto.stem;
+    item.jpg = neighbor.jpg;
+    item.req = buildRequest(halfPhoto, [], singleOpts, build, binding);
+  }
 }
 
 export function applyAdoptedAndLogos(

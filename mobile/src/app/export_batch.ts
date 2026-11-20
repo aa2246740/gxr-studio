@@ -4,7 +4,7 @@
 import type { RunResult } from '../core/export_api';
 import type { FailKind } from '../core/export_protocol';
 import type { ExportRequest } from '../lib/export_request';
-import type { HalfframeRole } from '../lib/halfframe';
+import type { HalfframeRole, HalfframeSource } from '../lib/halfframe';
 
 /** 做好、还没交出去的文件最多占这么多字节。下一张会超过时先停在「做好了」那一栏，交出去、点「好」以后再接着做。 */
 export const STAGE_CAP_BYTES = 384 * 1024 * 1024;
@@ -66,6 +66,13 @@ export interface BatchItem {
   photoId?: string;
   /** 半格单格角色；未设时走原有整图导出路径。 */
   halfframeRole?: HalfframeRole;
+  /** 半格单格像素来源：第 1 张中心条带 / 双联左半 / 双联右半。 */
+  halfframeSource?: HalfframeSource;
+  /** 第 1 张不在库里时移除双联 EXIF Copyright（0x8298）。 */
+  stripCopyright?: boolean;
+  /** 单格直接取第 1 张原片时指向第 1 张的 id 与版本，避免与第 2 张混淆。 */
+  sourcePhotoId?: string;
+  sourceVersion?: number;
   stem: string;
   version: number;
   dng: File | null;
@@ -241,7 +248,14 @@ export class ExportBatch {
       if (item && now && now.version !== item.version) {
         item.version = now.version;
         item.dng = item.halfframeRole ? null : now.dng;
-        item.jpg = now.jpg;
+        if (!item.sourcePhotoId) item.jpg = now.jpg;
+      }
+      if (item?.sourcePhotoId) {
+        const srcNow = this.host.photo(item.sourcePhotoId);
+        if (srcNow && srcNow.version !== item.sourceVersion) {
+          item.sourceVersion = srcNow.version;
+          item.jpg = srcNow.jpg;
+        }
       }
       this.failures.delete(id);
       this.states.set(id, 'wait');
@@ -367,13 +381,16 @@ export class ExportBatch {
   private commit(item: BatchItem, result: RunResult): void {
     const pid = batchPhotoId(item);
     const now = this.host.photo(pid);
-    if (!now || now.version !== item.version) {
+    const srcNow = item.sourcePhotoId ? this.host.photo(item.sourcePhotoId) : null;
+    if (!now || now.version !== item.version || (item.sourcePhotoId && (!srcNow || srcNow.version !== item.sourceVersion))) {
       // 做的时候这张被去掉或重新选过：这份结果作废，算失败，重试时用新的 File。
       this.fail(item, 'stale', 'stale', '');
       return;
     }
     if (!result.ok) {
-      if (result.kind === 'read') this.host.markGone(pid, item.version);
+      if (result.kind === 'read') {
+        this.host.markGone(item.sourcePhotoId ?? pid, item.sourcePhotoId ? (item.sourceVersion ?? item.version) : item.version);
+      }
       this.fail(item, result.kind, result.code, result.message);
       return;
     }

@@ -6,7 +6,7 @@ import { copyrightFromJpeg, mergeCopyright, mergeMeta } from '../lib/exif';
 import { formatClock, formatDay, groupByGap } from '../lib/group';
 import { presetLabel, rectFromArray } from '../lib/crop';
 import { FRAME_NAMES } from '../lib/frame_spec';
-import { formatShootingRecipeTag, isFirstLikeBlob, neighborNames } from '../lib/halfframe';
+import { findFirstHalfNeighbor, formatShootingRecipeTag } from '../lib/halfframe';
 import { HDR_NO_RAW } from '../lib/hdr_text';
 import { loadExportHdr, saveExportHdr, watchExportHdr } from '../lib/prefs';
 import { adoptedSelectionOf, DEFAULT_CARD, namesOnly, photoWithAdopted, recipeUnitOf, shelf, shelves } from '../lib/recipes';
@@ -354,7 +354,6 @@ export function pasteBar(api: AppApi, onChange: () => void): HTMLElement | null 
 }
 
 const jpegCopyrightCache = new WeakMap<File, Promise<string | null>>();
-const firstLikeCache = new WeakMap<File, Promise<boolean>>();
 
 async function photoCopyright(photo: Photo): Promise<string | null> {
   const known = mergeCopyright(photo.jpgMeta?.copyright, photo.dngMeta?.copyright);
@@ -368,15 +367,6 @@ async function photoCopyright(photo: Photo): Promise<string | null> {
       .then((buf) => copyrightFromJpeg(new Uint8Array(buf)))
       .catch(() => null);
     jpegCopyrightCache.set(photo.jpg, pending);
-  }
-  return pending;
-}
-
-function cachedFirstLike(file: File): Promise<boolean> {
-  let pending = firstLikeCache.get(file);
-  if (!pending) {
-    pending = isFirstLikeBlob(file).catch(() => false);
-    firstLikeCache.set(file, pending);
   }
   return pending;
 }
@@ -459,20 +449,15 @@ export function openPhotoInfoSheet(host: HTMLElement, api: AppApi, photo: Photo)
     line.append(text);
     sheet.append(line);
 
-    const prevNames = new Set(neighborNames(photo.stem, -1).map((s) => s.toLowerCase()));
-    const prev = api.photos().find((p) => p.id !== photo.id && !p.diptych && p.jpg !== null && prevNames.has(p.stem.toLowerCase()));
+    const library = api.photos();
     void (async () => {
       if (secondKnown === null && photo.jpg) {
         const secondTag = await photoCopyright(photo);
         if (sheet.isConnected) secondEl.textContent = `第 2 格：${formatShootingRecipeTag(secondTag)}`;
       }
-      if (!prev || !prev.jpg) {
-        if (sheet.isConnected) line.dataset.firstChecked = 'absent';
-        return;
-      }
-      const isFirst = await cachedFirstLike(prev.jpg);
+      const prev = await findFirstHalfNeighbor(photo, library);
       if (!sheet.isConnected) return;
-      if (!isFirst) {
+      if (!prev) {
         line.dataset.firstChecked = 'absent';
         return;
       }

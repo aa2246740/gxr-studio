@@ -16,6 +16,8 @@ export interface ExportOptions {
 export interface QueuedJob<TPhoto extends { id: string; diptych?: boolean }> {
   photos: TPhoto[];
   options: ExportOptions;
+  /** 保留失败重试时精确限定要重做的条目 id（如 `<photoId>#half:2`），绝不重做同双联里已成功的文件。 */
+  onlyIds?: string[];
 }
 
 export interface CarriedFailure<TPhoto extends { id: string; diptych?: boolean }> {
@@ -32,10 +34,11 @@ export interface ActiveBatchView {
   savedCount(): number;
 }
 
-/** 拆出单格后的批次条目 id（`<photoId>#half:1`）还原为原照片 id；普通照片原样返回。 */
+const HALFFRAME_ENTRY_SUFFIX = /#half:[12]$/;
+
+/** 拆出单格后的批次条目 id（`<photoId>#half:1` / `#half:2`）还原为原照片 id；普通照片（即使含 `#`）原样返回。 */
 export function basePhotoId(entryId: string): string {
-  const sep = entryId.indexOf('#');
-  return sep >= 0 ? entryId.slice(0, sep) : entryId;
+  return entryId.replace(HALFFRAME_ENTRY_SUFFIX, '');
 }
 
 function optionsKey(o: ExportOptions): string {
@@ -57,7 +60,10 @@ export class ExportQueueState<TPhoto extends { id: string; diptych?: boolean }> 
   private carriedSaved = 0;
 
   queuedCount(): number {
-    return this.pendingQueue.reduce((sum, job) => sum + halfframeFileCount(job.photos, job.options.halfframe), 0);
+    return this.pendingQueue.reduce(
+      (sum, job) => sum + (job.onlyIds ? job.onlyIds.length : halfframeFileCount(job.photos, job.options.halfframe)),
+      0,
+    );
   }
 
   carryoverBytes(): number {
@@ -106,18 +112,22 @@ export class ExportQueueState<TPhoto extends { id: string; diptych?: boolean }> 
     return out;
   }
 
-  private clearCarriedFailuresFor(photos: readonly TPhoto[]): void {
+  private clearCarriedFailuresFor(photos: readonly TPhoto[], onlyIds?: readonly string[]): void {
+    if (onlyIds) {
+      for (const entryId of onlyIds) this.carriedFailures.delete(entryId);
+      return;
+    }
     const photoIds = new Set(photos.map((p) => p.id));
     for (const entryId of [...this.carriedFailures.keys()]) {
       if (photoIds.has(basePhotoId(entryId))) this.carriedFailures.delete(entryId);
     }
   }
 
-  beginBatch(photos: readonly TPhoto[], options: ExportOptions): void {
+  beginBatch(photos: readonly TPhoto[], options: ExportOptions, onlyIds?: readonly string[]): void {
     this.sharedIds.clear();
     this.currentOptions = { ...options };
     this.currentPhotos = new Map(photos.map((p) => [p.id, p]));
-    this.clearCarriedFailuresFor(photos);
+    this.clearCarriedFailuresFor(photos, onlyIds);
   }
 
   /** 把旧批次里「尚未共享」的成片与全部失败保留下来；已经共享过的分批绝不拷回 carryover。 */
@@ -196,7 +206,7 @@ export class ExportQueueState<TPhoto extends { id: string; diptych?: boolean }> 
     } else if (!this.carryover.length) {
       this.carriedSaved = 0;
     }
-    this.beginBatch(next.photos, next.options);
+    this.beginBatch(next.photos, next.options, next.onlyIds);
     return next;
   }
 
@@ -232,15 +242,15 @@ export class ExportQueueState<TPhoto extends { id: string; diptych?: boolean }> 
     return [...merged.values()];
   }
 
-  /** 取出全部保留的失败项，按导出选项分组成可立即启动或入队的重试任务。 */
+  /** 取出全部保留的失败项，按导出选项分组成可立即启动或入队的重试任务（精确记录失败条目 id，不重做已成功的文件）。 */
   takeCarriedRetryJobs(resolvePhoto?: (photo: TPhoto) => TPhoto): QueuedJob<TPhoto>[] {
     if (!this.carriedFailures.size) return [];
-    const grouped = new Map<string, { job: QueuedJob<TPhoto>; seen: Set<string> }>();
-    for (const item of this.carriedFailures.values()) {
+    const grouped = new Map<string, { job: QueuedJob<TPhoto>; seen: Set<string>; onlyIds: Set<string> }>();
+    for (const [entryId, item] of this.carriedFailures) {
       const key = optionsKey(item.options);
       let bucket = grouped.get(key);
       if (!bucket) {
-        bucket = { job: { photos: [], options: { ...item.options } }, seen: new Set() };
+        bucket = { job: { photos: [], options: { ...item.options } }, seen: new Set(), onlyIds: new Set() };
         grouped.set(key, bucket);
       }
       const photo = resolvePhoto ? resolvePhoto(item.photo) : item.photo;
@@ -248,9 +258,10 @@ export class ExportQueueState<TPhoto extends { id: string; diptych?: boolean }> 
         bucket.seen.add(photo.id);
         bucket.job.photos.push(photo);
       }
+      bucket.onlyIds.add(entryId);
     }
     this.carriedFailures.clear();
-    return [...grouped.values()].map((b) => b.job);
+    return [...grouped.values()].map((b) => ({ ...b.job, onlyIds: [...b.onlyIds] }));
   }
 
   /** 点「停止」：清空排队任务（不留幽灵任务），但保留已做好成片与已有失败。 */

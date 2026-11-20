@@ -22,7 +22,9 @@ const {
   RIGHT_X0,
   SEAM_X0,
   SEAM_X1,
+  STRIP_X0_JPG,
   extractMpfSecondRange,
+  findFirstHalfNeighbor,
   formatShootingRecipeTag,
   halfframeFileCount,
   isFirstLikeRgba,
@@ -32,11 +34,15 @@ const {
   parseRecipeTag,
   singleHalfSize,
   sliceDiptychHalfRgb,
+  sliceFirstHalfStripRgb,
+  stripExifCopyrightFromJpeg,
 } = await import('../../mobile/src/lib/halfframe.ts');
 const { loadExportHalfframe, saveExportHalfframe } = await import('../../mobile/src/lib/prefs.ts');
 const { basePhotoId, ExportQueueState } = await import('../../mobile/src/app/export_queue.ts');
 const { readyPositionsSummary } = await import('../../mobile/src/app/export_ready.ts');
-const { buildBatchItems, singleHalfRequestPhoto } = await import('../../mobile/src/app/export_request_prep.ts');
+const { applyHalfframeFirstNeighbors, buildBatchItems, singleHalfRequestPhoto } = await import(
+  '../../mobile/src/app/export_request_prep.ts'
+);
 
 function withMemoryStorage(run) {
   const map = new Map();
@@ -56,6 +62,65 @@ function withMemoryStorage(run) {
     if (prev === undefined) delete globalThis.localStorage;
     else globalThis.localStorage = prev;
   }
+}
+
+function buildSyntheticExifJpeg(le, entries) {
+  const count = entries.length;
+  const ifdLen = 2 + count * 12 + 4;
+  const tiff = new Uint8Array(8 + ifdLen + 128);
+  const dv = new DataView(tiff.buffer);
+  tiff[0] = le ? 0x49 : 0x4d;
+  tiff[1] = le ? 0x49 : 0x4d;
+  dv.setUint16(2, 42, le);
+  dv.setUint32(4, 8, le);
+  dv.setUint16(8, count, le);
+  let dataCursor = 8 + ifdLen;
+  entries.forEach((entry, idx) => {
+    const pos = 10 + idx * 12;
+    dv.setUint16(pos, entry.tag, le);
+    dv.setUint16(pos + 2, entry.type, le);
+    dv.setUint32(pos + 4, entry.count, le);
+    if (entry.bytes) {
+      if (entry.bytes.length <= 4) {
+        tiff.set(entry.bytes, pos + 8);
+      } else {
+        dv.setUint32(pos + 8, dataCursor, le);
+        tiff.set(entry.bytes, dataCursor);
+        dataCursor += entry.bytes.length;
+      }
+    } else {
+      dv.setUint32(pos + 8, entry.val ?? 0, le);
+    }
+  });
+  const payload = new Uint8Array(6 + dataCursor);
+  payload.set([0x45, 0x78, 0x69, 0x66, 0x00, 0x00], 0);
+  payload.set(tiff.subarray(0, dataCursor), 6);
+  const segLen = payload.length + 2;
+  const jpg = new Uint8Array(2 + 4 + payload.length + 2);
+  jpg[0] = 0xff;
+  jpg[1] = 0xd8;
+  jpg[2] = 0xff;
+  jpg[3] = 0xe1;
+  jpg[4] = (segLen >> 8) & 0xff;
+  jpg[5] = segLen & 0xff;
+  jpg.set(payload, 6);
+  jpg[jpg.length - 2] = 0xff;
+  jpg[jpg.length - 1] = 0xd9;
+  return jpg;
+}
+
+function readIfd0Tags(jpg) {
+  const payloadStart = 6;
+  const tiffBase = payloadStart + 6;
+  const le = jpg[tiffBase] === 0x49;
+  const dv = new DataView(jpg.buffer, jpg.byteOffset + tiffBase);
+  const ifdOff = dv.getUint32(4, le);
+  const count = dv.getUint16(ifdOff, le);
+  const tags = [];
+  for (let i = 0; i < count; i += 1) {
+    tags.push(dv.getUint16(ifdOff + 2 + i * 12, le));
+  }
+  return tags;
 }
 
 test('export halfframe preference defaults to diptych and remembers singles/both', () => {
@@ -95,13 +160,14 @@ test('singleHalfSize, pairExportSizeText, and halfframeFileCount match desktop g
   assert.equal(halfframeFileCount(mixed, 'both'), 7);
 });
 
-test('sliceDiptychHalfRgb splits landscape and portrait RGB excluding 112px seam', () => {
+test('sliceDiptychHalfRgb and sliceFirstHalfStripRgb match desktop geometry', () => {
   assert.equal(HALF_WIDTH, 2088);
   assert.equal(SEAM_X0, 2088);
   assert.equal(SEAM_X1, 2199);
   assert.equal(RIGHT_X0, 2200);
+  assert.equal(STRIP_X0_JPG, 1100);
 
-  // Landscape 4288x2848: paint left half R=10, seam R=255 (sentinel), right half R=200.
+  // Landscape 4288x2848 diptych: left half R=10, seam R=255, right half R=200.
   const land = new Uint8Array(FULL_WIDTH * FULL_HEIGHT * 3);
   for (let y = 0; y < FULL_HEIGHT; y += 1) {
     const row = y * FULL_WIDTH * 3;
@@ -120,12 +186,30 @@ test('sliceDiptychHalfRgb splits landscape and portrait RGB excluding 112px seam
     assert.equal(h2.data[i], 200);
   }
 
-  // Portrait 2848x4288: top half G=30, seam G=255, bottom half G=180.
+  // Landscape 4288x2848 photo 1 center strip (1100..3187).
+  const firstLand = new Uint8Array(FULL_WIDTH * FULL_HEIGHT * 3);
+  for (let y = 0; y < FULL_HEIGHT; y += 1) {
+    const row = y * FULL_WIDTH * 3;
+    for (let x = 0; x < STRIP_X0_JPG; x += 1) firstLand[row + x * 3] = 5;
+    for (let x = STRIP_X0_JPG; x < STRIP_X0_JPG + HALF_WIDTH; x += 1) firstLand[row + x * 3] = 140;
+    for (let x = STRIP_X0_JPG + HALF_WIDTH; x < FULL_WIDTH; x += 1) firstLand[row + x * 3] = 250;
+  }
+  const sLand = sliceFirstHalfStripRgb(firstLand, FULL_WIDTH, FULL_HEIGHT);
+  assert.equal(sLand.width, HALF_WIDTH);
+  assert.equal(sLand.height, FULL_HEIGHT);
+  for (let i = 0; i < sLand.data.length; i += 3) assert.equal(sLand.data[i], 140);
+
+  // Portrait 2848x4288 diptych & photo 1 center strip.
   const port = new Uint8Array(FULL_HEIGHT * FULL_WIDTH * 3);
+  const firstPort = new Uint8Array(FULL_HEIGHT * FULL_WIDTH * 3);
   for (let y = 0; y < FULL_WIDTH; y += 1) {
     const val = y < HALF_WIDTH ? 30 : y >= RIGHT_X0 ? 180 : 255;
+    const fVal = y < STRIP_X0_JPG ? 7 : y < STRIP_X0_JPG + HALF_WIDTH ? 160 : 245;
     const row = y * FULL_HEIGHT * 3;
-    for (let x = 0; x < FULL_HEIGHT; x += 1) port[row + x * 3 + 1] = val;
+    for (let x = 0; x < FULL_HEIGHT; x += 1) {
+      port[row + x * 3 + 1] = val;
+      firstPort[row + x * 3 + 1] = fVal;
+    }
   }
   const p1 = sliceDiptychHalfRgb(port, FULL_HEIGHT, FULL_WIDTH, 'first');
   const p2 = sliceDiptychHalfRgb(port, FULL_HEIGHT, FULL_WIDTH, 'second');
@@ -137,16 +221,53 @@ test('sliceDiptychHalfRgb splits landscape and portrait RGB excluding 112px seam
     assert.equal(p1.data[i], 30);
     assert.equal(p2.data[i], 180);
   }
+  const sPort = sliceFirstHalfStripRgb(firstPort, FULL_HEIGHT, FULL_WIDTH);
+  assert.equal(sPort.width, FULL_HEIGHT);
+  assert.equal(sPort.height, HALF_WIDTH);
+  for (let i = 1; i < sPort.data.length; i += 3) assert.equal(sPort.data[i], 160);
 
   assert.throws(() => sliceDiptychHalfRgb(new Uint8Array(12), 2, 2, 'first'));
+  assert.throws(() => sliceFirstHalfStripRgb(new Uint8Array(12), 2, 2));
 });
 
-test('neighborNames, isFirstLikeRgba, and extractMpfSecondRange match desktop rules', () => {
+test('stripExifCopyrightFromJpeg drops 0x8298 in LE/BE without touching other tags or input', () => {
+  const enc = new TextEncoder();
+  const make = enc.encode('RICOH\0');
+  const copy = enc.encode('GXR1 6adf847602 50 03 -99999999-\0');
+  for (const le of [true, false]) {
+    const jpg = buildSyntheticExifJpeg(le, [
+      { tag: 0x010f, type: 2, count: make.length, bytes: make },
+      { tag: 0x0112, type: 3, count: 1, val: 1 },
+      { tag: 0x8298, type: 2, count: copy.length, bytes: copy },
+      { tag: 0x8769, type: 4, count: 1, val: 120 },
+    ]);
+    const before = jpg.slice();
+    const stripped = stripExifCopyrightFromJpeg(jpg);
+    assert.deepEqual(jpg, before, 'input bytes must not be mutated');
+    assert.deepEqual(readIfd0Tags(stripped), [0x010f, 0x0112, 0x8769]);
+  }
+  const noCopy = buildSyntheticExifJpeg(true, [{ tag: 0x010f, type: 2, count: make.length, bytes: make }]);
+  assert.deepEqual(readIfd0Tags(stripExifCopyrightFromJpeg(noCopy)), [0x010f]);
+});
+
+test('neighborNames, isFirstLikeRgba, extractMpfSecondRange, and findFirstHalfNeighbor orientation check', async () => {
   assert.deepEqual(neighborNames('R0000100', -1), ['R0000099', 'R99']);
   assert.deepEqual(neighborNames('R0000099', +1), ['R0000100', 'R100']);
   assert.deepEqual(neighborNames('R0000100_1a2b3c', -1), ['R0000099', 'R99']);
   assert.deepEqual(neighborNames('R0000000', -1), []);
   assert.deepEqual(neighborNames('NO_DIGITS', -1), []);
+
+  // Orientation matching rule (Item 6): candOri === dipOri && dipOri in {1, 3, 6, 8}
+  const fakeJpg = new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])]);
+  const dip1 = { id: 'd2', stem: 'R0000101', diptych: true, jpg: fakeJpg, frame: { orientation: 1 } };
+  const candMatch = { id: 'p1', stem: 'R0000100', diptych: false, jpg: fakeJpg, frame: { orientation: 1 } };
+  const candMismatch = { id: 'p1m', stem: 'R0000100', diptych: false, jpg: fakeJpg, frame: { orientation: 6 } };
+  const dipInvalidOri = { id: 'd2b', stem: 'R0000101', diptych: true, jpg: fakeJpg, frame: { orientation: 2 } };
+  const candInvalidOri = { id: 'p1b', stem: 'R0000100', diptych: false, jpg: fakeJpg, frame: { orientation: 2 } };
+
+  assert.equal(await findFirstHalfNeighbor(dip1, [candMatch, dip1], async () => true), candMatch);
+  assert.equal(await findFirstHalfNeighbor(dip1, [candMismatch, dip1], async () => true), null);
+  assert.equal(await findFirstHalfNeighbor(dipInvalidOri, [candInvalidOri, dipInvalidOri], async () => true), null);
 
   // Synthetic 640x424 MPF preview: dark left (0..163) & right (476..639), bright center (164..475).
   const w = 640;
@@ -164,23 +285,21 @@ test('neighborNames, isFirstLikeRgba, and extractMpfSecondRange match desktop ru
   }
   assert.equal(isFirstLikeRgba(firstRgba, w, h), true);
 
-  // Ordinary full-frame bright preview should NOT match.
   const fullRgba = new Uint8ClampedArray(w * h * 4).fill(140);
   assert.equal(isFirstLikeRgba(fullRgba, w, h), false);
 
   // Minimal valid little-endian APP2 MPF segment pointing to 2nd image (offset 0x1000, size 0x400).
   const segPayload = new Uint8Array(4 + 8 + 2 + 12 + 4 + 32);
-  segPayload.set([0x4d, 0x50, 0x46, 0x00], 0); // "MPF\0"
+  segPayload.set([0x4d, 0x50, 0x46, 0x00], 0);
   const dv = new DataView(segPayload.buffer, 4);
-  dv.setUint16(0, 0x4949, false); // "II"
+  dv.setUint16(0, 0x4949, false);
   dv.setUint16(2, 42, true);
-  dv.setUint32(4, 8, true); // IFD0 at offset 8
-  dv.setUint16(8, 1, true); // 1 entry
-  dv.setUint16(10, 0xb002, true); // MPEntry
-  dv.setUint16(12, 7, true); // UNDEFINED
-  dv.setUint32(14, 32, true); // 2 entries * 16B
-  dv.setUint32(18, 26, true); // value offset from mpfBase
-  // Entry 1 (index 1, at offset 26 + 16 = 42): size=0x400, dataOff=0x1000
+  dv.setUint32(4, 8, true);
+  dv.setUint16(8, 1, true);
+  dv.setUint16(10, 0xb002, true);
+  dv.setUint16(12, 7, true);
+  dv.setUint32(14, 32, true);
+  dv.setUint32(18, 26, true);
   dv.setUint32(42 + 4, 0x400, true);
   dv.setUint32(42 + 8, 0x1000, true);
   const jpegHead = new Uint8Array(2 + 4 + segPayload.length);
@@ -211,42 +330,62 @@ test('parseRecipeTag and formatShootingRecipeTag decode g258 GXR1 tags without D
   assert.equal(formatShootingRecipeTag(null), '未标记');
 });
 
-test('ExportQueueState, readyPositionsSummary, and buildBatchItems handle multi-file diptychs cleanly', () => {
+test('basePhotoId preserves # in ordinary stems and strips only #half:[12]', () => {
   assert.equal(basePhotoId('p1#half:1'), 'p1');
   assert.equal(basePhotoId('p1#half:2'), 'p1');
   assert.equal(basePhotoId('p1'), 'p1');
+  assert.equal(basePhotoId('trip#1'), 'trip#1');
+  assert.equal(basePhotoId('photo#2026#final'), 'photo#2026#final');
+  assert.equal(basePhotoId('photo#2026#half:2'), 'photo#2026');
+  assert.equal(basePhotoId('p1#half:3'), 'p1#half:3');
+});
 
+test('ExportQueueState carried retry remakes ONLY failed entry IDs, not already-succeeded halves', () => {
   assert.equal(readyPositionsSummary([1, 1]), '第 1 张（2 个文件）');
   assert.equal(readyPositionsSummary([1, 1, 2]), '第 1 张、第 2 张（共 3 个文件）');
   assert.equal(readyPositionsSummary([1, 3]), '第 1 张、第 3 张');
 
   const q = new ExportQueueState();
-  const fakeBatch = {
-    phase: 'running',
-    items: [{ id: 'dip1#half:1' }, { id: 'dip1#half:2' }],
-    staged: [{ id: 'dip1#half:1' }],
-    failures: new Map([
-      ['dip1#half:1', { id: 'dip1#half:1', stem: 'R001_1', kind: 'trap', code: 'trap', message: '' }],
-      ['dip1#half:2', { id: 'dip1#half:2', stem: 'R001_2', kind: 'trap', code: 'trap', message: '' }],
-    ]),
-    states: new Map([
-      ['dip1#half:1', 'ok'],
-      ['dip1#half:2', 'run'],
-    ]),
-  };
-  assert.equal(q.isQuickBlocked('dip1', fakeBatch), true);
-  assert.equal(q.isQuickBlocked('other', fakeBatch), false);
-
   const dipPhoto = { id: 'dip1', diptych: true };
   const normPhoto = { id: 'p2', diptych: false };
-  q.enqueueOrPrepareStart([dipPhoto, normPhoto], { size: 'original', quality: 'high', hdr: false, halfframe: 'both' }, fakeBatch, () => []);
-  assert.equal(q.queuedCount(), 4); // 3 for diptych (both) + 1 for normal
+  const optsSingles = { size: 'original', quality: 'high', hdr: false, halfframe: 'singles' };
+  q.beginBatch([dipPhoto], optsSingles);
+  const partialFailedBatch = {
+    phase: 'ready',
+    staged: [{ id: 'dip1#half:1', file: { size: 1000 } }],
+    failures: new Map([['dip1#half:2', { id: 'dip1#half:2', stem: 'R0000101', kind: 'trap', code: 'trap', message: '' }]]),
+    states: new Map([
+      ['dip1#half:1', 'ok'],
+      ['dip1#half:2', 'fail'],
+    ]),
+    savedCount: () => 0,
+  };
+  assert.equal(q.isQuickBlocked('dip1', partialFailedBatch), true);
+  assert.equal(q.isQuickBlocked('other', partialFailedBatch), false);
 
-  // Single-half request stripping and batch expansion
+  // Preserve batch (as when another export or dismiss/re-launch occurs), then retry carried failures.
+  q.preserveBatch(partialFailedBatch, [{ id: 'dip1#half:1', stem: 'R0000100', file: { size: 1000 }, position: 1, hdrRequested: false }]);
+  const jobs = q.takeCarriedRetryJobs((p) => p);
+  assert.equal(jobs.length, 1);
+  assert.deepEqual(jobs[0].onlyIds, ['dip1#half:2']);
+  assert.deepEqual(jobs[0].photos, [dipPhoto]);
+
+  // Queued count uses onlyIds length (1 file), not full diptych count (2 files).
+  q.pendingQueue.push(jobs[0]);
+  assert.equal(q.queuedCount(), 1);
+  q.pendingQueue.length = 0;
+
+  // Normal multi-file queue counting still works.
+  const runningBatch = { ...partialFailedBatch, phase: 'running' };
+  q.enqueueOrPrepareStart([dipPhoto, normPhoto], { size: 'original', quality: 'high', hdr: false, halfframe: 'both' }, runningBatch, () => []);
+  assert.equal(q.queuedCount(), 4);
+});
+
+test('singleHalfRequestPhoto, buildBatchItems, and applyHalfframeFirstNeighbors match desktop naming and source rules', () => {
   const reqPhoto = {
-    stem: 'R0000100',
-    dngName: 'R0000100.DNG',
-    jpgName: 'R0000100.JPG',
+    stem: 'R0000101',
+    dngName: 'R0000101.DNG',
+    jpgName: 'R0000101.JPG',
     lens: 'GR LENS A12 50mm F2.5',
     iso: 200,
     choice: { id: 'builtin:3', unit: '50' },
@@ -264,7 +403,7 @@ test('ExportQueueState, readyPositionsSummary, and buildBatchItems handle multi-
       tint: 0,
       saturation: 0,
       vibrance: 0,
-      vignette: 0,
+      vignette: 25,
     },
     curve: { master: [[0, 0], [128, 140], [255, 255]] },
     frame: { width: 4288, height: 2848 },
@@ -276,9 +415,9 @@ test('ExportQueueState, readyPositionsSummary, and buildBatchItems handle multi-
     sourceModified: 1700000000000,
   };
 
-  // Log-space LUT stripped on single half, display-space LUT kept.
+  // Unpaired naming: first -> <photo2>_1, second -> <photo2> (NOT _2).
   const hLog = singleHalfRequestPhoto(reqPhoto, 'first');
-  assert.equal(hLog.stem, 'R0000100_1');
+  assert.equal(hLog.stem, 'R0000101_1');
   assert.equal(hLog.dngName, null);
   assert.equal(hLog.choice, null);
   assert.equal(hLog.lut, null);
@@ -287,20 +426,29 @@ test('ExportQueueState, readyPositionsSummary, and buildBatchItems handle multi-
   assert.equal(hLog.border, null);
   assert.equal(hLog.stamp, null);
   assert.equal(hLog.knobs.exposure_ev, 0.5);
+  assert.equal(hLog.knobs.vignette, 25);
   assert.ok(hLog.curve);
 
   const hDisp = singleHalfRequestPhoto({ ...reqPhoto, lut: 'cube-srgb', lutInputSpace: 'srgb' }, 'second');
-  assert.equal(hDisp.stem, 'R0000100_2');
+  assert.equal(hDisp.stem, 'R0000101');
   assert.equal(hDisp.lut, 'cube-srgb');
   assert.equal(hDisp.lutInputSpace, 'srgb');
 
+  // Paired naming: first -> <photo1>.
+  const firstFile = { name: 'R0000100.JPG', lastModified: 1699999999000 };
+  const hPaired = singleHalfRequestPhoto(reqPhoto, 'first', { stem: 'R0000100', jpg: firstFile });
+  assert.equal(hPaired.stem, 'R0000100');
+  assert.equal(hPaired.jpgName, 'R0000100.JPG');
+  assert.equal(hPaired.sourceModified, 1699999999000);
+
+  const secondFile = { name: 'R0000101.JPG', lastModified: 1700000000000 };
   const snap = {
     id: 'dip1',
-    stem: 'R0000100',
-    version: 1,
+    stem: 'R0000101',
+    version: 3,
     diptych: true,
     dng: null,
-    jpg: null,
+    jpg: secondFile,
     reqPhoto: { ...reqPhoto, dngName: null, choice: null, lut: null, lutInputSpace: null },
     cards: [],
     explicitChoice: false,
@@ -309,14 +457,15 @@ test('ExportQueueState, readyPositionsSummary, and buildBatchItems handle multi-
   const dipOnly = buildBatchItems([snap], { size: 'original', quality: 'high', hdr: false, halfframe: 'diptych' }, 'test');
   assert.equal(dipOnly.length, 1);
   assert.equal(dipOnly[0].halfframeRole, undefined);
+  assert.equal(dipOnly[0].halfframeSource, undefined);
 
   const singles = buildBatchItems([snap], { size: 'original', quality: 'high', hdr: true, halfframe: 'singles' }, 'test');
   assert.equal(singles.length, 2);
   assert.deepEqual(
-    singles.map((it) => [it.id, it.photoId, it.halfframeRole, it.stem, it.req.hdr]),
+    singles.map((it) => [it.id, it.photoId, it.halfframeRole, it.halfframeSource, it.stripCopyright, it.stem, it.req.hdr]),
     [
-      ['dip1#half:1', 'dip1', 'first', 'R0000100_1', false],
-      ['dip1#half:2', 'dip1', 'second', 'R0000100_2', false],
+      ['dip1#half:1', 'dip1', 'first', 'diptych-first', true, 'R0000101_1', false],
+      ['dip1#half:2', 'dip1', 'second', 'diptych-second', false, 'R0000101', false],
     ],
   );
   assert.equal(singles[0].req.side.crop, undefined);
@@ -324,6 +473,32 @@ test('ExportQueueState, readyPositionsSummary, and buildBatchItems handle multi-
   assert.equal(singles[0].req.side.stamp, undefined);
   assert.ok(singles[0].req.side.adjust);
   assert.ok(singles[0].req.side.curve);
+
+  // Applying a matched first-half neighbor switches first item to first-strip with photo 1's file, stem, and full EXIF.
+  const neighbors = new Map([['dip1', { id: 'p1', stem: 'R0000100', version: 2, jpg: firstFile }]]);
+  applyHalfframeFirstNeighbors([snap], singles, neighbors, { size: 'original', quality: 'high', hdr: false, halfframe: 'singles' }, 'test');
+  assert.equal(singles[0].halfframeSource, 'first-strip');
+  assert.equal(singles[0].stripCopyright, false);
+  assert.equal(singles[0].sourcePhotoId, 'p1');
+  assert.equal(singles[0].sourceVersion, 2);
+  assert.equal(singles[0].stem, 'R0000100');
+  assert.equal(singles[0].jpg, firstFile);
+  assert.equal(singles[1].halfframeSource, 'diptych-second');
+  assert.equal(singles[1].stem, 'R0000101');
+  assert.equal(singles[1].jpg, secondFile);
+
+  // onlyIds filter (per-file carried retry) emits ONLY the failed entry ID.
+  const retrySecondOnly = buildBatchItems(
+    [snap],
+    { size: 'original', quality: 'high', hdr: false, halfframe: 'both' },
+    'test',
+    undefined,
+    ['dip1#half:2'],
+  );
+  assert.deepEqual(
+    retrySecondOnly.map((it) => it.id),
+    ['dip1#half:2'],
+  );
 
   const both = buildBatchItems([snap], { size: 'original', quality: 'high', hdr: false, halfframe: 'both' }, 'test');
   assert.equal(both.length, 3);

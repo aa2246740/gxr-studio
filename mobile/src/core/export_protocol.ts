@@ -1,7 +1,7 @@
 // 主线程和导出 Worker 之间的消息。导出 Worker 只有一个、一份 WASM、一次做一张（不是 M1/M2 的那组 Worker）。
 
 import type { ExportRequest } from '../lib/export_request';
-import type { HalfframeRole } from '../lib/halfframe';
+import type { HalfframeSource } from '../lib/halfframe';
 
 /** 一批开始时交一次：相机配方文件、校准包（`calib_index` + `calib_blob`）以及快照好的 LUT 字节与空间配置。 */
 export interface ExportLutEntry {
@@ -27,8 +27,10 @@ export interface ExportJob {
   dng: File | null;
   jpg: File | null;
   req: ExportRequest;
-  /** 半格双联导出单格时，指定切取第 1 格或第 2 格（相机 JPG，排除 112px 黑缝并加 `_half` 后缀）。 */
-  halfframeRole?: HalfframeRole;
+  /** 半格单格来源：第 1 张中心条带 / 双联左半 / 双联右半（排除 112px 黑缝并加 `_half` 后缀）。 */
+  halfframeSource?: HalfframeSource;
+  /** 第 1 张不在库里时移除双联来源的 EXIF Copyright（0x8298），绝不把第 2 张配方标给第 1 格。 */
+  stripCopyright?: boolean;
   /** 只在开发服务器的测试里：在这一张的 prepare 之后模拟一次 WASM 陷阱。 */
   devTrap?: boolean;
   /** 只在开发服务器的测试里：在这一张的 export_ink 阶段模拟一次 WASM 陷阱。 */
