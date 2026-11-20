@@ -315,12 +315,81 @@ def _labels_from_renderer(r: Renderer, *, neutral: bool) -> dict[str, str]:
     }
 
 
-def _labels_from_renderers(r1: Renderer, r2: Renderer, *, neutral: bool) -> dict[str, str]:
+_PREDICTION_DESC_PREFIX = "GXR Studio computer prediction (not camera-measured): "
+
+
+def _renderer_recipe_key(r: Renderer) -> tuple[str, str, str, str]:
+    b = r.recipe_binding or {}
+    entry = b.get("entry_sha256") or r.entry_sha256
+    record = b.get("record_sha256") or ""
+    binding = b.get("binding_sha256") or ""
+    sel = b.get("selection_id") or ""
+    if not entry and r.description:
+        return ("", "", "", r.description)
+    return (entry, record, binding, sel)
+
+
+def _same_recipe_renderers(r1: Renderer, r2: Renderer) -> bool:
+    return _renderer_recipe_key(r1) == _renderer_recipe_key(r2)
+
+
+def _mixed_pair_description(
+    r1: Renderer,
+    r2: Renderer,
+    *,
+    first_half: str,
+    orientation: int,
+    fallback_label: str,
+) -> str:
+    ori = validate_orientation(orientation)
+    if first_half not in ("left", "right"):
+        raise ValueError(f"invalid first_half: {first_half}")
+    sl, sr = (r1, r2) if first_half == "left" else (r2, r1)
+    if ori == 1:
+        first_r, second_r, tag1, tag2 = sl, sr, "left", "right"
+    elif ori == 3:
+        first_r, second_r, tag1, tag2 = sr, sl, "left", "right"
+    elif ori == 6:
+        first_r, second_r, tag1, tag2 = sl, sr, "top", "bottom"
+    else:
+        first_r, second_r, tag1, tag2 = sr, sl, "top", "bottom"
+    n1 = first_r.description or first_r.label or fallback_label
+    n2 = second_r.description or second_r.label or fallback_label
+    if n1.startswith(_PREDICTION_DESC_PREFIX) and n2.startswith(_PREDICTION_DESC_PREFIX):
+        b1 = n1.removeprefix(_PREDICTION_DESC_PREFIX)
+        b2 = n2.removeprefix(_PREDICTION_DESC_PREFIX)
+        return f"{_PREDICTION_DESC_PREFIX}{tag1}: {b1} | {tag2}: {b2}"
+    return f"{tag1}: {n1} | {tag2}: {n2}"
+
+
+def _labels_from_renderers(
+    r1: Renderer,
+    r2: Renderer,
+    *,
+    neutral: bool,
+    first_half: str = "left",
+    orientation: int = 1,
+) -> dict[str, str]:
     if neutral:
         return _labels_from_renderer(NEUTRAL, neutral=True)
     calibrated = bool(r1.calibrated and r2.calibrated)
     ident = "recipe-prediction" if calibrated else "recipe-prediction-uncalibrated"
     label = r2.label if calibrated else (r1.label if not r1.calibrated else r2.label)
+    if not _same_recipe_renderers(r1, r2):
+        note = _mixed_pair_description(r1, r2, first_half=first_half, orientation=orientation, fallback_label=label)
+        tag = r1.filename_tag if r1.filename_tag == r2.filename_tag else ""
+        return {
+            "kind": "prediction",
+            "label": "prediction",
+            "text": label,
+            "id": ident,
+            "tag": tag,
+            "description": note,
+            "detail": "",
+            "key": "",
+            "cache": "miss",
+            "calibrated": "1" if calibrated else "0",
+        }
     note = r2.description or label
     return {
         "kind": "prediction",
@@ -361,7 +430,7 @@ def render_pair_strips(
     strip2, geo2 = _render_one_dng_strip(lib.abspath(s2["files"]["dng"]["relpath"]), r2, full=full)
     if strip1.shape != strip2.shape or geo1.seam_w != geo2.seam_w:
         raise RawDecodeError("半格一对的两张 RAW 尺寸不一致")
-    labels = _labels_from_renderers(r1, r2, neutral=neutral)
+    labels = _labels_from_renderers(r1, r2, neutral=neutral, first_half=first_half, orientation=ori)
     first_labels = _labels_from_renderer(r1, neutral=neutral)
     second_labels = _labels_from_renderer(r2, neutral=neutral)
     return strip1, strip2, geo1.seam_w, first_half, ori, labels, first_labels, second_labels

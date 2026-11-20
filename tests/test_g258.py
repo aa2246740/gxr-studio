@@ -30,6 +30,7 @@ from gxr_studio.cards.importer import ImportOptions, run_import
 from gxr_studio.engine import menu as py_menu
 from gxr_studio.finish.spec import Geometry
 from gxr_studio.library.store import Library
+from gxr_studio.raw import Renderer
 from gxr_studio.render.params import EditState, RecipeSel, parse_adjust, parse_curve, parse_recipe
 from gxr_studio.render.recipes import CameraData
 from gxr_studio.render.service import RenderService
@@ -56,7 +57,6 @@ from test_halfframe_p1b_gpu_field import (
     _seam_slice as _gpu_seam_slice,
 )
 from test_halfframe_p1c_field import _seam_slice as _hdr_seam_slice
-from test_mobile_r5_dat import _same_read
 from test_mobile_ui_browser import _drive
 
 __all__ = ["client", "reader"]
@@ -124,6 +124,12 @@ def _leica_f1_recipe(home_dir: Path) -> dict[str, Any]:
     mount = next(row for row in cam.listing() if row["id"] == "l08firm")
     rec = next(r for r in mount["recipes"] if r.get("kind") == "record" and r["name"] == "Leica F1")
     return {"kind": "record", "unit": "l08firm", "slot": rec["slot"], "id": rec["id"], "levels": {}}
+
+
+def _exif_desc(raw: bytes) -> str:
+    with Image.open(io.BytesIO(raw)) as im:
+        val = im.getexif().get(270, "")
+    return val.decode("utf-8", errors="replace") if isinstance(val, bytes) else str(val)
 
 
 # --------------------------------------------------------------------------- 1. g257 / g258 DAT 读卡、绑定与三边对拍
@@ -305,7 +311,6 @@ def test_mobile_browser_reads_g258_card(tmp_path: Path) -> None:
         same_file_redacted(base64.b64decode(phone["extra"]["entry"]), extra_resolved.entry, "g258 K-KINO resolve entry")
         same_redacted(phone["extra"]["levels"], extra_resolved.levels, "g258 K-KINO resolve levels")
         same_redacted(phone["extra"]["sha"], extra_resolved.entry_sha256, "g258 K-KINO resolve sha")
-    assert _same_read is not None
 
 
 # --------------------------------------------------------------------------- 2. hf258 现场配对、未成对第 3 张与图库折叠/标签
@@ -366,9 +371,20 @@ def test_hf258_pairing_unpaired_coldstart_and_gallery(
         assert labels_by_id[sid2] == "拍摄时：第 1 张 Leica F1 · 第 2 张 HC BW"
         assert labels_by_id[sid5] == "拍摄时：第 1 张 GRPos · 第 2 张 GRPos"
 
-        # 未改动异配方对的 /edit 必须保持 recipe=None，不会把第 2 张的 HC BW 套给整对
+        # 未改动异配方对的 /edit 必须保持 recipe=None，且 render 不得把第 2 张的 unit/slot/hashes 当成整对值（F2）
         ed2 = cli.get(f"/api/photos/{sid2}/edit").json()
         assert ed2["recipe"] is None and ed2["recipe_from_camera"] is False
+        r2 = ed2["render"]
+        assert r2["available"] is True and r2["prediction"] is True and r2["calibrated"] is True
+        for key in ("unit", "slot", "defaulted", "effective_levels", "entry_sha256", "record_sha256", "binding_sha256", "quality", "model_iso"):
+            assert r2[key] is None, (key, r2[key])
+        assert len(r2["halves"]) == 2
+        assert r2["halves"][0]["unit"] == "l08firm" and r2["halves"][1]["unit"] == "l08firm"
+        assert r2["halves"][1]["slot"] == 3 and r2["halves"][0]["entry_sha256"] != r2["halves"][1]["entry_sha256"]
+
+        # 同配方对 (#4/#5) 仍保持原有单配方 render 结构不变
+        r5 = cli.get(f"/api/photos/{sid5}/edit").json()["render"]
+        assert r5["unit"] == "jlaunch" and r5["slot"] == 1 and r5["entry_sha256"] and "halves" not in r5
 
 
 # --------------------------------------------------------------------------- 3. 异配方实拍：服务端渲染、导出(+HDR)与用户一起调
@@ -462,11 +478,18 @@ def test_hf258_different_recipe_pair_server_export_hdr_and_user_pick(
             assert [x["role"] for x in sdr_items] == expected_roles
             assert [x["role"] for x in hdr_items] == expected_roles
 
-            sdr_bytes = {x["role"]: Path(x["path"]).read_bytes() for x in sdr_items}
+            sdr_by_role = {x["role"]: x for x in sdr_items}
+            sdr_bytes = {role: Path(x["path"]).read_bytes() for role, x in sdr_by_role.items()}
             hdr_bytes = {x["role"]: Path(x["path"]).read_bytes() for x in hdr_items}
 
-            # 验证像素各半保留各自配方
+            # 验证像素各半保留各自配方，且双联 EXIF 270 列出左右两半配方并省略单一 recipe_binding（F1）
             if "diptych" in sdr_bytes:
+                assert sdr_by_role["diptych"].get("recipe_binding") is None
+                dip_desc = _exif_desc(sdr_bytes["diptych"])
+                assert dip_desc.startswith("GXR Studio computer prediction (not camera-measured): ")
+                assert "left:" in dip_desc and "| right:" in dip_desc
+                assert f"entry SHA256 {plan1.entry_sha256}" in dip_desc and f"entry SHA256 {plan2.entry_sha256}" in dip_desc
+                assert dip_desc.index(plan1.entry_sha256) < dip_desc.index(plan2.entry_sha256)
                 with Image.open(io.BytesIO(sdr_bytes["diptych"])) as im:
                     assert im.size == (4288, 2848)
                     arr = np.asarray(im.convert("RGB"), dtype=np.uint8)
@@ -477,6 +500,9 @@ def test_hf258_different_recipe_pair_server_export_hdr_and_user_pick(
                 _assert_color_half(hl, f"export {mode} diptych left")
                 _assert_bw_half(hr, f"export {mode} diptych right")
             if "first" in sdr_bytes:
+                d1, d2 = _exif_desc(sdr_bytes["first"]), _exif_desc(sdr_bytes["second"])
+                assert plan1.entry_sha256 in d1 and plan2.entry_sha256 not in d1
+                assert plan2.entry_sha256 in d2 and plan1.entry_sha256 not in d2
                 with Image.open(io.BytesIO(sdr_bytes["first"])) as im1, Image.open(io.BytesIO(sdr_bytes["second"])) as im2:
                     assert im1.size == (2088, 2848) and im2.size == (2088, 2848)
                     a1 = np.asarray(im1.convert("RGB"), dtype=np.uint8)
@@ -504,7 +530,11 @@ def test_hf258_different_recipe_pair_server_export_hdr_and_user_pick(
                         assert float(np.median(diff)) < 0.08 and float(np.percentile(diff, 95)) < 0.25
 
         # 3) 用户显式选配方（Q2 一起调）：选 HC BW → 两半全黑白；选 Leica F1 → 两半全彩色
-        assert cli.put(f"/api/photos/{sid2}/edit", json={"recipe": hcbw}).status_code == 200
+        put_bw = cli.put(f"/api/photos/{sid2}/edit", json={"recipe": hcbw})
+        assert put_bw.status_code == 200
+        bw_render = put_bw.json()["render"]
+        assert bw_render["unit"] == "l08firm" and bw_render["slot"] == 3 and bw_render["entry_sha256"] == plan2.entry_sha256
+        assert "halves" not in bw_render
         bw_dir = tmp_path / "exp_picked_hcbw"
         bw_dir.mkdir()
         r_bw = cli.post(
@@ -513,6 +543,8 @@ def test_hf258_different_recipe_pair_server_export_hdr_and_user_pick(
         )
         assert r_bw.status_code == 200, r_bw.text
         bw_files = {x["role"]: Path(x["path"]) for x in r_bw.json()["files"]}
+        bw_dip_desc = _exif_desc(bw_files["diptych"].read_bytes())
+        assert "left:" not in bw_dip_desc and plan2.entry_sha256 in bw_dip_desc and plan1.entry_sha256 not in bw_dip_desc
         with Image.open(bw_files["diptych"]) as im:
             bw_l, _, bw_r = _seam_and_halves(np.asarray(im.convert("RGB"), dtype=np.uint8))
         _assert_bw_half(bw_l, "picked HC BW diptych left")
@@ -538,6 +570,42 @@ def test_hf258_different_recipe_pair_server_export_hdr_and_user_pick(
         with Image.open(col_files["first"]) as im1, Image.open(col_files["second"]) as im2:
             _assert_color_half(np.asarray(im1.convert("RGB"), dtype=np.uint8), "picked Leica F1 single first")
             _assert_color_half(np.asarray(im2.convert("RGB"), dtype=np.uint8), "picked Leica F1 single second")
+
+
+def test_mixed_pair_labels_exif_order_and_no_single_binding() -> None:
+    """F1 单元测试：异配方双联按视觉左右/上下顺序拼合 EXIF 270 并省略单一 recipe_binding；同配方完全不变。"""
+    pfx = "GXR Studio computer prediction (not camera-measured): "
+    e1, e2 = "1" * 64, "2" * 64
+
+    def _mk(slot: str, ent: str, rec: str, bind: str, sel: str) -> Renderer:
+        rb = {
+            "record_sha256": rec,
+            "entry_sha256": ent,
+            "binding_sha256": bind,
+            "selection_id": sel,
+            "quality_state": "passed",
+            "assessed_entry": "1",
+        }
+        return Renderer("recipe-prediction", "电脑预测", "", True, lambda x: x, f"{pfx}l08firm recipe {slot}. entry SHA256 {ent}.", rb, ent)
+
+    r1 = _mk("06", e1, "a" * 64, "c" * 64, "local:1")
+    r2 = _mk("03", e2, "d" * 64, "e" * 64, "local:2")
+
+    same = hfc._labels_from_renderers(r1, r1, neutral=False)
+    assert same["description"] == r1.description and same["selection_id"] == "local:1" and same["entry_sha256"] == e1
+
+    for first_half, ori, head, first_tok, second_tok in (
+        ("left", 1, "left:", e1, e2),
+        ("right", 1, "left:", e2, e1),
+        ("right", 3, "left:", e1, e2),
+        ("left", 6, "top:", e1, e2),
+        ("right", 8, "top:", e1, e2),
+    ):
+        mixed = hfc._labels_from_renderers(r1, r2, neutral=False, first_half=first_half, orientation=ori)
+        assert mixed["description"].startswith(f"{pfx}{head} ")
+        assert mixed["description"].index(first_tok) < mixed["description"].index(second_tok)
+        for bk in ("selection_id", "record_sha256", "entry_sha256", "binding_sha256", "quality_state", "assessed_entry"):
+            assert bk not in mixed
 
 
 # --------------------------------------------------------------------------- 4. 异配方实拍 WebGPU 真异烘焙（sameBake=False）对拍

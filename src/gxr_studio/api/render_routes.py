@@ -109,6 +109,35 @@ def _payload(
     return out
 
 
+def _same_plan_recipe(p1: Any, p2: Any) -> bool:
+    return bool(
+        p1.unit == p2.unit
+        and p1.slot == p2.slot
+        and p1.defaulted == p2.defaulted
+        and p1.entry_sha256 == p2.entry_sha256
+        and p1.record_sha256 == p2.record_sha256
+        and p1.binding_sha256 == p2.binding_sha256
+        and p1.selection_id == p2.selection_id
+    )
+
+
+def _plan_fields(plan: Any) -> dict[str, Any]:
+    return {
+        "label": plan.label,
+        "calibrated": plan.calibrated,
+        "reasons": list(plan.reasons),
+        "unit": plan.unit,
+        "slot": plan.slot,
+        "defaulted": plan.defaulted,
+        "effective_levels": plan.levels,
+        "entry_sha256": plan.entry_sha256,
+        "record_sha256": plan.record_sha256,
+        "binding_sha256": plan.binding_sha256,
+        "quality": plan.quality,
+        "model_iso": plan.model_iso,
+    }
+
+
 def _render_info(c: Any, shot: dict[Any, Any], edit: EditState) -> dict[Any, Any]:
     svc = c.render
     pair_raw = has_pair_raw(shot)
@@ -124,33 +153,43 @@ def _render_info(c: Any, shot: dict[Any, Any], edit: EditState) -> dict[Any, Any
             "recipe": "approx" if approx else "none",
             "message": "" if approx else "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。",
         }
+    halves: tuple[Any, Any] | None = None
     try:
         if pair_raw:
             from ..halfframe_compose import combined_plan, pair_plans
 
             p1, p2, *_ = pair_plans(svc, shot, edit)
             plan = combined_plan(p1, p2)
+            if not _same_plan_recipe(p1, p2):
+                halves = (p1, p2)
         else:
             plan = svc.plan(shot, edit)
     except RenderUnavailable as exc:
         return {"available": False, "reason": exc.code, "message": exc.message, "status": svc.status()}
     except EditError as exc:
         return {"available": False, "reason": exc.code, "message": exc.message}
+    if halves is not None:
+        return {
+            "available": True,
+            "prediction": True,
+            "label": plan.label,
+            "calibrated": plan.calibrated,
+            "reasons": list(plan.reasons),
+            "unit": None,
+            "slot": None,
+            "defaulted": None,
+            "effective_levels": None,
+            "entry_sha256": None,
+            "record_sha256": None,
+            "binding_sha256": None,
+            "quality": None,
+            "model_iso": None,
+            "halves": [_plan_fields(halves[0]), _plan_fields(halves[1])],
+        }
     return {
         "available": True,
         "prediction": True,
-        "label": plan.label,
-        "calibrated": plan.calibrated,
-        "reasons": list(plan.reasons),
-        "unit": plan.unit,
-        "slot": plan.slot,
-        "defaulted": plan.defaulted,
-        "effective_levels": plan.levels,
-        "entry_sha256": plan.entry_sha256,
-        "record_sha256": plan.record_sha256,
-        "binding_sha256": plan.binding_sha256,
-        "quality": plan.quality,
-        "model_iso": plan.model_iso,
+        **_plan_fields(plan),
     }
 
 
