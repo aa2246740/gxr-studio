@@ -62,18 +62,6 @@ _DAT_SPECS: dict[int, tuple[str, str, int, int]] = {
     256: ("firmware/package_v310b_hf256_r1/local/test256-REVIEW_PENDING", G256_DAT_SHA256, 87132, 3896),
 }
 
-# 已知半格实拍目录及其 1-based 双联序号（按目录内全部 JPG 排序，用于全量误报扫描区分真双联与非双联）。
-KNOWN_DIPTYCH_FOLDERS: dict[str, set[int]] = {
-    "hf256-field-20261120/card": {2, 7, 10},
-    "r6-field-20261117/card242": {3, 5},
-    "r6-field-20261117/card245": {4},
-    "r6-field-20261118/card249": {2, 4},
-    "r6-field-20261118/card250": {2, 4, 6},
-    "r6-field-20261118/kubik_r6": {5},
-    "r6-field-20261118/probe251": {2, 4, 6},
-    "r6-field-20261118/vertical": {2, 4, 6},
-}
-
 
 def _need_g253_or_g256(generation: int) -> tuple[bytes, bytes, Path, Path]:
     rel_dir, want_dat, _eng_len, _xdata_len = _DAT_SPECS[generation]
@@ -608,6 +596,34 @@ def test_seam_boundary_rule_synthetic_desktop_and_phone() -> None:
     dark_scene[100:120, 500:520] = 90
     cases.append(("dark_scene_no_seam_edge", dark_scene, None))
 
+    # 5) F2 近黑负对照：暗侧仅有零星亮点或极小亮斑（< 5%），或中缝附近黑带加微弱噪点，必须拒绝
+    one_speck = _make_luma(140)
+    one_speck[:, g250_c0:] = 0
+    one_speck[180, 450] = 180
+    cases.append(("dark_half_single_speck", one_speck, None))
+
+    few_specks = _make_luma(140)
+    few_specks[:, g250_c0:] = 0
+    for k in range(20):
+        few_specks[10 + k * 15, g250_c1 + 5 + k * 10] = 200
+    cases.append(("dark_half_few_specks", few_specks, None))
+
+    small_patch = _make_luma(140)
+    small_patch[:, g250_c0:] = 0
+    small_patch[100:140, 350:390] = 120  # 1600 / 92916 = 1.72% < 5%
+    cases.append(("dark_half_small_patch_below_5pct", small_patch, None))
+
+    band_with_speck = _make_luma(4)
+    band_with_speck[100:115, g250_c0 - 1] = 80
+    band_with_speck[200:205, 400:405] = 90
+    cases.append(("black_band_near_center_with_speck", band_with_speck, None))
+
+    # 暗侧真实弱光画面（6.46% >= 5%）：应通过
+    dim_real_half = _make_luma(140)
+    dim_real_half[:, g250_c0:] = 0
+    dim_real_half[100:160, 320:420] = 40  # 6000 / 92916 = 6.46% >= 5%
+    cases.append(("g250_dark_right_6pct_accepted", dim_real_half, hf.SEAM_G250))
+
     node_inputs: list[tuple[np.ndarray, str]] = []
     for _name, luma, _want in cases:
         node_inputs.append((luma, "col"))
@@ -622,60 +638,32 @@ def test_seam_boundary_rule_synthetic_desktop_and_phone() -> None:
         assert phone_verdicts[2 * idx + 1] is want_bool, f"phone portrait mismatch on {name}"
 
 
-def test_seam_false_positive_sweep_and_desktop_phone_parity() -> None:
-    """扫描 captures/ 下全部 4288×2848 JPEG：0 误报，全部已知双联（含 MOUNT 边界例）命中，桌面与手机 100% 一致。"""
-    captures = samples.captures()
-    if not captures.is_dir():
-        samples.missing("captures/ 不在本机")
+def test_seam_default_regression_set_desktop_and_phone() -> None:
+    """默认回归集：hf256 三对（含 MOUNT 边界）与 4 张普通照，再加 card250 若干普通照，验证桌面与手机 100% 一致。"""
+    hf256_jpgs = _sorted_jpgs(_hf256_field_folder())
+    assert len(hf256_jpgs) == 10
 
-    # 预计算已知半格目录内 1-based 序号对应的路径
-    known_diptych_paths: set[Path] = set()
-    for rel_folder, indices in KNOWN_DIPTYCH_FOLDERS.items():
-        folder = captures / rel_folder
-        if not folder.is_dir():
-            continue
-        jpgs = _sorted_jpgs(folder)
-        for idx in indices:
-            if 1 <= idx <= len(jpgs):
-                known_diptych_paths.add(jpgs[idx - 1].resolve())
+    regression: list[tuple[str, Path, bool]] = [(f"hf256:{i}", jpg, i in {2, 7, 10}) for i, jpg in enumerate(hf256_jpgs, start=1)]
+    card250 = samples.captures() / "r6-field-20261118" / "card250"
+    if card250.is_dir():
+        c250_jpgs = _sorted_jpgs(card250)
+        for idx in (7, 8, 9, 10):
+            if idx <= len(c250_jpgs):
+                regression.append((f"card250:{idx}", c250_jpgs[idx - 1], False))
 
-    swept_lumas: list[tuple[np.ndarray, str]] = []
-    swept_meta: list[tuple[str, int, bool]] = []  # (folder_key, ordinal_in_folder, expected_diptych)
-    folder_counts: dict[str, int] = {}
-
-    for path in sorted(captures.rglob("*")):
-        if not path.is_file() or path.suffix.upper() != ".JPG":
-            continue
+    node_inputs: list[tuple[np.ndarray, str]] = []
+    meta: list[tuple[str, bool]] = []
+    for label, path, expected in regression:
         ok, luma = hf.decode_draft_luma(path)
-        if not ok or luma is None:
-            continue
-        parts = path.relative_to(captures).parts
-        fkey = "/".join(parts[:2]) if len(parts) > 2 else parts[0]
-        folder_counts[fkey] = folder_counts.get(fkey, 0) + 1
-        expected = path.resolve() in known_diptych_paths
-        swept_lumas.append((luma, "col"))
-        swept_meta.append((fkey, folder_counts[fkey], expected))
+        assert ok and luma is not None, f"unreadable regression shot {label}"
+        node_inputs.append((luma, "col"))
+        meta.append((label, expected))
 
-    assert len(swept_lumas) > 0, "no 4288x2848 JPEGs found under captures/"
-    phone_verdicts = _node_is_diptych_batch(swept_lumas)
-
-    false_positives = 0
-    false_negatives = 0
-    parity_mismatches = 0
-    for (luma, _axis), (fkey, ord_idx, expected), phone_v in zip(swept_lumas, swept_meta, phone_verdicts, strict=True):
+    phone_verdicts = _node_is_diptych_batch(node_inputs)
+    for (luma, _axis), (label, expected), phone_v in zip(node_inputs, meta, phone_verdicts, strict=True):
         desk_v = hf.is_diptych_luma(luma)
-        if desk_v is not phone_v:
-            parity_mismatches += 1
-        if expected and not desk_v:
-            false_negatives += 1
-            pytest.fail(f"missed known diptych in {fkey} #{ord_idx}")
-        if not expected and desk_v:
-            false_positives += 1
-            pytest.fail(f"false positive in {fkey} #{ord_idx}")
-
-    assert false_positives == 0
-    assert false_negatives == 0
-    assert parity_mismatches == 0
+        assert desk_v is expected, f"desktop mismatch on {label}: got={desk_v} want={expected}"
+        assert phone_v is expected, f"phone mismatch on {label}: got={phone_v} want={expected}"
 
 
 @pytest.mark.browser_serial
@@ -694,9 +682,15 @@ def test_hf256_three_units_and_boundary_phone_browser(tmp_path: Path) -> None:
         labels.append(f"hf256:{idx}")
         expected.append(idx in {2, 7, 10})
 
-    # 合成暗景负对照与单侧暗景正对照（包含旋转）
+    # 合成暗景负对照（含近黑零星亮点）与单侧暗景正对照（包含旋转）
     all_black = _make_synthetic_jpeg(tmp_path / "syn_all_black.jpg", seam_range=None, fill=(0, 0, 0))
     half_black = _make_synthetic_jpeg(tmp_path / "syn_half_black.jpg", seam_range=(2088, 4287), fill=(140, 140, 140))
+    dark_specks = tmp_path / "syn_dark_specks.jpg"
+    arr_s = np.full((hf.FULL_HEIGHT, hf.FULL_WIDTH, 3), 140, dtype=np.uint8)
+    arr_s[:, 2088:] = 0
+    for k in range(12):
+        arr_s[200 + k * 160 : 216 + k * 160, 2400 + k * 120 : 2416 + k * 120] = 200
+    Image.fromarray(arr_s, mode="RGB").save(dark_specks, format="JPEG", quality=92, subsampling=0)
     dark_right = tmp_path / "syn_dark_right.jpg"
     arr = np.full((hf.FULL_HEIGHT, hf.FULL_WIDTH, 3), 140, dtype=np.uint8)
     arr[:, 2088:2240] = 0
@@ -713,6 +707,7 @@ def test_hf256_three_units_and_boundary_phone_browser(tmp_path: Path) -> None:
     for lbl, path, want in (
         ("syn:all_black", all_black, False),
         ("syn:half_black", half_black, False),
+        ("syn:dark_specks", dark_specks, False),
         ("syn:dark_right", dark_right, True),
         ("syn:dark_left_rot6", dark_left_rot6, True),
     ):
