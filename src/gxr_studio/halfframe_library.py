@@ -293,6 +293,7 @@ def _compute_missing_for_shot(
     ori = int(shot.get("orientation") or 1)
     num = hfp.extract_number(shot.get("name"))
     diptych = bool(shot.get("diptych"))
+    pair_store.sync_verdict_rev(verdict_store.positive_rev)
 
     if diptych:
         if not pair_store.has_first_like(sha):
@@ -361,7 +362,9 @@ def _compute_missing_for_shot(
     for sec in next_list:
         if verdict_store.get(sec["sha256"]) is False:
             continue
-        _try_pair_for_second(sec, by_num, pair_store, abspath, coalesce=coalesce)
+        rec = _try_pair_for_second(sec, by_num, pair_store, abspath, coalesce=coalesce)
+        if rec is not None and verdict_store.get(sec["sha256"]) is not True:
+            verdict_store.put(str(sec["sha256"]), True, save=not coalesce, coalesce=coalesce, strict=False)
     return {}
 
 
@@ -638,6 +641,7 @@ def backfill_pairs(
     if cancel.is_set():
         return
 
+    lib._pairs.forget_neighbors_checked()
     all_items = _fetch_target_jpg_candidates(lib.db, lib.lock)
     by_num = _index_by_number(all_items)
     for item in all_items:

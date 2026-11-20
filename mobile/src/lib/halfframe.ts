@@ -11,16 +11,21 @@ export const SCALE = 8;
 export const DRAFT_WIDTH = FULL_WIDTH / SCALE;
 export const DRAFT_HEIGHT = FULL_HEIGHT / SCALE;
 export const LUMA_THRESHOLD = 12;
+// g250 单侧紧邻暗景时，暗侧半幅至少 1/20（5%，约 4,646/92,916 像素）高于阈值，与桌面 halfframe.py 同规则。
+export const DARK_HALF_MIN_DIVISOR = 20;
 
 export const SEAMS: readonly [number, number][] = [
   [2088, 2199],
   [2120, 2167],
 ];
 
-const SEAM_SLICES: readonly [number, number][] = SEAMS.map(([x0, x1]) => [
-  Math.floor((x0 + SCALE - 1) / SCALE),
-  Math.floor((x1 - (SCALE - 1)) / SCALE),
-]);
+const SEAM_G250 = 'g250';
+const SEAM_LEGACY48 = 'legacy48';
+
+const SEAM_SLICES: readonly [string, number, number][] = [
+  [SEAM_G250, Math.floor((SEAMS[0][0] + SCALE - 1) / SCALE), Math.floor((SEAMS[0][1] - (SCALE - 1)) / SCALE)],
+  [SEAM_LEGACY48, Math.floor((SEAMS[1][0] + SCALE - 1) / SCALE), Math.floor((SEAMS[1][1] - (SCALE - 1)) / SCALE)],
+];
 
 function sliceMaxLuma(
   rgba: Uint8Array | Uint8ClampedArray,
@@ -47,6 +52,44 @@ function sliceMaxLuma(
     if (best > LUMA_THRESHOLD) return best;
   }
   return best;
+}
+
+function darkHalfHasContent(
+  rgba: Uint8Array | Uint8ClampedArray,
+  width: number,
+  height: number,
+  start: number,
+  end: number,
+  axis: 'col' | 'row',
+): boolean {
+  const sliceLen = axis === 'col' ? height : width;
+  const total = (end - start) * sliceLen;
+  const minLit = Math.ceil(total / DARK_HALF_MIN_DIVISOR);
+  let lit = 0;
+  if (axis === 'col') {
+    for (let y = 0; y < height; y += 1) {
+      const rowOff = y * width;
+      for (let x = start; x < end; x += 1) {
+        const off = (rowOff + x) * 4;
+        if (Math.round(0.299 * rgba[off] + 0.587 * rgba[off + 1] + 0.114 * rgba[off + 2]) > LUMA_THRESHOLD) {
+          lit += 1;
+          if (lit >= minLit) return true;
+        }
+      }
+    }
+    return false;
+  }
+  for (let y = start; y < end; y += 1) {
+    const rowBase = y * width * 4;
+    for (let x = 0; x < width; x += 1) {
+      const off = rowBase + x * 4;
+      if (Math.round(0.299 * rgba[off] + 0.587 * rgba[off + 1] + 0.114 * rgba[off + 2]) > LUMA_THRESHOLD) {
+        lit += 1;
+        if (lit >= minLit) return true;
+      }
+    }
+  }
+  return false;
 }
 
 export type DiptychAxis = 'col' | 'row';
@@ -90,7 +133,7 @@ export function isDiptychRgba(
   const wantW = resolvedAxis === 'row' ? DRAFT_HEIGHT : DRAFT_WIDTH;
   const wantH = resolvedAxis === 'row' ? DRAFT_WIDTH : DRAFT_HEIGHT;
   if (width !== wantW || height !== wantH || rgba.length < width * height * 4) return false;
-  for (const [c0, c1] of SEAM_SLICES) {
+  for (const [kind, c0, c1] of SEAM_SLICES) {
     if (c0 <= 0 || c1 + 1 >= DRAFT_WIDTH) continue;
     let seamBlack = true;
     for (let c = c0; c <= c1; c += 1) {
@@ -100,11 +143,13 @@ export function isDiptychRgba(
       }
     }
     if (!seamBlack) continue;
-    if (
-      sliceMaxLuma(rgba, width, height, c0 - 1, resolvedAxis) > LUMA_THRESHOLD &&
-      sliceMaxLuma(rgba, width, height, c1 + 1, resolvedAxis) > LUMA_THRESHOLD
-    ) {
-      return true;
+    const leftEdge = sliceMaxLuma(rgba, width, height, c0 - 1, resolvedAxis) > LUMA_THRESHOLD;
+    const rightEdge = sliceMaxLuma(rgba, width, height, c1 + 1, resolvedAxis) > LUMA_THRESHOLD;
+    if (leftEdge && rightEdge) return true;
+    if (kind === SEAM_G250 && (leftEdge || rightEdge)) {
+      const start = leftEdge ? c1 + 1 : 0;
+      const end = leftEdge ? DRAFT_WIDTH : c0;
+      if (darkHalfHasContent(rgba, width, height, start, end, resolvedAxis)) return true;
     }
   }
   return false;

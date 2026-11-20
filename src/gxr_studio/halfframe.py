@@ -26,7 +26,10 @@ SCALE = 8
 DRAFT_WIDTH = FULL_WIDTH // SCALE
 DRAFT_HEIGHT = FULL_HEIGHT // SCALE
 LUMA_THRESHOLD = 12
+# g250 单侧紧邻暗景时，暗侧半幅至少 1/20（5%，约 4,646/92,916 像素）高于阈值，排掉近黑噪点与零星亮点。
+DARK_HALF_MIN_DIVISOR = 20
 HALFFRAME_VERSION = 1
+VERDICT_RULE_VERSION = 2
 HALFFRAME_FILE = "halfframe-v1.json"
 HALFFRAME_REL = f".studio/{HALFFRAME_FILE}"
 FLUSH_INTERVAL = 1.0
@@ -95,12 +98,17 @@ def seam_kind_luma(luma: np.ndarray) -> str | None:
     for kind, c0, c1 in _SEAM_SPEC_COLS:
         if c0 <= 0 or c1 + 1 >= DRAFT_WIDTH:
             continue
-        if (
-            int(luma[:, c0 : c1 + 1].max()) <= LUMA_THRESHOLD
-            and int(luma[:, c0 - 1].max()) > LUMA_THRESHOLD
-            and int(luma[:, c1 + 1].max()) > LUMA_THRESHOLD
-        ):
+        if int(luma[:, c0 : c1 + 1].max()) > LUMA_THRESHOLD:
+            continue
+        left_edge = int(luma[:, c0 - 1].max()) > LUMA_THRESHOLD
+        right_edge = int(luma[:, c1 + 1].max()) > LUMA_THRESHOLD
+        if left_edge and right_edge:
             return kind
+        # g250 宽黑缝（112 px）紧挨暗景时，暗侧邻列可低于阈值；要求另一侧紧邻有画面且暗侧半幅至少 5% 像素高于阈值。
+        if kind == SEAM_G250 and (left_edge or right_edge):
+            dark_half = luma[:, c1 + 1 :] if left_edge else luma[:, :c0]
+            if int(np.count_nonzero(dark_half > LUMA_THRESHOLD)) * DARK_HALF_MIN_DIVISOR >= dark_half.size:
+                return kind
     return None
 
 
@@ -302,10 +310,16 @@ class VerdictStore(CoalescedStore):
     ) -> None:
         super().__init__(path, check_write=check_write, flush_interval=flush_interval, save_error_event="halfframe_save_failed")
         self._verdicts: dict[str, bool] = {}
+        self._positive_rev = 0
+
+    @property
+    def positive_rev(self) -> int:
+        with self._lock:
+            return self._positive_rev
 
     def _serialize_locked(self) -> tuple[dict[str, Any], Any]:
         snapshot = dict(self._verdicts)
-        return {"version": HALFFRAME_VERSION, "verdicts": snapshot}, snapshot
+        return {"version": HALFFRAME_VERSION, "rule": VERDICT_RULE_VERSION, "verdicts": snapshot}, snapshot
 
     def _unchanged_locked(self, snapshot: Any) -> bool:
         return bool(self._verdicts == snapshot)
@@ -313,6 +327,7 @@ class VerdictStore(CoalescedStore):
     def load(self) -> None:
         loaded: dict[str, bool] = {}
         future_version: int | None = None
+        dropped_stale = False
         try:
             raw = self.path.read_text(encoding="utf-8")
             data = json.loads(raw)
@@ -323,11 +338,19 @@ class VerdictStore(CoalescedStore):
             if isinstance(ver, int) and not isinstance(ver, bool) and ver > HALFFRAME_VERSION:
                 future_version = ver
             elif ver == HALFFRAME_VERSION and isinstance(data.get("verdicts"), dict):
+                raw_rule = data.get("rule")
+                rule_current = isinstance(raw_rule, int) and not isinstance(raw_rule, bool) and raw_rule >= VERDICT_RULE_VERSION
                 for k, v in data["verdicts"].items():
                     if isinstance(k, str) and isinstance(v, bool):
-                        loaded[k] = v
+                        # 新接缝规则只放宽不收紧：旧正判定继续有效，旧负判定丢弃以便重查一次。
+                        if v or rule_current:
+                            loaded[k] = v
+                        else:
+                            dropped_stale = True
         with self._lock:
             self._verdicts = loaded
+            if dropped_stale:
+                self._positive_rev += 1
             timer, already_future = self._finish_load_locked(future_version)
         if timer is not None:
             timer.cancel()
@@ -352,8 +375,11 @@ class VerdictStore(CoalescedStore):
 
     def put(self, sha: str, value: bool, *, save: bool = True, coalesce: bool = False, strict: bool = False) -> None:
         with self._lock:
-            changed = self._verdicts.get(sha) is not value
+            prev = self._verdicts.get(sha)
+            changed = prev is not value
             self._verdicts[sha] = value
+            if value and prev is not True:
+                self._positive_rev += 1
             if changed:
                 self._dirty = True
             writable = not self._readonly
@@ -369,14 +395,21 @@ class VerdictStore(CoalescedStore):
     def put_many(self, items: dict[str, bool], *, replace: bool = False, save: bool = True, strict: bool = False) -> None:
         with self._lock:
             if replace:
+                became_true = any(v and self._verdicts.get(k) is not True for k, v in items.items())
                 changed = self._verdicts != items
                 self._verdicts = dict(items)
             else:
+                became_true = False
                 changed = False
                 for sha, value in items.items():
-                    if self._verdicts.get(sha) is not value:
+                    prev = self._verdicts.get(sha)
+                    if prev is not value:
                         changed = True
+                    if value and prev is not True:
+                        became_true = True
                     self._verdicts[sha] = value
+            if became_true:
+                self._positive_rev += 1
             if changed:
                 self._dirty = True
             writable = not self._readonly
@@ -419,6 +452,7 @@ def run_backfill(
     """在 `lib.lock` 外批量检测旧图库还没落盘的 4288×2848 JPG 与 g250 配对，分批写回 `.studio/halfframe*-v1.json`。"""
     started = time.monotonic()
     unreadable = 0
+    found_diptych = False
     log.event(logging.INFO, "halfframe_backfill_started", total=progress.total)
     batch: dict[str, bool] = {}
     try:
@@ -430,13 +464,15 @@ def run_backfill(
                 unreadable += 1
             else:
                 batch[sha] = verdict
+                if verdict:
+                    found_diptych = True
             progress.advance(bool(verdict))
             if len(batch) >= batch_size:
                 lib.record_halfframe_batch(batch)
                 batch.clear()
         if batch:
             lib.record_halfframe_batch(batch)
-        if not cancel.is_set() and pair_todo:
+        if not cancel.is_set() and (pair_todo or (pair_todo is not None and found_diptych)):
             from . import halfframe_library as hfl
 
             hfl.backfill_pairs(lib, pair_todo, progress, cancel, batch_size=batch_size)
