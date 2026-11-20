@@ -155,15 +155,13 @@ async function runMain(page) {
   }
 
   // 3. Export auto on untouched adopted file1.
-  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   await waitPhase(page, ['ready']);
   const autoFacts = await batchFacts(page);
   await shareAll(page);
   const autoFiles = await sharedFiles(page, manifest.outDir, 'auto-');
-  if (await page.locator('.pdock [data-act="done"]').count()) {
-    await page.locator('.pdock [data-act="done"]').first().click();
-  }
+  await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
 
   // 4. Open file1, switch away and back to Teal Orange so Teal Orange is explicitly chosen (photo.choice !== null),
   // then export again -> must match auto byte-for-byte.
@@ -196,15 +194,13 @@ async function runMain(page) {
   await backToGrid(page);
 
   const shareFrom = await page.evaluate(() => window.__shareLog.calls.length);
-  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   await waitPhase(page, ['ready']);
   const explicitFacts = await batchFacts(page);
   await shareAll(page);
   const explicitFiles = await sharedFiles(page, manifest.outDir, 'explicit-', shareFrom);
-  if (await page.locator('.pdock [data-act="done"]').count()) {
-    await page.locator('.pdock [data-act="done"]').first().click();
-  }
+  await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
   const autoFileCount = autoFiles.reduce((n, row) => n + row.files.length, 0);
   const explicitFileCount = explicitFiles.reduce((n, row) => n + row.files.length, 0);
   out.steps.exportParity = {
@@ -341,7 +337,7 @@ async function runWrongGen(page) {
   const errorText = (await page.locator('.panel.recipe [data-camera-recipe-error] .tx').textContent().catch(() => ''))?.trim() ?? '';
   const state = await editStateOf(page, manifest.file1);
   await backToGrid(page);
-  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   await waitPhase(page, ['ready']);
   const exportCounts = () =>
@@ -350,6 +346,9 @@ async function runWrongGen(page) {
       return { done: b ? b.staged.length : 0, failed: b ? b.failures.size : 0 };
     });
   const counts = await exportCounts();
+  if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
+    await page.locator('.pdock [data-act="toggle-details"]').click();
+  }
   const exportNoteText = (await page.locator('.pdock [data-state="camera-recipe-notes"]').innerText().catch(() => ''))?.trim() ?? '';
   await shareAll(page);
   const files = await sharedFiles(page, manifest.outDir, 'wrong-gen-');
@@ -376,13 +375,16 @@ async function runMissingDat(page) {
     window.__devExport.binding = binding;
   }, manifest.binding);
   await pickAll(page, { count: 1 }, manifest.missingDatFiles);
-  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   await waitPhase(page, ['ready']);
   const counts = await page.evaluate(() => {
     const b = window.__devExport.flow.current();
     return { done: b ? b.staged.length : 0, failed: b ? b.failures.size : 0 };
   });
+  if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
+    await page.locator('.pdock [data-act="toggle-details"]').click();
+  }
   const exportNoteText = (await page.locator('.pdock [data-state="camera-recipe-notes"]').innerText().catch(() => ''))?.trim() ?? '';
   await shareAll(page);
   const files = await sharedFiles(page, manifest.outDir, 'missing-dat-');
@@ -416,7 +418,7 @@ async function runDatNoCalib(page) {
       sideRecipe: req?.side?.recipe ? `${req.side.recipe.kind}:${req.side.recipe.slot}` : null,
     };
   }, manifest.file1);
-  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   await waitPhase(page, ['ready']);
   const result = await page.evaluate(() => {
@@ -464,7 +466,7 @@ async function runDatNoCalibRawOnly(page) {
       sideRecipe: req?.side?.recipe ? `${req.side.recipe.kind}:${req.side.recipe.slot}` : null,
     };
   }, manifest.file1);
-  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   await waitPhase(page, ['ready']);
   const result = await page.evaluate(() => {
@@ -505,7 +507,7 @@ async function runDatPartialCalib(page) {
       sideRecipe: req?.side?.recipe ? `${req.side.recipe.kind}:${req.side.recipe.slot}` : null,
     };
   }, manifest.file1);
-  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高');
+  await exportFromGrid(page, [manifest.file1], '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   await waitPhase(page, ['ready']);
   const result = await page.evaluate(() => {

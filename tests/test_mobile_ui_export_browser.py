@@ -275,14 +275,18 @@ def test_mobile_ui_export_files_match_desktop(tmp_path: Path, pinned_icc: bytes)
         full = steps["full"]
         check("导出 6 张" in full["sheet"]["text"], "sheet title")
         check("每张照片按各自比例导出，成品尺寸可能不同。" in full["sheet"]["text"], "several photos: the desktop size line")
-        check("在系统面板里点「存储 6 张图像」" in full["sheet"]["text"], "the reworded footnote")
-        check(full["sheet"]["hdrDisabled"] is False, "HDR switch enabled with RAW selected; off by default, so this batch is SDR")
-        check("6 张已做好" in full["ready"], "05c main line")
-        check(full["shared"]["labels"] == ["存到相册（第 1 批，共 2 批）", "存到相册（第 2 批，共 2 批）"], "two share chunks of at most 4")
-        check("好了：6 张" in full["shared"]["saved"] and "已存到相册" not in full["shared"]["saved"], "05e wording (owner decision 2)")
-        done_line = "选了「存储图像」的在相册里，选了「存储到“文件”」的在「文件」里。"
-        check(done_line in full["shared"]["saved"], "05e share-done line")
-        check(done_line in steps["small"]["shared"]["saved"], "05e share-done line (small)")
+        check(
+            "「存到相册」每次都按这里的设置做。做好后点「存进相册」，在系统面板里点「存储图像」。" in full["sheet"]["text"],
+            "the approved r1 footnote",
+        )
+        check(full["sheet"]["hdrDisabled"] is False, "HDR switch enabled with RAW selected; explicitly turned off for SDR parity")
+        check("6 张做好了 · 存进相册" in full["ready"], "ready bar main line")
+        check(
+            full["shared"]["labels"] == ["6 张做好了 · 存进相册（第 1 批，共 2 批）", "6 张做好了 · 存进相册（第 2 批，共 2 批）"],
+            "two share chunks of at most 4",
+        )
+        check(full["shared"]["saved"] == "", "ready bar auto-dismisses after final share (no trailing 好)")
+        check(steps["small"]["shared"]["saved"] == "", "ready bar auto-dismisses after final share (small)")
         check(full["canShare"] >= 2, "canShare asked before each share")
         check([len(c["files"]) for c in full["files"]] == [4, 2], "chunk sizes")
         check(all(c["active"] is True for c in full["files"] + steps["small"]["files"]), "share() called inside the tap")
@@ -372,18 +376,18 @@ def test_mobile_ui_export_flows(tmp_path: Path) -> None:
     steps = report["steps"]
 
     single = steps["single"]
-    check(single["editorButton"] == "导出这张", "editor button without 下一步做")
+    check(single["editorButton"] == "存到相册", "editor button is one-tap 存到相册")
     check("导出 0 张" in single["selectBar"] and "导出 0 张 · 下一步做" not in single["selectBar"], "selection bar export without 下一步做")
     check(" × " in single["sizeOriginal"] and single["sizeOriginal"].endswith("像素") or "像素 · " in single["sizeOriginal"], "size line")
     check(single["sizeSmall"].startswith("1600 × ") or " × 1600 像素" in single["sizeSmall"], "small tier is 1600 on the long edge")
     check("未导入相机配方文件时，导出不会带上相机配方效果" in single["sheetText"], "no-recipe-file guide")
-    check("导出 1 张" in single["sheetText"] and "点「存储图像」" in single["sheetText"], "one-photo title and footnote")
+    check("导出选项" in single["sheetText"] and "点「存储图像」" in single["sheetText"], "one-photo 导出选项 title and footnote")
     check("这项下一步做" not in single["sheetText"] and "亮处会更亮" in single["sheetText"], "HDR row live (ui-m3-hdr)")
 
     stop = steps["stop"]
     check(stop["stopped"]["phase"] == "stopped" and stop["stopped"]["staged"] == 2, "stop after 2 of 5 keeps 2 files")
     check(stop["stopped"]["alive"] is False, "stop terminates the export Worker")
-    check("已停止。做好的 2 张还没存，点「存到相册」。" in (stop["stopped"]["dock"] or ""), "stopped wording")
+    check("已停止。做好的 2 张还没存，点「存进相册」。" in (stop["stopped"]["dock"] or ""), "stopped wording")
     check(stop["after"]["phase"] == "ready" and stop["after"]["staged"] == 1, "a new export works after stop")
 
     trap = steps["trap"]
@@ -435,8 +439,7 @@ def test_mobile_ui_export_batch_regressions_sol_r1(tmp_path: Path) -> None:
         "P2-01: shared photos not counted again",
     )
     check(kept["afterRetry"]["failures"] == 0 and kept["afterRetry"]["staged"] == 1, "P2-01: retry succeeds")
-    check("选了「存储图像」的在相册里，选了「存储到“文件”」的在「文件」里。" in kept["savedDock"], "05e share-done line in ExportFlow")
-    check(kept["end"]["phase"] == "closed" and kept["end"]["dock"] is None, "P2-01: batch ends once nothing is left")
+    check(kept["end"]["phase"] == "closed" and kept["end"]["dock"] is None, "P2-01: batch auto-dismisses once nothing is left")
 
     held = steps["held"]
     check(held["heldAt"]["phase"] == "held" and held["heldAt"]["staged"] == ["1"], "P2-05: the over-cap result is not held")

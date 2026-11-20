@@ -63,22 +63,23 @@ test('05a frame warning lists RAW-capable photos with blur_fill', () => {
   assert.equal(hdr.hdrFrameLine([{ dng: {}, border: { style: 'gallery' } }, { dng: null, border: { style: 'blur_fill' } }]), null);
 });
 
-test('remembered choice: off by default, gxr.mobile.export_hdr, storage failures ignored', () => {
+test('remembered choice: on by default, gxr.mobile.export_hdr, storage failures ignored', () => {
   const data = new Map();
   globalThis.localStorage = {
     getItem: (k) => (data.has(k) ? data.get(k) : null),
     setItem: (k, v) => data.set(k, String(v)),
   };
   try {
+    assert.equal(prefs.loadExportHdr(), true);
+    prefs.saveExportHdr(false);
+    assert.equal(data.get('gxr.mobile.export_hdr'), '0');
     assert.equal(prefs.loadExportHdr(), false);
     prefs.saveExportHdr(true);
     assert.equal(data.get('gxr.mobile.export_hdr'), '1');
     assert.equal(prefs.loadExportHdr(), true);
-    prefs.saveExportHdr(false);
-    assert.equal(prefs.loadExportHdr(), false);
     globalThis.localStorage = { getItem: () => null, setItem: () => { throw new Error('quota'); } };
     assert.doesNotThrow(() => prefs.saveExportHdr(true));
-    assert.equal(prefs.loadExportHdr(), false);
+    assert.equal(prefs.loadExportHdr(), true);
   } finally {
     delete globalThis.localStorage;
   }

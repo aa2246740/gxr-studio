@@ -305,39 +305,33 @@ async function runParity(page) {
 
   // SDR 原始尺寸 / 高（A..D + JPG-only）
   const sdrStems = manifest.sdrOrder;
-  await exportFromGrid(page, sdrStems, '原始尺寸', '高');
+  await exportFromGrid(page, sdrStems, '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['ready']);
   const fullFacts = await batchFacts(page);
   await shareAll(page);
   await sharedFiles(page, manifest.outDir, 'full-');
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
   out.steps.full = fullFacts;
 
   // 小 / 低（A 和 D）
   await page.evaluate(() => window.__devExport.core.stop());
   const c1 = await page.evaluate(() => window.__shareLog.calls.length);
-  await exportFromGrid(page, manifest.smallOrder, '小', '低');
+  await exportFromGrid(page, manifest.smallOrder, '小', '低', null, { hdr: false });
   await waitPhase(page, ['ready']);
   const smallFacts = await batchFacts(page);
   await shareAll(page);
   await sharedFiles(page, manifest.outDir, 'small-', c1);
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
   out.steps.small = smallFacts;
 
   // HDR 原始尺寸 / 高（pair E）
   await page.evaluate(() => window.__devExport.core.stop());
   const c2 = await page.evaluate(() => window.__shareLog.calls.length);
-  await exportFromGrid(page, [manifest.hdrStem], '原始尺寸', '高', async () => {
-    const sw = page.locator('.ms.export input.switch');
-    if (!(await sw.isChecked())) await sw.click();
-  });
+  await exportFromGrid(page, [manifest.hdrStem], '原始尺寸', '高', null, { hdr: true });
   await waitPhase(page, ['ready']);
   const hdrFacts = await batchFacts(page);
   await shareAll(page);
   await sharedFiles(page, manifest.outDir, 'hdr-', c2);
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
   out.steps.hdr = hdrFacts;
 

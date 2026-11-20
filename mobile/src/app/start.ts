@@ -35,6 +35,35 @@ export function renderStart(host: HTMLElement, api: AppApi): void {
   priv.prepend(icon(ICON.lock));
 
   const calib = calibCard(api);
+  const syncCalibTrigger = () => {
+    const ready = calib.dataset.calib === 'ready';
+    if (ready) {
+      calib.setAttribute('role', 'button');
+      calib.tabIndex = 0;
+    } else {
+      calib.removeAttribute('role');
+      calib.removeAttribute('tabindex');
+    }
+  };
+  syncCalibTrigger();
+  const offCalib = api.book().onChange(() => {
+    if (!calib.isConnected) {
+      offCalib();
+      return;
+    }
+    syncCalibTrigger();
+  });
+  calib.addEventListener('click', (event) => {
+    if (calib.dataset.calib !== 'ready') return;
+    if ((event.target as HTMLElement | null)?.closest('button')) return;
+    api.showCalib();
+  });
+  calib.addEventListener('keydown', (event) => {
+    if (calib.dataset.calib !== 'ready') return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    api.showCalib();
+  });
 
   const cta = el('div', 'cta');
   const pick = button('btn primary lg block', '从存储卡选照片');

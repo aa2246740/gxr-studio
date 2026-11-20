@@ -106,7 +106,7 @@ export async function parity({ newPage, manifest, out }) {
   }
   out.steps.edited = edited;
   const order = manifest.jobs.map((job) => job.stem);
-  const sheet = await exportFromGrid(page, order);
+  const sheet = await exportFromGrid(page, order, '原始尺寸', '高', null, { hdr: false });
   await waitPhase(page, ['running', 'ready']);
   const ready = await waitPhase(page, ['ready']);
   const facts = await batchFacts(page);

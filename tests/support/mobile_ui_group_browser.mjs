@@ -119,10 +119,8 @@ try {
   const start = await edits(page);
   step('loaded', { photos: start.length, revs: start.map((row) => row.rev), heads: await heads(page) });
 
-  // 没复制就点「套用到这一组」：一句怎么复制。
-  await page.locator('.gh .go').first().click();
-  await page.waitForSelector('.pastebar[data-state="info"]');
-  step('hint', { line: await text(page, '.pastebar[data-state="info"]'), idle: await page.locator('.gh .go.idle').count() });
+  // 没复制时组标题不显示「套用到这一组」按钮，单张组不显示组标题。
+  step('hint', { goButtons: await page.locator('.gh .go').count() });
 
   // 来源：选配方、动曝光和对比度。
   const src = manifest.source;
@@ -162,7 +160,8 @@ try {
   // 分组间隔改成 1 分钟：组标题的张数跟着变，「套用到这一组」给的是新的张数。
   await page.locator('.nav .nb.plain').click();
   await page.locator('.ms .seg button', { hasText: '1 分钟' }).click();
-  await page.waitForFunction((n) => document.querySelectorAll('.gh[data-row]').length === n, manifest.expect['1'].length, { timeout: 10_000 });
+  const multiCount1 = manifest.expect['1'].filter((g) => g.length > 1).length;
+  await page.waitForFunction((n) => document.querySelectorAll('.gh[data-row]').length === n, multiCount1, { timeout: 10_000 });
   const gap1 = await heads(page);
   await page.locator(`.gh[data-row="group:${manifest.sourceGroupFirst1}"] .go`).click();
   const gap1Confirm = await confirmText(page);
@@ -212,11 +211,11 @@ try {
     p2: await editOf(page, p2),
   });
 
-  // 清除剪贴板：底栏收起，组标题回到灰的。
+  // 清除剪贴板：底栏收起，组标题上的「套用到这一组」按钮隐藏。
   await page.waitForSelector('.pastebar[data-state="copied"]', { timeout: 10_000 });
   const copiedBar = await text(page, '.pastebar[data-state="copied"]');
   await page.locator('[data-act="clear-clip"]').click();
-  step('cleared', { copiedBar, bars: await page.locator('.pastebar').count(), idle: await page.locator('.gh .go.idle').count() });
+  step('cleared', { copiedBar, bars: await page.locator('.pastebar').count(), goButtons: await page.locator('.gh .go').count() });
 
   // Sol r1 P2：只套用配方（目标的调整本来全是 0），再点「全部重置」、点两下已经是 0 的滑块、松开没动的滑块：都不是修改，
   // rev 不变，撤销照样还原。

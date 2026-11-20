@@ -1,15 +1,21 @@
 // 复制调整（04a）、套用到哪里（04b）、套用前确认（04c）和网格底栏（02a「已复制」、04d、04e）。
 // 字都是设计稿和桌面 paste_core.js 的原话；逻辑在 lib/paste.ts 和 paste_state.ts。
 
-import { groupByGap } from '../lib/group';
+import { unitOfLens } from '../lib/calib';
+import { mergeMeta } from '../lib/exif';
+import { formatClock, formatDay, groupByGap } from '../lib/group';
 import { presetLabel, rectFromArray } from '../lib/crop';
 import { FRAME_NAMES } from '../lib/frame_spec';
-import { photoWithAdopted, shelf, shelves } from '../lib/recipes';
-import { NOT_SET, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
+import { HDR_NO_RAW } from '../lib/hdr_text';
+import { loadExportHdr, saveExportHdr, watchExportHdr } from '../lib/prefs';
+import { adoptedSelectionOf, DEFAULT_CARD, namesOnly, photoWithAdopted, recipeUnitOf, shelf, shelves } from '../lib/recipes';
+import { NOT_SET, NOTHING_COPIED, ONLY_SOURCE, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
 import { curveSummary, groupsPresent } from '../lib/paste';
-import { button, el, icon } from './dom';
-import { ensureCameraRecipe, needsCameraRecipe, photoMs, type AppApi, type Knobs, type Photo } from './model';
+import { button, el, icon, ICON } from './dom';
+import { openExportOptions } from './export_ui';
+import { ensureCameraRecipe, needsCameraRecipe, onCameraRecipe, photoMs, type AppApi, type Knobs, type Photo } from './model';
 import { groupsAnd, groupsText, pasteState, rangeOf } from './paste_state';
+import { showToast } from './toast';
 import './paste.css';
 
 export const PASTE_ICON = {
@@ -344,4 +350,260 @@ export function pasteBar(api: AppApi, onChange: () => void): HTMLElement | null 
   });
   dock.append(acc, text, drop);
   return dock;
+}
+
+/** 当前照片生效的配方名（用于编辑器顶栏与照片信息；绝不返回文件名）。 */
+export function currentRecipeLabel(api: AppApi, photo: Photo): string {
+  if (!photo.dng) return '相机 JPG';
+  if (photo.recipeOff) return '中性转换';
+  const dat = api.book().dat;
+  const adopted = adoptedSelectionOf(photo, dat);
+  const sel = photo.choice ?? adopted?.choice ?? null;
+  if (dat) {
+    const photoUnit = unitOfLens(mergeMeta(photo.jpgMeta, photo.dngMeta).lens);
+    const unit = recipeUnitOf(photo.choice, adopted, photoUnit);
+    const cards = shelf(shelves(dat.listing, unit), 'all');
+    const id = sel?.id ?? DEFAULT_CARD;
+    const card = cards.find((c) => c.id === id) ?? cards[0] ?? null;
+    if (card?.name) return card.name;
+  }
+  if (photo.choice) {
+    const named = namesOnly().find((c) => c.id === photo.choice?.id);
+    if (named?.name) return named.name;
+  }
+  return '中性转换';
+}
+
+/** 照片信息底部面板：保留文件名、拍摄时间、格式、当前配方、尺寸、镜头和 ISO。 */
+export function openPhotoInfoSheet(host: HTMLElement, api: AppApi, photo: Photo): void {
+  closePasteSheets(host);
+  const sheet = el('div', 'ms paste-sheet');
+  sheet.dataset.state = 'photo-info';
+  const head = el('div', 'hd');
+  head.append(el('h2', '', '照片信息'));
+  const done = button('nb', '完成');
+  head.append(done);
+  const view = overlay(host, sheet, () => view.close());
+  done.addEventListener('click', () => view.close());
+
+  const ms = photoMs(photo);
+  const meta = mergeMeta(photo.jpgMeta, photo.dngMeta);
+  const names = [photo.dng?.name, photo.jpg?.name].filter((v): v is string => Boolean(v));
+  const format = photo.diptych
+    ? '相机 JPG（半格双联）'
+    : photo.dng && photo.jpg
+      ? 'RAW + JPG'
+      : photo.dng
+        ? '只有 RAW'
+        : '只有 JPG';
+  const rows: Array<[string, string]> = [
+    ['文件名', names.length ? names.join(' · ') : photo.stem],
+    ['拍摄时间', `${formatDay(ms)} ${formatClock(ms)}`],
+    ['格式', format],
+    ['当前配方', currentRecipeLabel(api, photo)],
+  ];
+  if (photo.frame) rows.push(['尺寸', `${photo.frame.width} × ${photo.frame.height}`]);
+  if (meta.lens) rows.push(['镜头', meta.lens]);
+  if (meta.iso != null) rows.push(['ISO', `ISO ${meta.iso}`]);
+
+  sheet.append(el('div', 'grab'), head);
+  for (const [label, value] of rows) {
+    const line = el('div', 'lrow');
+    const text = el('div');
+    text.append(el('b', '', label), el('small', 'num', value));
+    line.append(text);
+    sheet.append(line);
+  }
+}
+
+/** 编辑器顶栏 ⋯ 菜单：复制调整、粘贴、套用到这一组、导出选项、照片信息，全部复用既有面板。 */
+export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo): void {
+  closePasteSheets(host);
+  const sheet = el('div', 'ms paste-sheet');
+  sheet.dataset.state = 'editor-more';
+  const head = el('div', 'hd');
+  head.append(el('h2', '', '更多'));
+  const done = button('nb', '完成');
+  head.append(done);
+  const view = overlay(host, sheet, () => view.close());
+  done.addEventListener('click', () => view.close());
+
+  const clip = pasteState.clip;
+  const group = groupsNow(api).find((item) => item.ids.includes(photo.id));
+  const groupDetail = group ? `${group.rangeLabel} · ${group.ids.length} 张` : '当前照片所在分组';
+
+  const entries: Array<[string, string, string, () => void]> = [
+    [
+      'more-copy',
+      '复制调整',
+      '选要复制的项目，套用到别的照片',
+      () => openCopySheet(host, api, photo, () => undefined),
+    ],
+  ];
+  if (clip) {
+    entries.push(
+      [
+        'more-paste',
+        '粘贴',
+        `来自 ${clip.from.stem} · ${groupsText(clip.groups)}`,
+        () => {
+          const current = pasteState.clip;
+          if (!current) {
+            showToast(host, NOTHING_COPIED);
+            return;
+          }
+          const targets = pasteState.targets(api, [photo.id]);
+          if (!targets.length) {
+            showToast(host, ONLY_SOURCE);
+            return;
+          }
+          openConfirm(host, api, {
+            title: '套用到这张？',
+            body: `这张会换成 ${current.from.stem} 的${groupsAnd(current.groups)}。别的设置不变。`,
+            targets,
+            range: rangeOf(targets),
+            afterApply: () => undefined,
+            leaveFirst: false,
+          });
+        },
+      ],
+      [
+        'more-apply-group',
+        '套用到这一组',
+        groupDetail,
+        () => {
+          const current = pasteState.clip;
+          if (!current) {
+            showToast(host, NOTHING_COPIED);
+            return;
+          }
+          const nowGroup = groupsNow(api).find((item) => item.ids.includes(photo.id));
+          const ids = nowGroup?.ids ?? [photo.id];
+          const targets = pasteState.targets(api, ids);
+          if (!targets.length) {
+            showToast(host, ONLY_SOURCE);
+            return;
+          }
+          openConfirm(host, api, {
+            title: `套用到这一组的 ${targets.length} 张？`,
+            body: groupBody(nowGroup?.rangeLabel ?? '', targets.length, ids.includes(current.from.id), current.from.stem),
+            targets,
+            range: nowGroup?.rangeLabel ?? rangeOf(targets),
+            afterApply: () => undefined,
+            leaveFirst: true,
+          });
+        },
+      ],
+    );
+  }
+  entries.push(
+    [
+      'more-export-options',
+      '导出选项',
+      '尺寸、品质与 HDR 说明',
+      () => {
+        openExportOptions(host, [photo.id]);
+      },
+    ],
+    [
+      'more-photo-info',
+      '照片信息',
+      '文件名、拍摄时间与镜头',
+      () => openPhotoInfoSheet(host, api, photo),
+    ],
+  );
+
+  sheet.append(el('div', 'grab'), head);
+  for (const [act, label, detail, run] of entries) {
+    const line = button('lrow', '');
+    line.dataset.act = act;
+    const text = el('div');
+    text.append(el('b', '', label), el('small', '', detail));
+    line.append(text);
+    line.addEventListener('click', () => {
+      view.close();
+      run();
+    });
+    sheet.append(line);
+  }
+}
+
+export interface EditorNavHandle {
+  el: HTMLElement;
+  refresh(): void;
+  destroy(): void;
+}
+
+/** 编辑器顶栏：返回「照片」、中间配方名 +「第几张 / 共几张」（不含文件名）、右侧 HDR 开关与可用 ⋯。 */
+export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, index: number, total: number): EditorNavHandle {
+  const nav = el('header', 'nav');
+  const back = button('nb', '照片');
+  back.prepend(icon(ICON.back));
+  back.addEventListener('click', () => api.back());
+
+  const title = el('div', 't');
+  const recipeEl = el('b', '', currentRecipeLabel(api, photo));
+  const posEl = el('small', 'num', `${index + 1} / ${total}`);
+  title.append(recipeEl, posEl);
+
+  const right = el('div', 'nav-r');
+  const canHdr = photo.dng !== null;
+  const hdrWrap = el('span', 'hdr-wrap');
+  const hdrBtn = button('hdr-toggle', 'HDR');
+  hdrBtn.dataset.act = 'hdr-toggle';
+  hdrBtn.setAttribute('role', 'switch');
+  hdrBtn.setAttribute('aria-label', 'HDR');
+  const syncHdr = () => {
+    if (!canHdr) {
+      hdrBtn.disabled = true;
+      hdrBtn.classList.remove('on');
+      hdrBtn.setAttribute('aria-checked', 'false');
+      hdrBtn.dataset.reason = HDR_NO_RAW;
+      hdrBtn.title = HDR_NO_RAW;
+      return;
+    }
+    const on = loadExportHdr();
+    hdrBtn.disabled = false;
+    hdrBtn.classList.toggle('on', on);
+    hdrBtn.setAttribute('aria-checked', on ? 'true' : 'false');
+    delete hdrBtn.dataset.reason;
+    hdrBtn.removeAttribute('title');
+  };
+  syncHdr();
+  hdrBtn.addEventListener('click', () => {
+    if (!canHdr) return;
+    saveExportHdr(!loadExportHdr());
+  });
+  hdrWrap.addEventListener('click', () => {
+    if (!canHdr) showToast(shell, HDR_NO_RAW);
+  });
+  hdrWrap.append(hdrBtn);
+
+  const more = button('nb plain', '…');
+  more.dataset.act = 'editor-more';
+  more.setAttribute('aria-label', '更多');
+  more.addEventListener('click', () => openEditorMoreSheet(shell, api, photo));
+
+  right.append(hdrWrap, more);
+  nav.append(back, title, right);
+
+  const refresh = () => {
+    recipeEl.textContent = currentRecipeLabel(api, photo);
+    syncHdr();
+  };
+  const offHdr = watchExportHdr(syncHdr);
+  const offBook = api.book().onChange(() => refresh());
+  const offCam = onCameraRecipe((id) => {
+    if (id === photo.id) refresh();
+  });
+
+  return {
+    el: nav,
+    refresh,
+    destroy: () => {
+      offHdr();
+      offBook();
+      offCam();
+    },
+  };
 }

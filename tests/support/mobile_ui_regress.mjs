@@ -133,9 +133,15 @@ async function swipeLeft(page) {
 async function editorState(page) {
   return page.evaluate(() => ({
     screen: document.querySelector('.app')?.dataset.screen,
-    title: document.querySelector('.editor .nav b')?.textContent ?? '',
+    title: document.querySelector('.editor')?.dataset.photo ?? '',
     index: document.querySelector('.editor .nav small')?.textContent ?? '',
   }));
+}
+
+async function setGridOrder(page, order) {
+  await page.locator('.nav .nb.plain').click();
+  await page.locator(`.ms [data-order="${order}"]`).click();
+  await page.waitForFunction(() => !document.querySelector('.ms'));
 }
 
 function le16(value) {
@@ -465,9 +471,9 @@ const CASES = {
       await page.waitForTimeout(2000);
       const settledCalls = (await page.evaluate(() => window.__histCalls)) - dragCalls;
       const exposure = await page.locator('.val').innerText();
-      const title = await page.locator('.editor .nav b').innerText();
+      const title = (await page.locator('.editor').getAttribute('data-photo')) ?? '';
       await swipeLeft(page);
-      await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, title, { timeout: 30_000 });
+      await page.waitForFunction((prev) => document.querySelector('.editor')?.dataset.photo !== prev, title, { timeout: 30_000 });
       await waitDrawn(null);
       const next = await histState();
       return { first, idleCalls, dragged, dragCalls, settledCalls, exposure, next, errors };
@@ -534,7 +540,7 @@ const CASES = {
         const callsAfterFirst = await page.evaluate(() => window.__thumbCalls);
         stage('gpu: diff done');
         await swipeLeft(page);
-        await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, first.title, { timeout: 30_000 });
+        await page.waitForFunction((prev) => document.querySelector('.editor')?.dataset.photo !== prev, first.title, { timeout: 30_000 });
         await waitCards();
         stage('gpu: second cards');
         const swipeBack = async () => {
@@ -549,7 +555,7 @@ const CASES = {
         // 只为诊断：每 20 秒问一次页面还答不答（5 秒内），答了就印标题，不答就印「没有回应」。不改任何等待和断言。
         const watchdog = setInterval(() => {
           Promise.race([
-            page.evaluate(() => `${document.querySelector('.editor .nav b')?.textContent} screen=${document.querySelector('.app')?.dataset.screen}`),
+            page.evaluate(() => `${document.querySelector('.editor')?.dataset.photo} screen=${document.querySelector('.app')?.dataset.screen}`),
             new Promise((done) => setTimeout(() => done('no answer within 5 s'), 5000)),
           ]).then((text) => stage(`gpu: watchdog ${text}`), (err) => stage(`gpu: watchdog error ${err?.message ?? err}`));
         }, 20_000);
@@ -557,13 +563,13 @@ const CASES = {
         try {
           await swipeBack();
           stage('gpu: swipe gesture sent');
-          await page.waitForFunction((want) => document.querySelector('.editor .nav b')?.textContent === want, first.title, { timeout: 30_000 }).catch(async (err) => {
+          await page.waitForFunction((want) => document.querySelector('.editor')?.dataset.photo === want, first.title, { timeout: 30_000 }).catch(async (err) => {
             // Sol r6 P2：页面卡死时诊断的 evaluate 也不会回来。Node 这边单独给 5 秒，读不到就写「页面无回应」，
             // 照样抛出原来那个 30 秒超时，不让诊断把最初的失败吞掉。
             let late;
             const state = await Promise.race([
               page.evaluate(() => ({
-                title: document.querySelector('.editor .nav b')?.textContent,
+                title: document.querySelector('.editor')?.dataset.photo,
                 screen: document.querySelector('.app')?.dataset.screen,
                 label: document.querySelector('.editor .lbl')?.textContent,
                 overlays: [...document.querySelectorAll('.scrim, .ms, .dlg')].map((n) => n.className),
@@ -638,8 +644,8 @@ const CASES = {
       await page.getByRole('button', { name: '先用读进来的', exact: true }).click();
       const subtitle = await page.locator('.nav small').innerText();
       // 普通刷新（换顺序）不能把拔卡状态盖掉。
-      await page.getByRole('button', { name: '从晚到早', exact: true }).click();
-      await page.getByRole('button', { name: '从早到晚', exact: true }).click();
+      await setGridOrder(page, 'newest');
+      await setGridOrder(page, 'oldest');
       const subtitleAfterRefresh = await page.locator('.nav small').innerText();
       const bClass = await cellClass(page, b);
       await page.locator(`.cell[data-id="${b}"]`).click();
@@ -667,7 +673,7 @@ const CASES = {
       const bClassRepicked = await cellClass(page, b);
       await page.locator(`.cell[data-id="${b}"]`).click();
       await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
-      const repickedTitle = await page.locator('.editor .nav b').innerText();
+      const repickedTitle = (await page.locator('.editor').getAttribute('data-photo')) ?? '';
       return { a, b, aName, bName, before, after, dialog, subtitle, subtitleAfterRefresh, bClass, againDialog, reopened, readsAfterCard, subtitleRepicked, bClassRepicked, repickedTitle, errors };
     } finally {
       await context.close();
@@ -732,7 +738,7 @@ const CASES = {
       const first = await editorState(page);
       await page.waitForTimeout(1500);
       await swipeLeft(page);
-      await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, first.title, { timeout: 30_000 });
+      await page.waitForFunction((prev) => document.querySelector('.editor')?.dataset.photo !== prev, first.title, { timeout: 30_000 });
       await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 120_000 });
       const second = await editorState(page);
       return { gpu, first, second, mainReads: await page.evaluate(() => window.__mainReads), errors };
@@ -774,9 +780,8 @@ const CASES = {
       const files = ['R9700001.JPG', 'R9700002.JPG', 'R9700003.JPG'].map((name) => ({ name, mimeType: 'image/jpeg', buffer: jpg }));
       await pick(page, files);
       const runs = {};
-      for (const [label, order] of [['从晚到早', 'newest'], ['从早到晚', 'oldest']]) {
-        await page.getByRole('button', { name: label, exact: true }).click();
-        await page.waitForFunction((want) => document.querySelector(`[data-order="${want}"]`)?.classList.contains('on'), order);
+      for (const order of ['newest', 'oldest']) {
+        await setGridOrder(page, order);
         const ids = await gridIds(page);
         await page.locator(`.cell[data-id="${ids[0]}"]`).click();
         await page.waitForSelector('[data-screen="editor"]');
@@ -784,7 +789,7 @@ const CASES = {
         for (let i = 1; i < ids.length; i += 1) {
           const before = seen[seen.length - 1].title;
           await swipeLeft(page);
-          await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, before, { timeout: 10_000 }).catch(() => undefined);
+          await page.waitForFunction((prev) => document.querySelector('.editor')?.dataset.photo !== prev, before, { timeout: 10_000 }).catch(() => undefined);
           seen.push(await editorState(page));
         }
         runs[order] = { ids, seen };

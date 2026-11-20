@@ -271,44 +271,38 @@ try {
   const sdrOrder = [a, b, c, jpgOnly];
   const hdrOrder = [d];
 
-  await exportFromGrid(page, sdrOrder, '原始尺寸', '高');
+  await exportFromGrid(page, sdrOrder, '原始尺寸', '高', null, { hdr: false });
   const sdrFullReady = await waitPhase(page, ['ready']);
   const sdrFullFacts = await batchFacts(page);
   await shareAll(page);
   const sdrFullFiles = await sharedFiles(page, manifest.outDir, 'full-');
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
 
   await page.evaluate(() => window.__devExport.core.stop());
   let callIndex = await page.evaluate(() => window.__shareLog.calls.length);
-  await exportFromGrid(page, sdrOrder, '小', '低');
+  await exportFromGrid(page, sdrOrder, '小', '低', null, { hdr: false });
   const sdrSmallReady = await waitPhase(page, ['ready']);
   const sdrSmallFacts = await batchFacts(page);
   await shareAll(page);
   const sdrSmallFiles = await sharedFiles(page, manifest.outDir, 'small-', callIndex);
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
 
   await page.evaluate(() => window.__devExport.core.stop());
   callIndex = await page.evaluate(() => window.__shareLog.calls.length);
-  await exportFromGrid(page, hdrOrder, '原始尺寸', '高', async () => {
-    await page.locator('.ms.export input.switch').click();
-  });
+  await exportFromGrid(page, hdrOrder, '原始尺寸', '高', null, { hdr: true });
   const hdrFullReady = await waitPhase(page, ['ready']);
   const hdrFullFacts = await batchFacts(page);
   await shareAll(page);
   const hdrFullFiles = await sharedFiles(page, manifest.outDir, 'hdr-full-', callIndex);
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
 
   await page.evaluate(() => window.__devExport.core.stop());
   callIndex = await page.evaluate(() => window.__shareLog.calls.length);
-  await exportFromGrid(page, hdrOrder, '小', '低');
+  await exportFromGrid(page, hdrOrder, '小', '低', null, { hdr: true });
   const hdrSmallReady = await waitPhase(page, ['ready']);
   const hdrSmallFacts = await batchFacts(page);
   await shareAll(page);
   const hdrSmallFiles = await sharedFiles(page, manifest.outDir, 'hdr-small-', callIndex);
-  await page.locator('.pdock [data-act="done"]').click();
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
 
   out.steps.exports = {
@@ -347,8 +341,6 @@ try {
   const deletedBannerText = await page.locator('.panel.lut [data-state="lut-deleted"]').innerText();
 
   await page.locator('.actbar [data-act="export"]').click();
-  await page.waitForSelector('.ms.export');
-  await page.locator('.ms.export .go').click();
   const deletedExportReady = await waitPhase(page, ['ready']);
   const deletedFailures = await page.evaluate(() => {
     const b = window.__devExport.flow.current();
@@ -368,9 +360,9 @@ try {
 
   // 11. post-r1 回归：P3-01 非 UTF-8 .cube 中文提示、P1-01 保留 output_space、P2-03 删除事务中止恢复、P2-04 清空销毁 GPU LUT
   // 关闭导出 dock 并仍在 Pair A LUT 页签继续
-  const doneBtn = page.locator('.pdock [data-act="done"]');
-  if (await doneBtn.count()) {
-    await doneBtn.click();
+  const dismissBtn = page.locator('.pdock [data-act="dismiss"], .pdock [data-act="done"]');
+  if (await dismissBtn.count()) {
+    await dismissBtn.first().click();
     await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 });
   }
 
