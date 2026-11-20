@@ -278,7 +278,7 @@ export class ExportFlow {
   private allReadyEntries(batch: ExportBatch | null): ReadyEntry[] {
     const carried = this.carryoverEntries();
     const current = batch && batch.phase !== 'closed' ? this.batchEntries(batch) : [];
-    return [...carried, ...current];
+    return this.queue.readyEntries(carried, current);
   }
 
   /** 开始或排队一批导出：保留未共享的成片与失败记录，不丢结果。 */
@@ -714,7 +714,7 @@ export class ExportFlow {
           return;
         }
         // 最后一批交出后自动收起，不再多点一次「好」。
-        this.finishShare(batch, ids);
+        this.finishShare(batch);
       },
       () => {
         // 关掉了面板（AbortError）或别的失败：留在就绪条，文件还在。
@@ -722,14 +722,14 @@ export class ExportFlow {
     );
   }
 
-  private finishShare(batch: ExportBatch | null, finalIds: readonly string[] = []): void {
+  private finishShare(batch: ExportBatch | null): void {
     this.revokeUrls();
     this.view = 'progress';
     this.detailsOpen = false;
     this.chunks = [];
     this.chunk = 0;
     this.chunkEntryCount = 0;
-    this.queue.finishShare(finalIds);
+    this.queue.finishShare();
     if (batch && batch.phase !== 'closed') {
       batch.release();
     }

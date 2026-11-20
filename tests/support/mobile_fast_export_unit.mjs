@@ -377,3 +377,55 @@ test('export_queue: saving carryover while another photo runs consumes only shar
   assert.deepEqual(queue.carryover.map((e) => e.id), ['p4']);
   assert.equal(queue.savedCount(null), 1);
 });
+
+test('export_queue: after 停止, 存到相册 on a photo that never ran starts it again (r2 P2)', async () => {
+  const { ExportBatch } = await import('../../mobile/src/app/export_batch.ts');
+  const { ExportQueueState } = await import('../../mobile/src/app/export_queue.ts');
+  const queue = new ExportQueueState();
+  const opts = { size: 'original', quality: 'high', hdr: true };
+  const p1 = { id: 'p1', stem: 'P1' };
+  const p2 = { id: 'p2', stem: 'P2' };
+  const host = {
+    run: () => new Promise(() => {}),
+    stop() {},
+    idle() {},
+    session: () => 1,
+    photo: () => ({ version: 1, dng: null, jpg: null }),
+    markGone() {},
+    busy() {},
+    changed() {},
+  };
+  const items = [p1, p2].map((p) => ({ id: p.id, stem: p.stem, version: 1, dng: null, jpg: null, req: {} }));
+  const batch = new ExportBatch(items, host);
+  queue.beginBatch([p1, p2], opts);
+  batch.start();
+  await Promise.resolve();
+  assert.equal(batch.phase, 'running');
+  assert.deepEqual(queue.filterQuickPhotos([p1, p2], batch), [], 'while running both are blocked');
+  batch.stop();
+  assert.equal(batch.phase, 'stopped');
+  assert.deepEqual(queue.filterQuickPhotos([p1, p2], batch), [p1, p2], 'after stop, waiting photos can be exported again');
+});
+
+test('export_queue: a re-exported photo is shared once, with the newer file (r2 P2)', async () => {
+  const { ExportQueueState } = await import('../../mobile/src/app/export_queue.ts');
+  const queue = new ExportQueueState();
+  const oldFile = new File([new Uint8Array(8)], 'P1_gxr.jpg');
+  const newFile = new File([new Uint8Array(9)], 'P1_gxr_hdr.jpg');
+  const p3 = new File([new Uint8Array(4)], 'P3_gxr.jpg');
+  const carried = [
+    { id: 'p1', stem: 'P1', file: oldFile, position: 1, hdrRequested: false },
+    { id: 'p3', stem: 'P3', file: p3, position: 3, hdrRequested: false },
+  ];
+  const current = [{ id: 'p1', stem: 'P1', file: newFile, position: 1, hdrRequested: true }];
+  const merged = queue.readyEntries(carried, current);
+  assert.deepEqual(merged.map((e) => e.id).sort(), ['p1', 'p3']);
+  assert.equal(merged.find((e) => e.id === 'p1').file, newFile);
+  // Until the new one is ready, the carried one is still offered
+  assert.deepEqual(queue.readyEntries(carried, []).map((e) => e.id), ['p1', 'p3']);
+});
+
+test('export_ready: photo positions are listed in grid order (r2 P3)', async () => {
+  const { readyPositionsSummary } = await import('../../mobile/src/app/export_ready.ts');
+  assert.equal(readyPositionsSummary([1, 6, 5]), '第 1 张、第 5 张、第 6 张');
+});
