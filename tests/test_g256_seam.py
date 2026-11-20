@@ -31,6 +31,7 @@ from test_mobile_ui_browser import _drive
 # 仅在显式开启 GXR_HALFFRAME_SWEEP=1 时用于核对本机 captures/ 全量实拍的已知双联位置（按目录内 JPG 排序的 1-based 序号）。
 _SWEEP_KNOWN_DIPTYCHS: dict[str, set[int]] = {
     "hf256-field-20261120/card": {2, 7, 10},
+    "hf258-field-20261120/card": {2, 5},
     "r6-field-20261117/card242": {3, 5},
     "r6-field-20261117/card245": {4},
     "r6-field-20261118/card249": {2, 4},
@@ -234,9 +235,9 @@ def _collect_captures_4288() -> tuple[list[tuple[Path, str, int, np.ndarray, boo
 
 @_SWEEP_SKIP
 def test_opt_in_captures_sweep_desktop_and_phone_parity() -> None:
-    """按需全量扫描 captures/ 全部 4288×2848 JPEG：0 误报，18/18 已知双联命中，桌面与手机规则 100% 一致。"""
+    """按需全量扫描 captures/ 全部 4288×2848 JPEG：0 误报，20/20 已知双联命中，桌面与手机规则 100% 一致。"""
     rows, diptych_paths = _collect_captures_4288()
-    assert len(rows) > 0 and len(diptych_paths) == 18
+    assert len(rows) > 0 and len(diptych_paths) == 20
 
     phone_verdicts = _node_is_diptych_batch([(luma, "col") for _p, _fk, _ord, luma, _exp in rows])
     for (_path, fkey, ord_idx, luma, expected), phone_v in zip(rows, phone_verdicts, strict=True):
@@ -248,11 +249,11 @@ def test_opt_in_captures_sweep_desktop_and_phone_parity() -> None:
 @_SWEEP_SKIP
 @pytest.mark.browser_serial
 def test_opt_in_browser_decoder_parity_sweep(tmp_path: Path) -> None:
-    """按需 Chromium 解码核对（F3）：全部 18 张实拍双联 + 30 张普通照（含暗景近邻）100% 与桌面一致。"""
+    """按需 Chromium 解码核对（F3）：全部 20 张实拍双联 + 30 张普通照（含暗景近邻）100% 与桌面一致。"""
     _browser_prereq()
     _clear_desktop_cache()
     rows, diptych_paths = _collect_captures_4288()
-    assert len(diptych_paths) == 18
+    assert len(diptych_paths) == 20
 
     g250_c0, g250_c1 = hf._SEAM_SPEC_COLS[0][1], hf._SEAM_SPEC_COLS[0][2]
     ordinary_rows = [(p, fk, oi, int(luma[:, g250_c0 : g250_c1 + 1].max())) for p, fk, oi, luma, exp in rows if not exp]

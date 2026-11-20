@@ -84,6 +84,16 @@ def _discover_r5_bundles() -> list[tuple[str, Path, Path]]:
             _PARENT / "firmware/package_v310b_hf256_r1/local/test256-REVIEW_PENDING",
             _PARENT / "firmware/package_v310b_kubik_lib_r6/local/test-REVIEW_PENDING",
         ),
+        (
+            "g257_kubik",
+            _PARENT / "firmware/package_v310b_hf_v4_r1/local/test257-REVIEW_PENDING",
+            _PARENT / "firmware/package_v310b_kubik_lib_r6/local/test-REVIEW_PENDING",
+        ),
+        (
+            "g258_kubik",
+            _PARENT / "firmware/package_v310b_hf_adj_keep_r1/local/test258-REVIEW_PENDING",
+            _PARENT / "firmware/package_v310b_kubik_lib_r6/local/test-REVIEW_PENDING",
+        ),
     ]
     out: list[tuple[str, Path, Path]] = []
     for label, dat_folder, fx_folder in candidates:
