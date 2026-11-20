@@ -48,7 +48,7 @@ export function readyShareLabel(positions: ReadonlyArray<number | null>, chunk: 
 
 /** 多张就绪时列出具体照片位置（「第 3 张、第 4 张」或「第 1、2、3、4 张等 6 张」）。 */
 export function readyPositionsSummary(positions: ReadonlyArray<number | null>): string {
-  const nums = positions.filter((p): p is number => typeof p === 'number' && p > 0);
+  const nums = positions.filter((p): p is number => typeof p === 'number' && p > 0).sort((a, b) => a - b);
   if (!nums.length) return '';
   if (nums.length === 1) return `第 ${nums[0]} 张`;
   if (nums.length <= 4) return nums.map((p) => `第 ${p} 张`).join('、');

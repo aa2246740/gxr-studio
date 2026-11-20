@@ -69,10 +69,18 @@ export class ExportQueueState<TPhoto extends { id: string }> {
     }
     if (batch && batch.phase !== 'closed') {
       const state = batch.states.get(id);
-      if (state === 'wait' || state === 'run') return true;
+      // 只有批次还在跑（或停在待存上限）时，没做完的照片才算「正在导出」；停止以后可以重新点「存到相册」
+      const live = batch.phase === 'running' || batch.phase === 'held';
+      if (live && (state === 'wait' || state === 'run')) return true;
       if (state === 'ok' && !this.sharedIds.has(id)) return true;
     }
     return false;
+  }
+
+  /** 就绪条要交出的全部成片：同一张照片在新批次里又做好了，就只交新的（旧的留着备用，直到新的做好）。 */
+  readyEntries(carried: readonly ReadyEntry[], current: readonly ReadyEntry[]): ReadyEntry[] {
+    const fresh = new Set(current.map((e) => e.id));
+    return [...carried.filter((e) => !fresh.has(e.id)), ...current];
   }
 
   /** 快捷「存到相册」去重：忽略已在运行、排队或待存中的照片，同时去除本次重复 id。 */
@@ -147,6 +155,8 @@ export class ExportQueueState<TPhoto extends { id: string }> {
     }
     if (batch && batch.phase !== 'closed') {
       this.preserveBatch(batch, batchEntries(batch));
+    } else if (!this.carryover.length) {
+      this.carriedSaved = 0; // 上一轮都存完了：这是新的一轮，「已存」从 0 数
     }
     this.beginBatch(photos, options);
     return 'launch';
@@ -166,6 +176,8 @@ export class ExportQueueState<TPhoto extends { id: string }> {
     if (!next) return null;
     if (batch && batch.phase !== 'closed') {
       this.preserveBatch(batch, batchEntries(batch));
+    } else if (!this.carryover.length) {
+      this.carriedSaved = 0;
     }
     this.beginBatch(next.photos, next.options);
     return next;
@@ -185,13 +197,12 @@ export class ExportQueueState<TPhoto extends { id: string }> {
   }
 
   /** 最后一批交出后：清空 carryover 与分批共享标记；保留 carriedFailures 以便用户继续重试。 */
-  finishShare(finalIds: readonly string[] = []): void {
+  finishShare(): void {
     const carryCount = this.carryover.length;
     this.carryover = [];
     this.sharedIds.clear();
     // carryover 里的条目不在当前 batch.savedCount() 中，计入 carriedSaved。
     this.carriedSaved += carryCount;
-    void finalIds;
   }
 
   /** 汇总当前保留失败与活动批次失败（同一 id 以当前批次为准）。 */
