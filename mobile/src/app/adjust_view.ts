@@ -1,9 +1,11 @@
-// 编辑器里的「调整」页：十个基础调整滑块、双指/长按重置、拖动中状态和 rev 记录。
+// 编辑器 128pt 单带里的「调整」页：10 项参数片、全部重置、曲线 ›、浮窗直方图开关与单根大滑块。
 
 import type { Adjust } from '../../../frontend/src/index';
 import { curveJson } from '../lib/export_request';
-import { button, el } from './dom';
+import { button, el, icon } from './dom';
 import { zeroKnobs, type Knobs, type Photo } from './model';
+
+const HIST_ICON = 'M4 19V11M9 19V6M14 19V13M19 19V8M3 19h18';
 
 export const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number; step: number }> = [
   { key: 'exposure_ev', label: '曝光', min: -5, max: 5, step: 0.1 },
@@ -45,6 +47,10 @@ export interface AdjustHost {
   leaveDrag(): void;
   dragging(): boolean;
   refreshCurves?(): void;
+  openCurves?(): void;
+  toggleHist?(): boolean;
+  histVisible?(): boolean;
+  onEditedChanged?(): void;
 }
 
 export class AdjustView {
@@ -52,13 +58,25 @@ export class AdjustView {
   private input: HTMLInputElement | null = null;
   private valueEl: HTMLElement | null = null;
   private labelEl: HTMLElement | null = null;
+  private histBtn: HTMLButtonElement | null = null;
+  private chipsEl: HTMLElement | null = null;
   private committed = 0;
   private readonly host: AdjustHost;
+  private readonly head: HTMLElement;
   private readonly panel: HTMLElement;
 
-  constructor(host: AdjustHost, hist: HTMLElement) {
+  constructor(host: AdjustHost, _legacyHist?: HTMLElement) {
+    void _legacyHist;
     this.host = host;
-    this.panel = this.adjustPanel(hist);
+    this.head = el('div', 'band-adjust-hd');
+    this.labelEl = el('b', 'adj-lab', '曝光');
+    this.valueEl = el('span', 'val num', '0.0');
+    this.head.append(this.labelEl, this.valueEl);
+    this.panel = this.adjustPanel();
+  }
+
+  headEl(): HTMLElement {
+    return this.head;
   }
 
   panelEl(): HTMLElement {
@@ -67,46 +85,48 @@ export class AdjustView {
 
   refresh(): void {
     this.showKnob();
+    this.syncHistBtn();
   }
 
   setDisabled(disabled: boolean): void {
     if (this.input) this.input.disabled = disabled;
   }
 
+  syncHistBtn(): void {
+    if (!this.histBtn) return;
+    const on = Boolean(this.host.histVisible?.());
+    this.histBtn.classList.toggle('on', on);
+    this.histBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+
   destroy(): void {
     this.input = null;
     this.valueEl = null;
     this.labelEl = null;
+    this.histBtn = null;
+    this.chipsEl = null;
   }
 
-  private adjustPanel(hist: HTMLElement): HTMLElement {
+  private adjustPanel(): HTMLElement {
     const panel = el('div', 'panel adjust');
+    const row = el('div', 'adjust-row');
     const chips = el('div', 'chips');
+    this.chipsEl = chips;
+
     for (const spec of SLIDERS) {
       const chip = button('chip', spec.label);
       chip.dataset.key = spec.key;
       if (spec.key === this.key) chip.classList.add('on');
       chip.addEventListener('click', () => {
         this.key = spec.key;
-        for (const item of chips.querySelectorAll('.chip')) item.classList.toggle('on', item === chip);
+        for (const item of chips.querySelectorAll('.chip[data-key]')) item.classList.toggle('on', item === chip);
         this.showKnob();
       });
       chips.append(chip);
     }
-    const big = el('div', 'big');
-    const line = el('div', 'l1');
-    this.labelEl = el('b', '', '曝光');
-    this.valueEl = el('span', 'val', '0.0');
-    line.append(this.labelEl, this.valueEl);
-    this.input = document.createElement('input');
-    this.input.type = 'range';
-    this.input.dataset.key = 'exposure_ev';
-    const slider = el('div', 'slider');
-    slider.append(this.input);
-    big.append(line, slider);
-    const hint = el('div', 'hint-row');
-    hint.append(el('span', 'faint', '点两下圆点回到 0'));
-    const reset = button('fbtn', '全部重置');
+
+    const reset = button('chip reset-chip', '全部重置');
+    reset.dataset.act = 'adjust-reset';
     reset.addEventListener('click', () => {
       const photo = this.host.photo();
       if (!photo) return;
@@ -120,10 +140,39 @@ export class AdjustView {
       this.showKnob();
       this.host.push();
       this.host.refreshCurves?.();
+      this.host.onEditedChanged?.();
     });
-    hint.append(reset);
-    panel.append(hist, chips, big, hint);
+    chips.append(reset);
+
+    const curves = button('chip curves-chip', '曲线 ›');
+    curves.dataset.act = 'open-curves';
+    curves.addEventListener('click', () => this.host.openCurves?.());
+    chips.append(curves);
+
+    this.histBtn = button('hist-toggle', '');
+    this.histBtn.dataset.act = 'hist-toggle';
+    this.histBtn.setAttribute('aria-label', '直方图');
+    this.histBtn.setAttribute('aria-pressed', 'false');
+    this.histBtn.append(icon(HIST_ICON));
+    this.histBtn.addEventListener('click', () => {
+      this.host.toggleHist?.();
+      this.syncHistBtn();
+    });
+
+    row.append(chips, this.histBtn);
+
+    const big = el('div', 'big');
+    this.input = document.createElement('input');
+    this.input.type = 'range';
+    this.input.dataset.key = 'exposure_ev';
+    const slider = el('div', 'slider');
+    slider.append(this.input);
+    big.append(slider);
+
+    panel.append(row, big);
     this.showKnob();
+    this.syncHistBtn();
+
     this.input.addEventListener('input', () => {
       const photo = this.host.photo();
       if (!photo || !this.input) return;
@@ -131,17 +180,19 @@ export class AdjustView {
       if (!Number.isFinite(value)) return;
       photo.knobs[this.key] = value;
       this.paintSlider();
+      this.paintChipDots();
       this.host.push();
+      this.host.onEditedChanged?.();
     });
     // 松手（change）才算落定的修改，编辑状态的版本加一（撤销套用时据此判断改没改过）。
     this.input.addEventListener('change', () => {
       const photo = this.host.photo();
       if (!photo) return;
-      // 松手时的值和上次落定的一样（拖出去又拖回来）：没有修改。
       const value = photo.knobs[this.key];
       if (value === this.committed) return;
       this.committed = value;
       photo.rev += 1;
+      this.host.onEditedChanged?.();
     });
     this.input.addEventListener('pointerdown', () => this.host.enterDrag());
     const end = () => {
@@ -157,8 +208,18 @@ export class AdjustView {
       photo.rev += 1;
       this.showKnob();
       this.host.push();
+      this.host.onEditedChanged?.();
     });
     return panel;
+  }
+
+  private paintChipDots(): void {
+    const photo = this.host.photo();
+    if (!photo || !this.chipsEl) return;
+    for (const node of this.chipsEl.querySelectorAll<HTMLElement>('.chip[data-key]')) {
+      const key = node.dataset.key as keyof Knobs | undefined;
+      if (key) node.classList.toggle('edited', photo.knobs[key] !== 0);
+    }
   }
 
   private showKnob(): void {
@@ -173,6 +234,7 @@ export class AdjustView {
     this.committed = photo.knobs[this.key];
     this.input.dataset.key = spec.key;
     this.paintSlider();
+    this.paintChipDots();
   }
 
   private paintSlider(): void {

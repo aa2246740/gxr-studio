@@ -1,11 +1,22 @@
-// 编辑器里的配方：照片下面的配方卡（03a）和「配方」页。点卡换配方；卡片在后台一张张画出来。
+// 编辑器 128pt 单带里的配方视图：配方卡横条（带首「配方 | LUT」切换）、点击已选卡进入微调子页、顶部筛选与状态说明。
 // 状态照设计稿：06c 没校准（中性转换，可以选）、06d 没有相机配方文件（卡片置灰）、06e 只有 JPG。
 
 import type { Engine, Geometry } from '../../../frontend/src/index';
-import { crossed, uncalibratedReason, unitOfLens, type Unit } from '../lib/calib';
+import { crossed, unitOfLens, type Unit } from '../lib/calib';
 import { mergeMeta } from '../lib/exif';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
-import { adoptedSelectionOf, CAMERA_RECIPE_LEVELS_UNKNOWN, cameraRecipeErrorOf, cardTag, choices, DEFAULT_CARD, effective, formatCameraRecipeEditorError, KNOB_NAMES, levelText, namesOnly, nearestIndex, recipeUnitOf, shelf, shelves } from '../lib/recipes';
+import {
+  adoptedSelectionOf,
+  cameraRecipeErrorOf,
+  cardTag,
+  DEFAULT_CARD,
+  effective,
+  KNOB_NAMES,
+  namesOnly,
+  recipeUnitOf,
+  shelf,
+  shelves,
+} from '../lib/recipes';
 import type { AdoptedSelection, CameraRecipeError, Card, Control, Shelf, Shelves } from '../lib/recipes';
 import { recipeSwitch } from '../lib/recipe_memory';
 import type { UnitState } from './book';
@@ -13,11 +24,20 @@ import { button, el, icon } from './dom';
 import { exportPaused } from './export_pause';
 import { lookCache } from './looks';
 import { ensureCameraRecipe, needsCameraRecipe, onCameraRecipe, type AppApi, type Photo } from './model';
+import {
+  bitmapId,
+  buildKnobRow,
+  centerStripCard,
+  makeRecipeLutSwitch,
+  openAskDatSheet,
+  openJpgInfoSheet,
+  openRecipeFilterSheet,
+  openRecipeStatusSheet,
+  shelfShortLabel,
+  type AskSheetHandle,
+} from './recipe_band';
 
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
-const WARN = 'M12 4l9 16H3zM12 10v4M12 17h.01';
-const PLUS = 'M12 5v14M5 12h14';
-const FILE = 'M7 3h7l4 4v14H7zM14 3v4h4';
 const GEOMETRY: Geometry = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
 const ADJUST = {
   exposure_ev: 0,
@@ -30,7 +50,6 @@ const ADJUST = {
   vibrance: 0,
   vignette: 0,
 };
-/** 桌面 lut.js 的那句；手机上没有本机配方，只用前半句。 */
 const MINE_EMPTY = '电脑上还没有我的配方。';
 const NEUTRAL_LABEL = '中性转换';
 const PREDICTED_LABEL = '电脑预测';
@@ -45,6 +64,14 @@ export interface StageHooks {
   recipeTab(): boolean;
   /** 几何与裁切框（给配方卡小图裁剪预览）。 */
   geometry(): Promise<{ geometry: Geometry; cropped: boolean }>;
+  /** 点带首「LUT」切到 LUT 子视图。 */
+  openLut?(): void;
+  /** 当前照片是否选中了 LUT（控制「LUT」键蓝点）。 */
+  lutActive?(): boolean;
+  /** 进入或退出微调子页时通知编辑器切换 44px/24px 顶栏高度。 */
+  onFineTuneChange?(open: boolean): void;
+  /** 配方改动后刷新底栏圆点。 */
+  onEditedChanged?(): void;
 }
 
 interface Slot {
@@ -74,33 +101,54 @@ export class RecipeView {
   private which: Shelf = 'all';
   private slots: Slot[] = [];
   private stripKeys: string[] = [];
+  private fineTune = false;
+  private activeKnob = '';
+  private lastScrolledCardId: string | null = null;
+  private scrollRaf = 0;
+  private readonly head = el('div', 'recipe-head band-recipe-hd');
   private readonly strip = el('div', 'strip');
+  private readonly fineBox = el('div', 'recipe-fine');
+  private readonly datErrBar = button('dat-err', '');
   private readonly panel = el('div', 'panel recipe');
+  private modeSwitchEl: HTMLElement | null = null;
   private rawKey: string | null = null;
   private neutralBitmap: ImageBitmap | null = null;
-  /** 舞台上现在套的烘焙表；新的没好之前一直留着上一张，照片不会空。 */
   private shown = '';
-  /** 最近一次要的那张表。旧的烘焙结果回来时不再换上去。 */
   private wanted = '';
   private asked = false;
-  /** 已经打开的 06d 提示。解析晚到时 `refresh` 改这几句，读成功就关掉。 */
-  private askLeads: HTMLElement | null = null;
+  private askHandle: AskSheetHandle | null = null;
+  private readonly api: AppApi;
+  private readonly engine: Engine | null;
+  private readonly photo: Photo;
+  private readonly hooks: StageHooks;
   private readonly off: () => void;
   private readonly offCam: () => void;
 
-  constructor(
-    private readonly api: AppApi,
-    private readonly engine: Engine | null,
-    private readonly photo: Photo,
-    private readonly hooks: StageHooks,
-  ) {
+  constructor(api: AppApi, engine: Engine | null, photo: Photo, hooks: StageHooks) {
+    this.api = api;
+    this.engine = engine;
+    this.photo = photo;
+    this.hooks = hooks;
     this.strip.dataset.recipes = '1';
+    this.panel.dataset.panel = 'recipe';
+    this.fineBox.hidden = true;
+    this.datErrBar.hidden = true;
+    this.datErrBar.addEventListener('click', () => {
+      const scene = this.scene();
+      if (scene.dat) this.openStatusSheet(scene);
+      else this.ask();
+    });
+    this.panel.append(this.strip, this.fineBox, this.datErrBar);
     this.off = api.book().onChange(() => this.refresh());
     this.offCam = onCameraRecipe((id) => {
       if (id === this.photo.id) this.refresh();
     });
     void ensureCameraRecipe(this.photo, api.book());
     this.build();
+  }
+
+  headEl(): HTMLElement {
+    return this.head;
   }
 
   stripEl(): HTMLElement {
@@ -111,8 +159,29 @@ export class RecipeView {
     return this.panel;
   }
 
+  isFineTuning(): boolean {
+    return this.fineTune;
+  }
+
+  exitFineTune(): void {
+    if (!this.fineTune) return;
+    this.fineTune = false;
+    const scene = this.scene();
+    this.syncSubView(scene);
+    this.hooks.onFineTuneChange?.(false);
+  }
+
+  syncLutDot(): void {
+    const lutBtn = this.modeSwitchEl?.querySelector('[data-mode="lut"]');
+    if (lutBtn) lutBtn.classList.toggle('dot', Boolean(this.hooks.lutActive?.()));
+  }
+
   destroy(): void {
     this.token += 1;
+    if (this.scrollRaf) {
+      cancelAnimationFrame(this.scrollRaf);
+      this.scrollRaf = 0;
+    }
     this.off();
     this.offCam();
     this.closeAsk();
@@ -124,7 +193,7 @@ export class RecipeView {
     this.refresh();
   }
 
-  /** 中性小图好了（每个版本做一次）。没校准、没有相机配方文件时卡片都用它；关闭旧位图前先传 null 清掉。 */
+  /** 中性小图好了（每个版本做一次）。 */
   neutral(bitmap: ImageBitmap | null): void {
     this.neutralBitmap = bitmap;
     this.paintThumbs();
@@ -138,6 +207,11 @@ export class RecipeView {
   /** 舞台现在该用的那张表的键（长按看原图时由编辑器换成中性）。 */
   current(): string {
     return this.shown || NEUTRAL_BAKE_KEY;
+  }
+
+  private shellEl(): HTMLElement | null {
+    const host = this.panel.closest('.app');
+    return host instanceof HTMLElement ? host : null;
   }
 
   private scene(): Scene {
@@ -168,10 +242,6 @@ export class RecipeView {
     return shelf(scene.list, this.which);
   }
 
-  /**
-   * 这张卡在这张照片上会用的档位（桌面 recipeTarget）：显式选中的配方用自己的档位；未显式选中但采用了拍摄配方时用拍摄微调；
-   * 都没命中时默认的原厂 04 档位为空；别的卡用 memory 里上次切走时记下的。
-   */
   private levelsOf(card: Card, scene: Scene): Record<string, number> | undefined {
     const choice = this.photo.choice;
     if (choice?.id === card.id) return this.photo.levels.get(card.id);
@@ -192,48 +262,87 @@ export class RecipeView {
     return shelf(scene.list, 'all').find((card) => card.id === adopted.choice.id) ?? null;
   }
 
-  /** 卡片条上亮起勾选的卡（对齐桌面 recipes.js:103：显式选中或采用的拍摄配方亮起，未打标回退不亮）。 */
   private activeCard(scene: Scene): Card | null {
     return this.chosen(scene) ?? this.adoptedCard(scene);
   }
 
-  /** 标题、旋钮与舞台用的配方：显式选中 > 拍摄配方采用 > 原厂 04 兜底。 */
   private target(scene: Scene): Card | null {
     const active = this.activeCard(scene);
     if (active) return active;
     return scene.list?.builtin.find((card) => card.id === DEFAULT_CARD) ?? null;
   }
 
+  private orderedControls(card: Card): Control[] {
+    const amount = card.controls.filter((c) => c.name === 'amount');
+    const rest = card.controls.filter((c) => c.name !== 'amount');
+    return [...amount, ...rest];
+  }
+
   private build(): void {
     const scene = this.scene();
     this.buildStrip(scene);
-    this.buildPanel(scene);
+    this.syncSubView(scene);
   }
 
   refresh(): void {
-    if (!this.strip.isConnected && this.slots.length) return;
+    if (!this.panel.isConnected && this.slots.length) return;
     const token = ++this.token;
     void ensureCameraRecipe(this.photo, this.api.book());
     const scene = this.scene();
     this.buildStrip(scene);
-    this.buildPanel(scene);
+    this.syncSubView(scene);
     this.syncAsk();
     this.applyLook(scene);
     void this.renderCards(scene, token);
+  }
+
+  private syncSubView(scene: Scene): void {
+    const target = this.target(scene);
+    const canFine = Boolean(scene.raw && scene.dat && scene.state.state === 'ready' && target && target.controls.length);
+    if (this.fineTune && !canFine) {
+      this.fineTune = false;
+      this.hooks.onFineTuneChange?.(false);
+    }
+    this.strip.hidden = this.fineTune;
+    this.fineBox.hidden = !this.fineTune;
+    const datError = this.api.book().datError;
+    if (datError && scene.raw) {
+      this.datErrBar.hidden = false;
+      this.datErrBar.textContent = scene.dat && target ? `已保留「${target.name}」· ${datError}` : datError;
+    } else {
+      this.datErrBar.hidden = true;
+      this.datErrBar.textContent = '';
+    }
+    this.buildHead(scene);
+    this.buildFineBox(scene);
+  }
+
+  private makeModeSwitch(): HTMLElement {
+    const sw = makeRecipeLutSwitch('recipe', Boolean(this.hooks.lutActive?.()), (mode) => {
+      if (mode === 'lut') this.hooks.openLut?.();
+    });
+    this.modeSwitchEl = sw;
+    return sw;
   }
 
   private buildStrip(scene: Scene): void {
     const cards = this.cardsOf(scene);
     const locked = scene.raw && !scene.dat;
     const picked = this.activeCard(scene);
-    this.strip.dataset.state = !scene.raw ? 'jpg-only' : locked ? 'no-recipe-file' : scene.state.state === 'ready' ? 'calibrated' : 'uncalibrated';
+    this.strip.dataset.state = !scene.raw
+      ? 'jpg-only'
+      : locked
+        ? 'no-recipe-file'
+        : scene.state.state === 'ready'
+          ? 'calibrated'
+          : 'uncalibrated';
     const isEmpty = Boolean(scene.list && this.which === 'mine' && !cards.length);
     if (isEmpty) {
-      this.strip.replaceChildren();
+      this.strip.replaceChildren(this.makeModeSwitch());
       this.slots = [];
       this.stripKeys = ['__empty__'];
-      const empty = el('p', 'empty faint', MINE_EMPTY);
-      this.strip.append(empty);
+      this.lastScrolledCardId = null;
+      this.strip.append(el('p', 'empty faint', MINE_EMPTY));
       return;
     }
 
@@ -244,6 +353,7 @@ export class RecipeView {
       this.slots.length === cards.length;
 
     if (sameStrip) {
+      this.syncLutDot();
       for (let i = 0; i < cards.length; i += 1) {
         const card = cards[i];
         const slot = this.slots[i];
@@ -255,12 +365,14 @@ export class RecipeView {
         this.syncMark(slot.node, slot.thumb, Boolean(picked && picked.id === card.id));
       }
       this.paintThumbs();
+      this.scheduleScrollActive(picked?.id ?? null);
       return;
     }
 
-    this.strip.replaceChildren();
+    this.strip.replaceChildren(this.makeModeSwitch());
     this.slots = [];
     this.stripKeys = nextKeys;
+    this.lastScrolledCardId = null;
     for (let i = 0; i < cards.length; i += 1) {
       const card = cards[i];
       const node = button('rc', '');
@@ -282,6 +394,19 @@ export class RecipeView {
       this.slots.push({ card, node, thumb, nameEl, sub });
     }
     this.paintThumbs();
+    this.scheduleScrollActive(picked?.id ?? null);
+  }
+
+  private scheduleScrollActive(cardId: string | null): void {
+    if (!cardId || this.fineTune || this.lastScrolledCardId === cardId) return;
+    if (this.scrollRaf) cancelAnimationFrame(this.scrollRaf);
+    const token = this.token;
+    this.scrollRaf = requestAnimationFrame(() => {
+      this.scrollRaf = 0;
+      if (token === this.token && !this.fineTune && centerStripCard(this.strip, cardId)) {
+        this.lastScrolledCardId = cardId;
+      }
+    });
   }
 
   private syncMark(node: HTMLElement, thumb: HTMLElement, on: boolean): void {
@@ -294,10 +419,6 @@ export class RecipeView {
     } else if (!on && existing) {
       existing.remove();
     }
-  }
-
-  private mark(node: HTMLElement, thumb: HTMLElement): void {
-    this.syncMark(node, thumb, true);
   }
 
   private paintThumbs(): void {
@@ -345,187 +466,148 @@ export class RecipeView {
     }
   }
 
-  private buildPanel(scene: Scene): void {
-    this.panel.replaceChildren();
+  private buildHead(scene: Scene): void {
+    this.head.replaceChildren();
     if (!scene.raw) {
-      // 06e：桌面的两句，下面写还能用的几页。
-      const note = el('div', 'bn grey');
-      const text = el('div', 'tx');
-      if (this.photo.diptych) {
-        text.append(el('b', '', '这张是半格双联，配方效果要等配对功能。'));
-      } else {
-        text.append(el('b', '', '配方需要 RAW 文件'), el('div', 'dim', '拍摄时将画质设为 RAW+JPEG'));
-      }
-      note.append(text);
-      this.panel.append(
-        note,
-        el('p', 'pad dim', '这张只有相机 JPG。下面这些照常能用，导出的是相机 JPG 加上这些改动：调整、裁剪、边框、曲线。'),
-        el('p', 'pad faint', 'HDR 需要 RAW 文件。这张会存普通版本。'),
-      );
+      const pill = button('band-act warn', this.photo.diptych ? '半格双联' : '配方需要 RAW');
+      pill.dataset.act = 'recipe-status';
+      pill.addEventListener('click', () => {
+        const shell = this.shellEl();
+        if (shell) openJpgInfoSheet(shell, Boolean(this.photo.diptych));
+      });
+      this.head.append(pill);
       return;
     }
     const book = this.api.book();
-    // 错误和「还没有文件」分开：补选一个坏的 GXRFX.BIN 时旧配方还在，核心原话也要留在面板上。
-    if (book.datError) this.panel.append(this.datFileBox(book.datError));
     if (!scene.dat) {
-      if (!book.datError) {
-        this.panel.append(this.datFileBox('配方要用存储卡上的相机配方文件，这次没有和照片一起选上。每张卡选一次就行。没选之前，照片只显示中性转换。'));
-      }
+      const pill = button('band-act warn', '选配方文件');
+      pill.dataset.act = 'recipe-status';
+      pill.addEventListener('click', () => this.ask());
+      this.head.append(pill);
       return;
     }
     const target = this.target(scene);
-    const head = el('div', 'pad recipe-head');
-    const row = el('div', 'row');
-    row.append(el('b', 'rname', target?.name ?? ''));
-    if (target) row.append(el('span', 'tag neutral-tag', cardTag(target)));
+    const nameEl = el('b', 'rname', target?.name ?? '');
+    this.head.append(nameEl);
+    if (target) this.head.append(el('span', 'tag neutral-tag', cardTag(target)));
+
+    if (this.fineTune) return;
+
     const calibrated = scene.state.state === 'ready';
     const off = calibrated && crossed(scene.photoUnit, scene.unit, scene.iso);
-    const right = el('span', calibrated && !off ? 'tag ok' : 'tag warn', calibrated && !off ? PREDICTED_LABEL : '未校准');
-    right.dataset.state = calibrated && !off ? 'calibrated' : 'uncalibrated';
-    right.style.marginLeft = 'auto';
-    row.append(right);
-    head.append(row);
-    this.panel.append(head);
+
     if (scene.camError) {
-      const box = el('div', 'bn');
-      box.dataset.cameraRecipeError = scene.camError.code;
-      const mark = el('span', 'warn');
-      mark.append(icon(WARN));
-      box.append(mark, el('div', 'tx', formatCameraRecipeEditorError(scene.camError.message)));
-      this.panel.append(box);
+      const errBtn = button('band-act warn', '拍摄配方');
+      errBtn.dataset.cameraRecipeError = scene.camError.code;
+      errBtn.dataset.act = 'recipe-status';
+      errBtn.addEventListener('click', () => this.openStatusSheet(scene));
+      this.head.append(errBtn);
     } else if (scene.adopted?.levelsUnknown) {
-      const note = el('p', 'pad faint small', CAMERA_RECIPE_LEVELS_UNKNOWN);
-      note.dataset.cameraRecipeNote = 'levels-unknown';
-      this.panel.append(note);
+      const noteBtn = button('band-act dim', '档位未标');
+      noteBtn.dataset.cameraRecipeNote = 'levels-unknown';
+      noteBtn.dataset.act = 'recipe-status';
+      noteBtn.addEventListener('click', () => this.openStatusSheet(scene));
+      this.head.append(noteBtn);
+    } else if (!calibrated) {
+      const calBtn = button('band-act warn', '未校准');
+      calBtn.dataset.state = 'no-calibration';
+      calBtn.dataset.act = 'recipe-status';
+      calBtn.addEventListener('click', () => this.openStatusSheet(scene));
+      this.head.append(calBtn);
+    } else if (off || book.datError) {
+      const warnBtn = button('band-act warn', '未校准');
+      warnBtn.dataset.state = 'uncalibrated';
+      warnBtn.dataset.act = 'recipe-status';
+      warnBtn.addEventListener('click', () => this.openStatusSheet(scene));
+      this.head.append(warnBtn);
     }
-    this.panel.append(this.statusBlock(scene, off));
-    if (book.datNote) this.panel.append(el('p', 'pad faint small', book.datNote));
-    // 设计稿上只有已校准（03a）才有分组和旋钮；没校准（06c）的面板留给导入的说明。
-    if (calibrated) {
-      this.panel.append(this.chips(scene));
-      if (target && target.controls.length) this.panel.append(this.knobs(scene, target));
-    }
-  }
 
-  private statusBlock(scene: Scene, off: boolean): HTMLElement {
-    const state = scene.state;
-    if (state.state === 'ready') {
-      const line = el('div', 'pad hdr-note');
-      line.dataset.state = off ? 'uncalibrated' : 'calibrated';
-      if (off) {
-        const why = el('span', 'why');
-        why.append(el('b', '', '未校准：'), document.createTextNode(uncalibratedReason(scene.photoUnit, scene.unit, scene.iso)));
-        line.append(why);
-      } else {
-        const ok = el('span', 'ok');
-        ok.append(icon(CHECK));
-        line.append(ok, el('span', '', '已校准：颜色按校准数据预测。'));
-      }
-      return line;
-    }
-    if (state.state === 'checking') return el('p', 'pad dim', '正在核对校准数据…');
-    const box = el('div');
-    const banner = el('div', 'bn');
-    banner.dataset.state = 'no-calibration';
-    const mark = el('span', 'warn');
-    mark.append(icon(WARN));
-    const text = el('div', 'tx');
-    if (state.state === 'none') {
-      text.append(el('b', '', '还没导入校准数据。'), document.createTextNode('现在所有配方都只显示中性转换，和相机里的颜色不同。导出也一样。'));
-    } else {
-      text.append(el('b', '', state.message), document.createTextNode(' 这张照片的配方只显示中性转换，和相机里的颜色不同。'));
-    }
-    banner.append(mark, text);
-    const bring = button('btn primary block', '导入校准数据');
-    bring.prepend(icon(PLUS));
-    bring.addEventListener('click', () => this.api.pickCalib());
-    const wrap = el('div', 'pad');
-    wrap.append(bring);
-    box.append(banner, wrap, el('p', 'faint pad small', '在 Mac 的 GXR Studio 里导出校准数据，用隔空投送发到这台 iPhone，再点上面的按钮。只需一次。'));
-    return box;
-  }
-
-  private chips(scene: Scene): HTMLElement {
-    const list = scene.list;
-    const row = el('div', 'chips');
-    if (!list) return row;
-    const all = list.builtin.length + list.looks.length + list.users.length;
-    const items: Array<[Shelf, string]> = [
-      ['all', `全部 ${all}`],
-      ['builtin', `内置 ${list.builtin.length}`],
-    ];
-    if (list.looks.length) items.push(['looks', `Looks ${list.looks.length}`]);
-    items.push(['mine', `我的配方 ${list.users.length}`]);
-    for (const [which, label] of items) {
-      const chip = button('chip', label);
-      chip.dataset.shelf = which;
-      if (which === this.which) chip.classList.add('on');
-      chip.addEventListener('click', () => {
-        this.which = which;
-        for (const other of row.querySelectorAll('.chip')) other.classList.toggle('on', other === chip);
-        this.buildStrip(this.scene());
+    if (scene.list) {
+      const filterBtn = button('band-act filter-btn', `${shelfShortLabel(this.which)} ▾`);
+      filterBtn.dataset.act = 'recipe-filter';
+      filterBtn.addEventListener('click', () => {
+        const shell = this.shellEl();
+        if (!shell || !scene.list) return;
+        openRecipeFilterSheet(shell, scene.list, this.which, (which) => {
+          this.which = which;
+          const next = this.scene();
+          this.buildStrip(next);
+          this.buildHead(next);
+        });
       });
-      row.append(chip);
+      this.head.append(filterBtn);
     }
-    return row;
   }
 
-  /**
-   * 旋钮（桌面 recipes.js 的 levelRow）：滑块的位置是档位的序号。拖的时候只改右边的数字；松手（change）才记下档位，
-   * 重新 resolve、烘焙，照片和这张卡换成新的样子。没选配方时动旋钮，就选上现在显示的这个配方（桌面 ensureRecipe）。
-   */
-  private knobs(scene: Scene, card: Card): HTMLElement {
+  private openStatusSheet(scene: Scene): void {
+    const shell = this.shellEl();
+    if (!shell) return;
+    openRecipeStatusSheet(
+      shell,
+      this.api.book(),
+      scene,
+      () => this.api.pickDat(),
+      () => this.api.pickCalib(),
+    );
+  }
+
+  private buildFineBox(scene: Scene): void {
+    this.fineBox.replaceChildren();
+    const target = this.target(scene);
+    if (!scene.raw || !scene.dat || scene.state.state !== 'ready' || !target || !target.controls.length) return;
+    const controls = this.orderedControls(target);
+    if (!controls.some((c) => c.name === this.activeKnob)) {
+      this.activeKnob = controls[0].name;
+    }
+
+    const topRow = el('div', 'fine-top');
+    const back = button('chip fine-back', '‹ 配方');
+    back.dataset.act = 'recipe-back';
+    back.addEventListener('click', () => this.exitFineTune());
+
+    const knobChips = el('div', 'chips knob-chips');
+    const knobsBox = this.knobs(scene, target, controls);
+    for (const control of controls) {
+      const chip = button(control.name === this.activeKnob ? 'chip on' : 'chip', KNOB_NAMES[control.name] ?? control.label);
+      chip.dataset.knobChip = control.name;
+      chip.addEventListener('click', () => {
+        this.activeKnob = control.name;
+        for (const item of knobChips.querySelectorAll('.chip')) {
+          item.classList.toggle('on', item === chip);
+        }
+        for (const row of knobsBox.querySelectorAll<HTMLElement>('.krow')) {
+          row.hidden = row.dataset.knob !== this.activeKnob;
+        }
+      });
+      knobChips.append(chip);
+    }
+
+    topRow.append(back, knobChips);
+    this.fineBox.append(topRow, knobsBox);
+  }
+
+  private knobs(scene: Scene, card: Card, controls: Control[]): HTMLElement {
     const box = el('div', 'knobs');
     box.dataset.card = card.id;
-    const amount = card.controls.filter((c) => c.name === 'amount');
-    const rest = card.controls.filter((c) => c.name !== 'amount');
-    for (const control of [...amount, ...rest]) box.append(this.knobRow(scene, card, control));
+    const saved = this.levelsOf(card, scene);
+    for (const control of controls) {
+      const row = buildKnobRow(control, scene.generation, saved, (level) => this.setLevel(card, control.name, level));
+      row.hidden = control.name !== this.activeKnob;
+      box.append(row);
+    }
     return box;
   }
 
-  private knobRow(scene: Scene, card: Card, control: Control): HTMLElement {
-    const levels = choices(control, scene.generation);
-    const current = effective(control, this.levelsOf(card, scene));
-    const row = el('div', 'krow');
-    row.dataset.knob = control.name;
-    const value = el('span', 'val num', levelText(control, current));
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = '0';
-    input.max = String(Math.max(0, levels.length - 1));
-    input.step = '1';
-    input.value = String(nearestIndex(levels, current));
-    input.setAttribute('aria-label', KNOB_NAMES[control.name] ?? control.label);
-    const paint = () => {
-      const level = levels[Number(input.value)] ?? control.default;
-      value.textContent = levelText(control, level);
-      const span = Math.max(1, levels.length - 1);
-      const zero = nearestIndex(levels, control.name === 'amount' ? levels[0] : 0);
-      const at = Number(input.value);
-      input.style.setProperty('--a', `${(Math.min(at, zero) / span) * 100}%`);
-      input.style.setProperty('--b', `${(Math.max(at, zero) / span) * 100}%`);
-    };
-    paint();
-    input.addEventListener('input', paint);
-    input.addEventListener('change', () => {
-      const level = levels[Number(input.value)];
-      if (level === undefined) return;
-      this.setLevel(card, control.name, level);
-    });
-    const track = el('div', 'slider');
-    track.append(input);
-    row.append(el('span', 'lab', KNOB_NAMES[control.name] ?? control.label), track, value);
-    return row;
-  }
-
-  /** 松手：记下这个配方的这一档，选上它，重新 resolve + 烘焙（照片在新表做好之前留着上一张）。 */
   private setLevel(card: Card, name: string, level: number): void {
     const scene = this.scene();
-    // 显式选中或采用拍摄配方后动旋钮，保留该配方已有档位；未命中时从空档位开始（对齐桌面 ensureRecipe）。
     const isAdopted = !this.photo.choice && scene.adopted?.choice.id === card.id;
-    const base = this.photo.choice?.id === card.id ? (this.photo.levels.get(card.id) ?? {}) : isAdopted && scene.adopted ? scene.adopted.levels : {};
+    const base =
+      this.photo.choice?.id === card.id
+        ? (this.photo.levels.get(card.id) ?? {})
+        : isAdopted && scene.adopted
+          ? scene.adopted.levels
+          : {};
     const next: Record<string, number> = { ...base };
-    // 这一档现在的有效值（没存的就是配方自己的默认，比如强度 100）已经是它：没有修改，不加 rev、不重烘。
     const control = card.controls.find((c) => c.name === name);
     if ((this.photo.choice?.id === card.id || isAdopted) && control && effective(control, next) === level) return;
     next[name] = level;
@@ -534,19 +616,18 @@ export class RecipeView {
     if (this.photo.choice?.id !== card.id) {
       this.photo.choice = { id: card.id, unit: scene.unit };
       this.photo.recipeOff = false;
-      this.panel.querySelector('[data-camera-recipe-note],[data-camera-recipe-error]')?.remove();
       for (const slot of this.slots) {
-        slot.node.classList.remove('on');
-        slot.thumb.querySelector('.ckk')?.remove();
-        if (slot.card.id === card.id) this.mark(slot.node, slot.thumb);
+        this.syncMark(slot.node, slot.thumb, slot.card.id === card.id);
       }
     }
     const nextScene = this.scene();
+    this.buildHead(nextScene);
     this.applyLook(nextScene);
+    this.hooks.onEditedChanged?.();
     void this.renderCards(nextScene, this.token);
   }
 
-  /** 点一张卡：记进这张照片的编辑状态，照片换成它（烘焙表没好之前留着上一张）。 */
+  /** 点一张卡：切配方；再点已选卡则进入 128pt 微调子页。 */
   private pick(card: Card): void {
     const scene = this.scene();
     if (!scene.raw) return;
@@ -555,34 +636,39 @@ export class RecipeView {
       return;
     }
     if (!card.controls.length) return;
-    // 桌面 switchRecipe：切走的那个记进 memory，新配方取回上次的档位；已经是它就什么都不改。
     const choice = this.photo.choice;
     const adopted = scene.adopted;
     const currentId = choice?.id ?? adopted?.choice.id ?? DEFAULT_CARD;
-    const currentCard = scene.list ? shelf(scene.list, 'all').find((item) => item.id === currentId) ?? null : null;
+    const currentCard = scene.list ? (shelf(scene.list, 'all').find((item) => item.id === currentId) ?? null) : null;
     const currentLevels = choice ? this.photo.levels.get(currentId) : adopted ? adopted.levels : undefined;
     const switched = recipeSwitch(
       this.photo.memory,
       { id: currentId, card: currentCard, levels: currentLevels, chosen: choice !== null || adopted !== null },
       card,
     );
-    if (switched.same) return;
+    if (switched.same) {
+      if (scene.state.state === 'ready' && card.controls.length > 0) {
+        this.fineTune = true;
+        this.activeKnob = this.orderedControls(card)[0]?.name ?? '';
+        this.syncSubView(scene);
+        this.hooks.onFineTuneChange?.(true);
+      }
+      return;
+    }
     this.photo.memory = switched.memory;
     this.photo.levels = new Map([[card.id, switched.levels]]);
     this.photo.choice = { id: card.id, unit: scene.unit };
     this.photo.recipeOff = false;
     this.photo.rev += 1;
     for (const slot of this.slots) {
-      slot.node.classList.remove('on');
-      slot.thumb.querySelector('.ckk')?.remove();
-      if (slot.card.id === card.id) this.mark(slot.node, slot.thumb);
+      this.syncMark(slot.node, slot.thumb, slot.card.id === card.id);
     }
     const nextScene = this.scene();
-    this.buildPanel(nextScene);
+    this.syncSubView(nextScene);
     this.applyLook(nextScene);
+    this.hooks.onEditedChanged?.();
   }
 
-  /** 舞台上的配方。校准好了用这张卡的烘焙表；否则中性转换。 */
   private applyLook(scene: Scene): void {
     if (!scene.raw || !this.engine || this.hooks.mode() !== 'raw') return;
     const target = this.target(scene);
@@ -600,13 +686,12 @@ export class RecipeView {
       this.show(key, PREDICTED_LABEL);
       return;
     }
-    // 新的表还在做（resolve + bake）：照片先留着上一张（第一次打开时是中性转换），做好了而且还是要它才换。
     if (!this.shown) this.show(NEUTRAL_BAKE_KEY, NEUTRAL_LABEL);
     const want = `${target.id}|${JSON.stringify(levels ?? null)}|${scene.unit}|${scene.iso}`;
     this.wanted = want;
     book.bake(target, scene.unit, scene.iso, levels).then(
       (made) => {
-        if (this.wanted !== want || !this.strip.isConnected) return;
+        if (this.wanted !== want || !this.panel.isConnected) return;
         this.wanted = made;
         this.show(made, PREDICTED_LABEL);
       },
@@ -614,18 +699,16 @@ export class RecipeView {
     );
   }
 
-  /** `key` 是烘焙表的身份键（或中性）；交给引擎的是它在显卡里的键。 */
   private show(key: string, label: string): void {
     const book = this.api.book();
     const gpu = key === NEUTRAL_BAKE_KEY ? key : book.gpuKey(key);
     if (!gpu) return;
     this.shown = key;
     book.pin(key);
-    this.strip.closest('.app')?.setAttribute('data-recipe-key', key);
+    this.panel.closest('.app')?.setAttribute('data-recipe-key', key);
     this.hooks.look(gpu, label);
   }
 
-  /** 校准好了才画配方卡：按列表顺序一张张做烘焙表、请显卡出小图。拖滑块时先停。 */
   private async renderCards(scene: Scene, token: number): Promise<void> {
     const engine = this.engine;
     const source = this.rawKey;
@@ -664,10 +747,8 @@ export class RecipeView {
         }
         continue;
       }
-      // 拖滑块、导出跑着（UI-M3）时先停。
       while (alive() && (this.hooks.dragging() || exportPaused())) await new Promise((done) => setTimeout(done, 120));
       if (!alive()) return;
-      // 拿到显卡键就在同一轮里提交，不会被别的表换掉；JS 里已经挤掉了就再做一次。
       let gpu = book.gpuKey(key);
       if (!gpu) {
         try {
@@ -695,98 +776,20 @@ export class RecipeView {
     }
   }
 
-  /** 没有配方文件时的说明和重新选择。`message` 是核心原话，或还没选文件时的通用句。 */
-  private datFileBox(message: string): HTMLElement {
-    const box = el('div', 'pad');
-    box.append(el('p', 'dim', message));
-    const pick = button('btn primary block', '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
-    pick.prepend(icon(FILE));
-    pick.addEventListener('click', () => this.api.pickDat());
-    box.append(pick);
-    return box;
-  }
-
-  private askLeadNodes(datError: string | null): HTMLElement[] {
-    return datError
-      ? [el('p', 'lead', datError)]
-      : [
-          el('p', 'lead', '配方要用存储卡上的相机配方文件，这次没有和照片一起选上。'),
-          el('p', 'lead', '每张卡选一次就行。没选之前，照片只显示中性转换。'),
-        ];
-  }
-
-  /** 弹层还开着：成功读入后关掉，否则把提示改成现在的 `book.datError`。 */
   private syncAsk(): void {
-    const leads = this.askLeads;
-    if (!leads?.isConnected) {
-      this.askLeads = null;
-      return;
-    }
-    const book = this.api.book();
-    if (book.dat && !book.datError) {
-      this.closeAsk();
-      return;
-    }
-    leads.replaceChildren(...this.askLeadNodes(book.datError));
+    this.askHandle?.sync(this.api.book());
   }
 
-  /** 06d：还差相机配方文件。 */
   private ask(): void {
     this.asked = true;
-    const host = this.strip.closest('.app');
-    if (!(host instanceof HTMLElement)) return;
+    const host = this.shellEl();
+    if (!host) return;
     this.closeAsk();
-    const scrim = el('div', 'scrim ask-scrim');
-    const sheet = el('div', 'ms ask-sheet');
-    sheet.dataset.state = 'no-recipe-file';
-    const head = el('div', 'hd');
-    head.append(el('h2', '', '还差相机配方文件'));
-    const path = el('div', 'path');
-    const fic = el('span', 'fic');
-    fic.append(icon(FILE));
-    path.append(
-      fic,
-      el('span', '', '存储卡'),
-      el('span', 'faint', '›'),
-      el('b', 'num', 'GXRCE.DAT'),
-      el('span', 'faint small', '（在最外层，和 DCIM 并排）'),
-      el('b', 'num', 'GXRFX.BIN（新卡才有）'),
-    );
-    const pick = button('btn primary lg block', '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
-    pick.prepend(icon(FILE));
-    pick.addEventListener('click', () => {
-      this.closeAsk();
-      this.api.pickDat();
-    });
-    const later = button('btn lg ghost block', '先不用，只看中性转换');
-    later.addEventListener('click', () => this.closeAsk());
-    scrim.addEventListener('click', () => this.closeAsk());
-    const book = this.api.book();
-    const leads = el('div', 'ask-leads');
-    this.askLeads = leads;
-    leads.append(...this.askLeadNodes(book.datError));
-    sheet.append(el('div', 'grab'), head, leads, path, pick, later);
-    host.append(scrim, sheet);
+    this.askHandle = openAskDatSheet(host, this.api.book(), () => this.api.pickDat());
   }
 
   private closeAsk(): void {
-    const host = this.strip.closest('.app') ?? document;
-    host.querySelector('.ask-scrim')?.remove();
-    host.querySelector('.ask-sheet')?.remove();
-    this.askLeads = null;
+    this.askHandle?.close();
+    this.askHandle = null;
   }
 }
-
-const ids = new WeakMap<ImageBitmap, number>();
-let nextId = 1;
-
-/** 位图的身份（同一张位图不重画）。 */
-function bitmapId(bitmap: ImageBitmap): number {
-  let id = ids.get(bitmap);
-  if (!id) {
-    id = nextId++;
-    ids.set(bitmap, id);
-  }
-  return id;
-}
-

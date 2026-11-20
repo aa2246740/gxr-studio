@@ -162,7 +162,7 @@ async function runStaleAndCancel() {
 
   // 1) P2-02: Ruler pointercancel must restore angle/crop/rev without calling WASM
   await openPhoto(page, stemA);
-  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.locator('.editor .toolbar [data-tool="crop"]').click();
   await page.waitForSelector('.crop-panel');
   await selectPreset(page, stemA, '16:9');
   const beforeCancel = await editRow(page, stemA);
@@ -180,14 +180,14 @@ async function runStaleAndCancel() {
     touchPoints: [{ x: rMidX - 36, y: rMidY, id: 1 }],
   });
   const duringDrag = await page.evaluate(() => document.querySelector('.app')?.dataset.drag);
-  const duringAngle = await page.evaluate(() => document.querySelector('.crop-panel .straighten .num')?.textContent?.trim());
+  const duringAngle = await page.evaluate(() => document.querySelector('.editor .band-crop-hd .crop-angle')?.textContent?.trim());
   await cdp.send('Input.dispatchTouchEvent', {
     type: 'touchCancel',
     touchPoints: [],
   });
   await page.waitForTimeout(100);
   const afterDrag = await page.evaluate(() => document.querySelector('.app')?.dataset.drag);
-  const afterAngle = await page.evaluate(() => document.querySelector('.crop-panel .straighten .num')?.textContent?.trim());
+  const afterAngle = await page.evaluate(() => document.querySelector('.editor .band-crop-hd .crop-angle')?.textContent?.trim());
   const rulerDragState = { duringDrag, duringAngle, afterDrag, afterAngle };
   const afterCancel = await editRow(page, stemA);
   const geomCallsAfter = await page.evaluate(() => window.__workerGate.sentCount('geom-geometry-write'));
@@ -234,7 +234,7 @@ async function runStaleAndCancel() {
 
   // 3) P2-01 (navigation): Hold ArrowRight 0.1° straighten reply on A, open B, flush A's reply
   await openPhoto(page, stemA);
-  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.locator('.editor .toolbar [data-tool="crop"]').click();
   await page.waitForSelector('.crop-panel');
   await page.evaluate(() => window.__workerGate.hold('geom-geometry-write'));
   await page.locator('.crop-panel .ruler').focus();
@@ -257,7 +257,8 @@ async function runStaleAndCancel() {
   // 4) P2-01 (undo after paste): Copy A (16:9, 2°), apply to B, start 1:1 on B (held), undo paste on grid, flush 1:1
   await backToGrid(page);
   await openPhoto(page, stemA);
-  await page.locator('[data-act="copy"]').click();
+  await page.locator('.editor .nav [data-act="editor-more"]').click();
+  await page.locator('.ms[data-state="editor-more"] [data-act="more-copy"]').click();
   await page.waitForSelector('.paste-sheet[data-state="copy-options"]');
   for (const grp of ['geometry', 'crop']) {
     const row = page.locator(`.paste-sheet .optrow[data-group="${grp}"]`);
@@ -271,7 +272,7 @@ async function runStaleAndCancel() {
   await page.waitForSelector('.pastebar[data-state="applied"]', { timeout: 30_000 });
 
   await openPhoto(page, stemB);
-  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.locator('.editor .toolbar [data-tool="crop"]').click();
   await page.waitForSelector('.crop-panel');
   await page.evaluate(() => window.__workerGate.hold('geom-crop-write'));
   await page.locator('.crop-panel .chips button[data-preset="1:1"]').click();
@@ -288,7 +289,7 @@ async function runStaleAndCancel() {
 
   // 5) P2-01 (clear/delete): Hold 4:5 on B, go back & clear all photos, flush delayed reply
   await openPhoto(page, stemB);
-  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.locator('.editor .toolbar [data-tool="crop"]').click();
   await page.waitForSelector('.crop-panel');
   await page.evaluate(() => window.__workerGate.hold('geom-crop-write'));
   await page.locator('.crop-panel .chips button[data-preset="4:5"]').click();
@@ -323,7 +324,7 @@ async function checkRawNeutralCropCase(files, wantState, stem) {
     return c ? { w: c.width, h: c.height } : null;
   });
 
-  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.locator('.editor .toolbar [data-tool="crop"]').click();
   await page.waitForSelector('.crop-panel');
   await selectPreset(page, stem, 'xpan-65-24');
 
@@ -398,7 +399,7 @@ async function runNeutralReopen() {
     };
   });
 
-  await page.locator('.tabs button[data-tab="2"]').click();
+  await page.locator('.editor .toolbar [data-tool="crop"]').click();
   await page.waitForSelector('.crop-panel');
   const xpan = page.locator('.crop-panel .chips button[data-preset="xpan-65-24"]');
   await xpan.scrollIntoViewIfNeeded();

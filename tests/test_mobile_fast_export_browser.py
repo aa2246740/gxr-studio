@@ -117,12 +117,16 @@ def test_mobile_fast_export_acceptance(tmp_path: Path) -> None:
     check(q["navHasFilename"] is False, "editor top bar hides filename")
     check(q["navSubMatchesPos"] is True, "editor top bar shows position 3 / 6")
     check(q["readyHasPos3"] is True, "ready bar names photo 3")
+    check(q["readyBarPhoto3Height"] <= 52, "single-photo collapsed ready bar is <= 52pt tall")
+    check(q["readyBarPhoto3ClearsToolbar"] is True, "single-photo ready bar never covers toolbar or 存到相册")
     check(
         q["runningShareSeen"]["seen"] is True and "存进相册" in q["runningShareSeen"]["text"],
         "running bar offers direct 存进相册 for already-finished carryover",
     )
     check(q["readyHasPairCount"] is True, "ready bar counts 2 photos")
-    check(q["readyNamesBoth"] is True, "ready bar names both photo 3 and photo 4")
+    check(q["readyBarPairCollapsedHeight"] <= 52, "multi-photo collapsed ready bar is <= 52pt tall")
+    check(q["readyBarPairClearsToolbar"] is True, "multi-photo ready bar never covers toolbar or 存到相册")
+    check(q["readyNamesBoth"] is True, "expanded ready bar details name both photo 3 and photo 4")
     check(q["sharedTotal"] == 2 and q["hasPhoto3"] and q["hasPhoto4"], "both photo 3 and photo 4 are saved without loss")
 
     # Acceptance 2b: Double tap on 存到相册 produces 1 export and 1 share with 1 file

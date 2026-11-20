@@ -53,6 +53,37 @@ async function visibleTap(page, locator, label) {
   await locator.click();
 }
 
+async function visibleInactiveRecipeCard(page) {
+  await page.waitForFunction(
+    () => {
+      const strip = document.querySelector('.editor .strip[data-recipes]');
+      const on = strip?.querySelector('.rc.on');
+      if (!strip || !on) return false;
+      const sr = strip.getBoundingClientRect();
+      const cr = on.getBoundingClientRect();
+      return cr.width >= 10 && cr.left >= sr.left - 1 && cr.right <= sr.right + 1;
+    },
+    null,
+    { timeout: 10_000 },
+  ).catch(() => {});
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const cardId = await page.evaluate(() => {
+    const strip = document.querySelector('.editor .strip[data-recipes]');
+    if (!strip) return null;
+    const sr = strip.getBoundingClientRect();
+    const cards = strip.querySelectorAll('.rc:not(.on):not(.lockd)');
+    for (const card of cards) {
+      const r = card.getBoundingClientRect();
+      if (r.width >= 10 && r.height >= 10 && r.left >= Math.max(0, sr.left) && r.right <= Math.min(window.innerWidth, sr.right)) {
+        return card.getAttribute('data-card');
+      }
+    }
+    return null;
+  });
+  if (!cardId) return page.locator('.editor .strip[data-recipes] .rc:not(.on):not(.lockd)').first();
+  return page.locator(`.editor .strip[data-recipes] .rc[data-card="${cardId}"]`);
+}
+
 async function waitGridReady(page, count) {
   await page.waitForFunction(
     (n) => {
@@ -102,7 +133,7 @@ async function runTapCountViewport(width, height) {
   keepTaps += 1;
   await waitEditorReady(page);
 
-  const exportBtn = page.locator('.editor .actbar [data-act="export"]');
+  const exportBtn = page.locator('.editor .toolbar [data-act="export"]');
   const exportBtnTextBefore = (await exportBtn.innerText()).trim();
   const hdrLoc = page.locator('.editor .nav [data-act="hdr-toggle"]');
   const hdrOnFirstRun = (await hdrLoc.count()) ? await hdrLoc.getAttribute('aria-checked') : null;
@@ -153,7 +184,7 @@ async function runTapCountViewport(width, height) {
   await waitEditorReady(page);
 
   // Pick a visible recipe card that is not currently active
-  const nextCard = page.locator('.editor .strip[data-recipes] .rc:not(.on):not(.lockd)').first();
+  const nextCard = await visibleInactiveRecipeCard(page);
   const nextCardName = (await nextCard.locator('.nm').innerText()).trim();
   await visibleTap(page, nextCard, 'recipe card');
   changeTaps += 1;
@@ -296,10 +327,23 @@ async function runDetailedAcceptances() {
   const navHasFilename = navTitle.toLowerCase().includes(pos3Id) || navSub.toLowerCase().includes(pos3Id);
   const navSubMatchesPos = navSub === `3 / ${manifest.gridCount}`;
 
+  const readReadyGeom = async () =>
+    page.evaluate(() => {
+      const dock = document.querySelector('.pdock')?.getBoundingClientRect();
+      const bar = document.querySelector('.editor .toolbar')?.getBoundingClientRect();
+      const btn = document.querySelector('.editor .toolbar [data-act="export"]')?.getBoundingClientRect();
+      if (!dock || !bar || !btn) return { height: 999, clearsToolbar: false };
+      return {
+        height: Math.round(dock.height * 10) / 10,
+        clearsToolbar: dock.bottom <= bar.top + 0.5 && dock.bottom <= btn.top + 0.5,
+      };
+    });
+
   // Start export on photo 3
-  await visibleTap(page, page.locator('.editor .actbar [data-act="export"]'), 'export photo 3');
+  await visibleTap(page, page.locator('.editor .toolbar [data-act="export"]'), 'export photo 3');
   await page.waitForFunction(() => document.querySelector('.pdock')?.dataset.phase === 'ready', null, { timeout: 300_000 });
   const readyAfterPhoto3 = (await page.locator('.pdock').innerText()).trim();
+  const readyGeom3 = await readReadyGeom();
 
   // Swipe left to photo 4 while photo 3 is STILL unsaved in ready bar
   const stageBox = await page.locator('.stage').boundingBox();
@@ -329,13 +373,19 @@ async function runDetailedAcceptances() {
   });
 
   // Start export on photo 4 -> must NOT discard photo 3!
-  await visibleTap(page, page.locator('.editor .actbar [data-act="export"]'), 'export photo 4');
+  await visibleTap(page, page.locator('.editor .toolbar [data-act="export"]'), 'export photo 4');
   await page.waitForFunction(() => document.querySelector('.pdock')?.dataset.phase === 'ready', null, { timeout: 300_000 });
   const runningShareSeen = await page.evaluate(() => {
     window.__runningShareObs?.disconnect();
     return window.__runningShareSeen;
   });
-  const readyAfterPhoto4 = (await page.locator('.pdock').innerText()).trim();
+  const readyGeomPair = await readReadyGeom();
+  const readyAfterPhoto4Collapsed = (await page.locator('.pdock').innerText()).trim();
+  if (await page.locator('.pdock [data-act="toggle-details"]').count()) {
+    await visibleTap(page, page.locator('.pdock [data-act="toggle-details"]'), 'expand pair ready details');
+  }
+  const readyAfterPhoto4Expanded = (await page.locator('.pdock').innerText()).trim();
+  const readyGeomPairExpanded = await readReadyGeom();
   const shareBeforePair = await page.evaluate(() => window.__shareLog.calls.length);
   await visibleTap(page, page.locator('.pdock [data-act="share"]'), 'share photo 3 + 4');
   await page.waitForFunction((k) => window.__shareLog.calls.length > k, shareBeforePair, { timeout: 30_000 });
@@ -350,16 +400,20 @@ async function runDetailedAcceptances() {
     navHasFilename,
     navSubMatchesPos,
     readyHasPos3: readyAfterPhoto3.includes('第 3 张做好了 · 存进相册'),
+    readyBarPhoto3Height: readyGeom3.height,
+    readyBarPhoto3ClearsToolbar: readyGeom3.clearsToolbar,
     runningShareSeen,
-    readyHasPairCount: readyAfterPhoto4.includes('2 张做好了 · 存进相册'),
-    readyNamesBoth: readyAfterPhoto4.includes('第 3 张') && readyAfterPhoto4.includes('第 4 张'),
+    readyHasPairCount: readyAfterPhoto4Collapsed.includes('2 张做好了 · 存进相册'),
+    readyBarPairCollapsedHeight: readyGeomPair.height,
+    readyBarPairClearsToolbar: readyGeomPair.clearsToolbar && readyGeomPairExpanded.clearsToolbar,
+    readyNamesBoth: readyAfterPhoto4Expanded.includes('第 3 张') && readyAfterPhoto4Expanded.includes('第 4 张'),
     sharedTotal: pairShare.totalFiles,
     hasPhoto3: pairShare.names.some((n) => n.includes(pos3Id)),
     hasPhoto4: pairShare.names.some((n) => n.includes(pos4Id)),
   };
 
   // 3b) Double tap on 「存到相册」 -> 1 export, 1 share call with 1 file (no duplicate!)
-  const exportBtnPhoto4 = page.locator('.editor .actbar [data-act="export"]');
+  const exportBtnPhoto4 = page.locator('.editor .toolbar [data-act="export"]');
   const shareBeforeDouble = await page.evaluate(() => window.__shareLog.calls.length);
   await visibleTap(page, exportBtnPhoto4, 'double tap 1');
   await exportBtnPhoto4.click();
@@ -416,7 +470,7 @@ async function runDetailedAcceptances() {
   await visibleTap(page, page.locator('.ms.export .row .nb'), 'close export options');
 
   // 4c) 复制调整 -> copy an edit so 粘贴 & 套用到这一组 appear and open confirm sheet
-  const cardToCopy = page.locator('.editor .strip[data-recipes] .rc:not(.on):not(.lockd)').first();
+  const cardToCopy = await visibleInactiveRecipeCard(page);
   await visibleTap(page, cardToCopy, 'pick recipe before copy');
   await openEditorMore();
   await visibleTap(page, page.locator('.ms[data-state="editor-more"] [data-act="more-copy"]'), 'more 复制调整');

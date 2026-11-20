@@ -480,6 +480,7 @@ export class ExportFlow {
     const dock = this.dock;
     // 重画会丢掉旧的下载链接：它们的 URL 先撤销，需要的话 paintReadyBar 再建。
     this.revokeUrls();
+    dock.className = 'pdock';
     dock.replaceChildren();
     const phase = batch && batch.phase !== 'closed' ? batch.phase : 'ready';
     this.shell.dataset.export = phase;

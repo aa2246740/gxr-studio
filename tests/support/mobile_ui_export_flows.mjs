@@ -40,7 +40,7 @@ export async function flows({ newPage, manifest, out }) {
   await pickAll(page, { count: manifest.stems.length }, all);
   await page.locator(cellOf(manifest.stems[0])).evaluate((node) => node.click());
   await page.waitForSelector('.editor');
-  const editorButton = await page.locator('.editor .actbar [data-act="export"]').innerText();
+  const editorButton = await page.locator('.editor .toolbar [data-act="export"]').innerText();
   await page.locator('.editor .nav [data-act="editor-more"]').click();
   await page.locator('.ms[data-state="editor-more"] [data-act="more-export-options"]').click();
   await page.waitForSelector('.ms.export');

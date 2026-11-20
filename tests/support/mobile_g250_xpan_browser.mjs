@@ -89,7 +89,7 @@ try {
     const layerSize = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
     const originalFinalSize = await page.evaluate(() => window.__gxrEngine?.finalSize?.() ?? null);
 
-    await page.locator('.tabs button[data-tab="2"]').click();
+    await page.locator('.editor .toolbar [data-tool="crop"]').click();
     await page.waitForSelector('.crop-panel');
     const originalBadge = await waitCropBadge(page, [4288, 1584]);
 

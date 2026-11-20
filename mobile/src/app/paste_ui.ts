@@ -531,10 +531,11 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
 export interface EditorNavHandle {
   el: HTMLElement;
   refresh(): void;
+  setHolding(on: boolean): void;
   destroy(): void;
 }
 
-/** 编辑器顶栏：返回「照片」、中间配方名 +「第几张 / 共几张」（不含文件名）、右侧 HDR 开关与可用 ⋯。 */
+/** 编辑器顶栏：返回「照片」、中间配方名 +「第几张 / 共几张」（不含文件名，长按看原图时第二行切为「原图」）、右侧 HDR 开关与可用 ⋯。 */
 export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, index: number, total: number): EditorNavHandle {
   const nav = el('header', 'nav');
   const back = button('nb', '照片');
@@ -543,7 +544,8 @@ export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, in
 
   const title = el('div', 't');
   const recipeEl = el('b', '', currentRecipeLabel(api, photo));
-  const posEl = el('small', 'num', `${index + 1} / ${total}`);
+  const posText = `${index + 1} / ${total}`;
+  const posEl = el('small', 'num', posText);
   title.append(recipeEl, posEl);
 
   const right = el('div', 'nav-r');
@@ -591,6 +593,10 @@ export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, in
     recipeEl.textContent = currentRecipeLabel(api, photo);
     syncHdr();
   };
+  const setHolding = (on: boolean) => {
+    posEl.textContent = on ? '原图' : posText;
+    posEl.classList.toggle('holding', on);
+  };
   const offHdr = watchExportHdr(syncHdr);
   const offBook = api.book().onChange(() => refresh());
   const offCam = onCameraRecipe((id) => {
@@ -600,6 +606,7 @@ export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, in
   return {
     el: nav,
     refresh,
+    setHolding,
     destroy: () => {
       offHdr();
       offBook();

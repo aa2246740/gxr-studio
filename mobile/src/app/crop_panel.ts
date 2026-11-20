@@ -1,5 +1,4 @@
-// 03e 裁剪页：比例片（原始..小红书 3:4）、横竖切换、参考线选择（gxr-studio.crop-guides）、
-// ±45° 标尺拉直（每次 0.1°、双按归零、拖动时进入 03d 收起版式）、成品像素与比例行、CoreError 内联提示。
+// 128pt 单带里的裁剪页：比例片（原始..小红书 3:4）、显式「横竖对调」键、参考线选择、±45° 标尺拉直与 CoreError 提示。
 
 import { geomOutputSizes } from '../core/api';
 import {
@@ -25,9 +24,11 @@ import {
 } from '../lib/crop';
 import { button, el, icon } from './dom';
 import type { Photo } from './model';
+import { registerSheet } from './sheet_lifecycle';
 
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
-const CHEVRON_DOWN = 'M6 9l6 6 6-6';
+const FLIP_ICON = 'M7 16V4m0 0L3 8m4-4l4 4M17 8v12m0 0l4-4m-4 4l-4-4';
+const GUIDE_ICON = 'M3 9h18M3 15h18M9 3v18M15 3v18';
 const PX_PER_DEG = 18;
 
 export interface CropPanelHooks {
@@ -54,31 +55,36 @@ function fmtDeg(v: number): string {
 }
 
 export class CropPanel {
+  private readonly shell: HTMLElement;
+  private readonly hooks: CropPanelHooks;
+  private readonly head = el('div', 'band-crop-hd');
   private readonly panel = el('div', 'panel crop-panel');
   private readonly chipsWrap = el('div', 'chips');
   private readonly chips: Array<{ spec: (typeof PRESETS)[number]; btn: HTMLButtonElement }> = [];
-  private readonly controlRow = el('div', 'pad row gap8 crop-row');
-  private readonly seg = el('div', 'seg');
-  private readonly landBtn = button('on', '横向');
-  private readonly portBtn = button('', '竖向');
-  private readonly guideBtn = button('btn guide-btn', '');
-  private readonly guideText = el('span', '', '');
+  private readonly flipBtn = button('crop-act crop-flip', '横竖对调');
+  private readonly guideBtn = button('crop-act guide-btn', '');
+  private readonly guideText = el('span', 'guide-txt', '参考线');
   private readonly straightenBox = el('div', 'pad straighten');
-  private readonly angleVal = el('span', 'dim small num', '0.0°');
+  private readonly angleVal = el('span', 'crop-angle num', '0.0°');
   private readonly ruler = el('div', 'ruler');
   private readonly tape = el('div', 'ruler-tape');
-  private readonly sizeLine = el('p', 'pad dim small num crop-size-line', '');
+  private readonly sizeLine = el('span', 'dim small num crop-size-line', '');
   private readonly errBanner = el('div', 'bn crop-err');
   private readonly errText = el('span', 'tx', '');
+  private currentPortrait = false;
   private sizeSeq = 0;
   private destroyed = false;
   private lastTap = { at: 0, x: 0, y: 0 };
+  private unregGuide: (() => void) | null = null;
 
-  constructor(
-    private readonly shell: HTMLElement,
-    private readonly hooks: CropPanelHooks,
-  ) {
+  constructor(shell: HTMLElement, hooks: CropPanelHooks) {
+    this.shell = shell;
+    this.hooks = hooks;
     this.build();
+  }
+
+  headEl(): HTMLElement {
+    return this.head;
   }
 
   panelEl(): HTMLElement {
@@ -97,6 +103,8 @@ export class CropPanel {
 
   private build(): void {
     this.panel.dataset.tab = 'crop';
+    this.head.append(this.sizeLine, this.angleVal);
+
     for (const spec of PRESETS) {
       const chip = button('chip', spec.label);
       chip.dataset.preset = spec.id;
@@ -109,28 +117,24 @@ export class CropPanel {
       this.chips.push({ spec, btn: chip });
     }
 
-    this.seg.setAttribute('role', 'group');
-    this.seg.setAttribute('aria-label', '方向');
-    this.landBtn.dataset.orient = 'landscape';
-    this.portBtn.dataset.orient = 'portrait';
-    this.landBtn.addEventListener('click', () => {
+    this.flipBtn.dataset.act = 'crop-flip';
+    this.flipBtn.prepend(icon(FLIP_ICON));
+    this.flipBtn.addEventListener('click', () => {
+      if (this.flipBtn.disabled) return;
       this.showError(null);
-      this.hooks.pickOrientation('landscape');
+      this.hooks.pickOrientation(this.currentPortrait ? 'landscape' : 'portrait');
     });
-    this.portBtn.addEventListener('click', () => {
-      this.showError(null);
-      this.hooks.pickOrientation('portrait');
-    });
-    this.seg.append(this.landBtn, this.portBtn);
 
     this.guideBtn.type = 'button';
     this.guideBtn.dataset.act = 'guides';
-    this.guideBtn.append(this.guideText, icon(CHEVRON_DOWN));
+    this.guideBtn.append(icon(GUIDE_ICON), this.guideText);
     this.guideBtn.addEventListener('click', () => this.openGuideSheet());
-    this.controlRow.append(this.seg, this.guideBtn);
 
-    const head = el('div', 'row between');
-    head.append(el('span', 'dim small', '拉直'), this.angleVal);
+    const actions = el('div', 'crop-acts');
+    actions.append(this.flipBtn, this.guideBtn);
+
+    const topRow = el('div', 'crop-top-row');
+    topRow.append(this.chipsWrap, actions);
 
     this.ruler.setAttribute('role', 'slider');
     this.ruler.setAttribute('aria-label', '拉直');
@@ -143,13 +147,13 @@ export class CropPanel {
     this.ruler.append(this.tape, needle);
     this.bindRuler();
 
-    this.straightenBox.append(head, this.ruler);
+    this.straightenBox.append(this.ruler);
 
     this.errBanner.hidden = true;
     this.errBanner.dataset.role = 'crop-error';
     this.errBanner.append(this.errText);
 
-    this.panel.append(this.chipsWrap, this.controlRow, this.straightenBox, this.sizeLine, this.errBanner);
+    this.panel.append(topRow, this.straightenBox, this.errBanner);
     this.sync();
   }
 
@@ -285,17 +289,22 @@ export class CropPanel {
       sheet.append(row);
     }
     scrim.addEventListener('click', () => this.closeGuideSheet());
+    this.unregGuide = registerSheet(this.shell, () => this.closeGuideSheet());
     this.shell.append(scrim, sheet);
   }
 
   private closeGuideSheet(): void {
+    const unreg = this.unregGuide;
+    this.unregGuide = null;
+    unreg?.();
     this.shell.querySelector('.guide-scrim')?.remove();
     this.shell.querySelector('.guide-sheet')?.remove();
   }
 
   private syncGuideLabel(): void {
     const prefs = loadGuidePrefs();
-    this.guideText.textContent = `参考线：${guideLabel(prefs.guide)}`;
+    this.guideBtn.setAttribute('aria-label', `参考线：${guideLabel(prefs.guide)}`);
+    this.guideText.textContent = prefs.guide === 'off' ? '参考线' : guideLabel(prefs.guide);
   }
 
   sync(): void {
@@ -309,10 +318,9 @@ export class CropPanel {
       if (active) item.btn.scrollIntoView?.({ block: 'nearest', inline: 'center' });
     }
     const canOrient = ORIENTABLE.has(preset);
-    this.seg.hidden = !canOrient;
-    const portrait = cropIsPortrait(rect, canvas);
-    this.landBtn.classList.toggle('on', !portrait);
-    this.portBtn.classList.toggle('on', portrait);
+    this.currentPortrait = cropIsPortrait(rect, canvas);
+    this.flipBtn.disabled = !canOrient;
+    this.flipBtn.dataset.orient = this.currentPortrait ? 'portrait' : 'landscape';
     this.syncGuideLabel();
     this.paintAngle(this.hooks.liveStraighten());
     this.refreshSize();
@@ -365,6 +373,7 @@ export class CropPanel {
         }
         const [w, h] = reply.sizes.original;
         this.sizeLine.textContent = `成品 ${w} × ${h} 像素 · ${label}`;
+        this.sizeLine.dataset.label = label;
         this.hooks.onExportSize?.(photo, w, h);
       })
       .catch(() => {

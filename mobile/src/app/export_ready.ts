@@ -107,11 +107,27 @@ function renderDetailsDrawer(
   hdrNotes: readonly string[],
   camNotes: readonly string[],
   open: boolean,
+  posLine = '',
+  hdrLine = '',
 ): void {
-  if (!hdrNotes.length && !camNotes.length) return;
+  if (!posLine && !hdrLine && !hdrNotes.length && !camNotes.length) return;
   const drawer = el('div', 'ready-details');
   drawer.dataset.state = 'ready-details';
   drawer.hidden = !open;
+  if (posLine || hdrLine) {
+    const meta = el('div', 'ready-meta');
+    if (posLine) {
+      const who = el('small', 'ready-pos', posLine);
+      who.dataset.state = 'ready-positions';
+      meta.append(who);
+    }
+    if (hdrLine) {
+      const hl = el('small', 'hdrline', hdrLine);
+      hl.dataset.state = 'hdr-line';
+      meta.append(hl);
+    }
+    drawer.append(meta);
+  }
   if (hdrNotes.length) {
     const list = el('ul', 'why hdrnotes');
     for (const note of hdrNotes) list.append(el('li', '', note));
@@ -166,36 +182,25 @@ export function paintReadyBar(opts: ReadyBarRender): void {
     return btn;
   };
 
-  const makeDetailsBtn = (): HTMLButtonElement => {
-    const btn = button('fbtn fill-ctl ready-more', detailsOpen ? '收起' : `详情 (${noteCount})`);
+  const makeDetailsBtn = (count: number): HTMLButtonElement => {
+    const label = detailsOpen ? '收起' : count > 0 ? `详情 (${count})` : '详情';
+    const btn = button('fbtn fill-ctl ready-more', label);
     btn.dataset.act = 'toggle-details';
     btn.setAttribute('aria-expanded', detailsOpen ? 'true' : 'false');
     btn.addEventListener('click', opts.onToggleDetails);
     return btn;
   };
 
-  // 纯就绪态（无失败、非停止）：独立浮条，直接露出「第 N 张做好了 · 存进相册」或「N 张做好了 · 存进相册」。
+  // 纯就绪态（无失败、非停止）：折叠时单行 <= 52pt 浮在底栏上方，详情（第 N 张列表、HDR 摘要、逐张附注）收入可展开抽屉。
   if (ok > 0 && !failures.length && phase !== 'stopped') {
+    const posLine = entries.length > 1 ? readyPositionsSummary(positions) : '';
+    const hasDetails = Boolean(posLine || hdrLine || noteCount > 0);
+    dock.classList.toggle('ready-compact', !detailsOpen && !noShare);
     const row = el('div', 'ready-row');
     row.append(makeShareBtn(true));
-    if (noteCount > 0) row.append(makeDetailsBtn());
+    if (hasDetails) row.append(makeDetailsBtn(noteCount));
     dock.append(row);
-    const posLine = entries.length > 1 ? readyPositionsSummary(positions) : '';
-    if (posLine || hdrLine) {
-      const meta = el('div', 'ready-meta');
-      if (posLine) {
-        const who = el('small', 'ready-pos', posLine);
-        who.dataset.state = 'ready-positions';
-        meta.append(who);
-      }
-      if (hdrLine) {
-        const hl = el('small', 'hdrline', hdrLine);
-        hl.dataset.state = 'hdr-line';
-        meta.append(hl);
-      }
-      dock.append(meta);
-    }
-    renderDetailsDrawer(dock, hdrNotes, camNotes, detailsOpen);
+    renderDetailsDrawer(dock, hdrNotes, camNotes, detailsOpen, posLine, hdrLine);
     if (noShare) renderNoShareLinks(dock, entries, opts.trackUrl, opts.onFinishNoShare);
     return;
   }
@@ -240,7 +245,7 @@ export function paintReadyBar(opts: ReadyBarRender): void {
     close.addEventListener('click', opts.onDismiss);
     top.append(close);
   }
-  if (noteCount > 0) top.append(makeDetailsBtn());
+  if (noteCount > 0) top.append(makeDetailsBtn(noteCount));
   dock.append(top);
   renderDetailsDrawer(dock, hdrNotes, camNotes, detailsOpen);
   if (opts.thumbs) dock.append(opts.thumbs);

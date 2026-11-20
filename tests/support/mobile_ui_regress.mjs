@@ -237,13 +237,14 @@ const CASES = {
       await page.getByRole('button', { name: '先用读进来的', exact: true }).click();
       await page.locator(`.cell[data-id="${a}"]`).click();
       await label();
+      await page.locator('.editor .toolbar [data-tool="adjust"]').click();
       const slider = page.locator('input[data-key="exposure_ev"]');
       const box = await slider.boundingBox();
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       await page.mouse.down();
       await page.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2, { steps: 8 });
       await page.mouse.up();
-      const adjusted = { exposure: await page.locator('.val').innerText(), uploads: await page.evaluate(() => window.__uploads.length) };
+      const adjusted = { exposure: await page.locator('.editor .band-adjust-hd .val').innerText(), uploads: await page.evaluate(() => window.__uploads.length) };
       // 用户关掉的提示，后面缓存再变也不重新弹出来。
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
@@ -396,9 +397,11 @@ const CASES = {
       await page.waitForSelector('[data-screen="editor"]');
       const tabs = {};
       for (const name of ['曲线']) {
-        await page.getByRole('tab', { name, exact: true }).click();
+        await page.locator('.editor .toolbar [data-tool="more"]').click();
+        await page.locator('.more-sheet [data-more="curves"]').click();
+        await page.waitForSelector('.curves-sheet .panel.curve-panel');
         tabs[name] = await page.evaluate(() => {
-          const panel = document.querySelector('.editor .panel.curve-panel');
+          const panel = document.querySelector('.curves-sheet .panel.curve-panel');
           if (!panel || panel.hidden) return null;
           const controls = [...panel.querySelectorAll('button, input')];
           return {
@@ -442,6 +445,8 @@ const CASES = {
           return v !== undefined && v !== old;
         }, prev ?? null, { timeout: 120_000 });
       await page.locator('.cell').first().click();
+      await page.locator('.editor .toolbar [data-tool="adjust"]').click();
+      await page.locator('.editor .band .panel.adjust [data-act="hist-toggle"]').click();
       await waitDrawn(null);
       const first = await histState();
       await page.evaluate(() => {
@@ -470,10 +475,12 @@ const CASES = {
       const dragCalls = await page.evaluate(() => window.__histCalls);
       await page.waitForTimeout(2000);
       const settledCalls = (await page.evaluate(() => window.__histCalls)) - dragCalls;
-      const exposure = await page.locator('.val').innerText();
+      const exposure = await page.locator('.editor .band-adjust-hd .val').innerText();
       const title = (await page.locator('.editor').getAttribute('data-photo')) ?? '';
       await swipeLeft(page);
       await page.waitForFunction((prev) => document.querySelector('.editor')?.dataset.photo !== prev, title, { timeout: 30_000 });
+      await page.locator('.editor .toolbar [data-tool="adjust"]').click();
+      await page.locator('.editor .band .panel.adjust [data-act="hist-toggle"]').click();
       await waitDrawn(null);
       const next = await histState();
       return { first, idleCalls, dragged, dragCalls, settledCalls, exposure, next, errors };
@@ -504,14 +511,14 @@ const CASES = {
         });
         const waitCards = () =>
           page.waitForFunction(() => {
-            const thumbs = [...document.querySelectorAll('.editor > .strip .rc .th')];
+            const thumbs = [...document.querySelectorAll('.editor .strip[data-recipes] .rc .th')];
             return thumbs.length && thumbs.every((node) => node.dataset.source === '中性转换' && node.querySelector('canvas'));
           }, null, { timeout: 120_000 });
         await page.locator('.cell').first().click();
         await waitCards();
         stage('gpu: first cards');
         const first = await editorState(page);
-        const labels = await page.locator('.editor > .strip .rc .sub').allInnerTexts();
+        const labels = await page.locator('.editor .strip[data-recipes] .rc .sub').allInnerTexts();
         // 卡片和同一个源用显卡现出的中性小图比，缩到 96×64 后逐通道平均差。
         const diff = await page.evaluate(async () => {
           const key = `raw:${document.querySelector('.editor').dataset.photo.toLowerCase()}`;
@@ -530,7 +537,7 @@ const CASES = {
           ref.width = out.w;
           ref.height = out.h;
           ref.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h), 0, 0);
-          const a = scale(document.querySelector('.editor > .strip .rc .th canvas'));
+          const a = scale(document.querySelector('.editor .strip[data-recipes] .rc .th canvas'));
           const b = scale(ref);
           let sum = 0;
           let n = 0;
@@ -607,8 +614,8 @@ const CASES = {
           await page.locator(`.cell[data-id="${id}"]`).click();
           await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent, null, { timeout: 60_000 });
           out[id] = {
-            labels: await page.locator('.editor > .strip .rc .sub').allInnerTexts(),
-            drawn: await page.locator('.editor > .strip .rc .th canvas').count(),
+            labels: await page.locator('.editor .strip[data-recipes] .rc .sub').allInnerTexts(),
+            drawn: await page.locator('.editor .strip[data-recipes] .rc .th canvas').count(),
           };
           await page.getByRole('button', { name: '照片', exact: true }).click();
           await page.waitForSelector('[data-screen="grid"]');
@@ -654,13 +661,14 @@ const CASES = {
       // 已经在显卡里的那张：不读卡，直接打开、拖曝光。
       await page.locator(`.cell[data-id="${a}"]`).click();
       await page.waitForFunction(() => document.querySelector('.editor .lbl')?.textContent.includes('中性转换'), null, { timeout: 60_000 });
+      await page.locator('.editor .toolbar [data-tool="adjust"]').click();
       const slider = page.locator('input[data-key="exposure_ev"]');
       const box = await slider.boundingBox();
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       await page.mouse.down();
       await page.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2, { steps: 8 });
       await page.mouse.up();
-      const exposure = await page.locator('.val').innerText();
+      const exposure = await page.locator('.editor .band-adjust-hd .val').innerText();
       const reopened = { screen: await page.locator('.app').getAttribute('data-screen'), disabled: await slider.isDisabled(), exposure };
       const after = await page.evaluate(() => window.__gxrEngine.stats());
       const readsAfterCard = await page.evaluate(() => window.__fullReads.slice());
@@ -808,6 +816,8 @@ const CASES = {
     try {
       await pick(page, [manifest.jpg]);
       const badgeInGrid = async () => {
+        const closeCurve = page.locator('.curves-sheet [data-act="close"]');
+        if (await closeCurve.isVisible()) await closeCurve.click();
         if ((await page.locator('.app').getAttribute('data-screen')) !== 'grid') {
           await page.getByRole('button', { name: '照片', exact: true }).click();
           await page.waitForSelector('[data-screen="grid"]');
@@ -819,40 +829,58 @@ const CASES = {
           await page.locator('.cell').first().click();
           await page.waitForSelector('[data-screen="editor"]');
         }
-        await page.getByRole('tab', { name, exact: true }).click();
+        if (name === '裁剪') {
+          await page.locator('.editor .toolbar [data-tool="crop"]').click();
+        } else if (name === '曲线') {
+          await page.locator('.editor .toolbar [data-tool="more"]').click();
+          await page.locator('.more-sheet [data-more="curves"]').click();
+        } else if (name === '边框') {
+          await page.locator('.editor .toolbar [data-tool="more"]').click();
+          await page.locator('.more-sheet [data-more="frame"]').click();
+        } else if (name === '时间戳') {
+          await page.locator('.editor .toolbar [data-tool="more"]').click();
+          await page.locator('.more-sheet [data-more="stamp"]').click();
+        } else if (name === 'LUT') {
+          await page.locator('.editor .toolbar [data-tool="recipe"]').click();
+          const backBtn = page.locator('.panel.recipe [data-act="recipe-back"]');
+          if (await backBtn.isVisible()) await backBtn.click();
+          await page.locator('.editor .panel.recipe .mode-switch [data-mode="lut"]').click();
+        } else {
+          throw new Error(`unknown tab ${name}`);
+        }
       };
 
       const initial = await badgeInGrid();
 
       await openTab('曲线');
-      const box = await page.locator('svg.curve').boundingBox();
+      const box = await page.locator('.curves-sheet svg.curve').boundingBox();
       await page.mouse.click(box.x + box.width * 0.5, box.y + box.height * 0.25);
-      await page.waitForSelector('.curve-btn[data-changed="true"]');
+      await page.waitForSelector('.curves-sheet .curve-btn[data-changed="true"]');
       const curve = await badgeInGrid();
       await openTab('曲线');
       await page.getByRole('button', { name: '重置全部曲线', exact: true }).click();
-      await page.waitForFunction(() => !document.querySelector('.curve-btn[data-changed="true"]'));
+      await page.waitForFunction(() => !document.querySelector('.curves-sheet .curve-btn[data-changed="true"]'));
       const curveReset = await badgeInGrid();
 
       await openTab('裁剪');
       await page.locator('.crop-panel .chips button[data-preset="1:1"]').click();
-      await page.waitForFunction(() => document.querySelector('.tabs button.edited') !== null);
+      await page.waitForFunction(() => document.querySelector('.editor .toolbar .tbtn.edited') !== null);
       const crop = await badgeInGrid();
       await openTab('裁剪');
       await page.locator('.crop-panel .chips button[data-preset="original"]').click();
-      await page.waitForFunction(() => document.querySelector('.tabs button.edited') === null);
+      await page.waitForFunction(() => document.querySelector('.editor .toolbar .tbtn.edited') === null);
       const cropReset = await badgeInGrid();
 
       await openTab('裁剪');
       await page.locator('.crop-panel .ruler').focus();
       await page.keyboard.press('ArrowRight');
-      await page.waitForFunction(() => document.querySelector('.tabs button.edited') !== null);
+      await page.waitForFunction(() => document.querySelector('.editor .toolbar .tbtn.edited') !== null);
       const straighten = await badgeInGrid();
       await openTab('裁剪');
       await page.locator('.crop-panel .ruler').dblclick();
       await page.waitForFunction(() => document.querySelector('.crop-panel .ruler')?.getAttribute('aria-valuenow') === '0');
       await page.locator('.crop-panel .chips button[data-preset="original"]').click();
-      await page.waitForFunction(() => document.querySelector('.tabs button.edited') === null);
+      await page.waitForFunction(() => document.querySelector('.editor .toolbar .tbtn.edited') === null);
       const straightenReset = await badgeInGrid();
 
       await openTab('边框');
@@ -864,13 +892,13 @@ const CASES = {
       await page.waitForSelector('.panel.frame .rc[data-style="none"].on');
       const frameReset = await badgeInGrid();
 
-      await openTab('边框');
-      await page.locator('.panel.frame .stamp-row input.switch').click();
-      await page.waitForFunction(() => document.querySelector('.panel.frame .stamp-row input.switch')?.checked === true);
+      await openTab('时间戳');
+      await page.locator('.stamp-band input.switch').click();
+      await page.waitForFunction(() => document.querySelector('.stamp-band input.switch')?.checked === true);
       const stamp = await badgeInGrid();
-      await openTab('边框');
-      await page.locator('.panel.frame .stamp-row input.switch').click();
-      await page.waitForFunction(() => document.querySelector('.panel.frame .stamp-row input.switch')?.checked === false);
+      await openTab('时间戳');
+      await page.locator('.stamp-band input.switch').click();
+      await page.waitForFunction(() => document.querySelector('.stamp-band input.switch')?.checked === false);
       const stampReset = await badgeInGrid();
 
       await openTab('LUT');

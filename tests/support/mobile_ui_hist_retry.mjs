@@ -57,6 +57,7 @@ try {
       function view(engine) {
         const v = new EditorView(document.createElement('div'), document.createElement('div'), {}, engine);
         v.mode = 'raw';
+        v.histOpen = true;
         return v;
       }
       function counter(state) {

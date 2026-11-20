@@ -1,11 +1,10 @@
-// 03f 边框标签页：13 种样式缩略卡、颜色色块、粗细、标志/参数/日期/更多 chip、时间戳行与底部工作表联动。
+// 128pt 单带里的边框视图：款式卡横条（13 种样式）与选项子页（颜色、粗细、标志/参数/日期/更多/时间戳）。
 
 import {
   COLOR_HEX,
   COLOR_NAMES,
   FRAME_NAMES,
   FRAME_ORDER,
-  stampSummary,
   STYLE_OPTIONS,
   WEIGHT_NAMES,
   type FrameColor,
@@ -21,7 +20,6 @@ import {
   checkMissingLogo,
   commitFrame,
   commitSelectStyle,
-  commitStamp,
   ensureCroppedPhotoSize,
   ensureFrameMeta,
   isPhotoCropped,
@@ -45,17 +43,23 @@ export interface FrameHost {
   backdropKey?: () => string;
   onChange: () => void;
   isAlive?: () => boolean;
+  onOptionsChange?: (open: boolean) => void;
 }
 
 export class FrameView {
+  private readonly shell: HTMLElement;
+  private readonly photo: Photo;
+  private readonly host: FrameHost;
+  private readonly head: HTMLElement;
+  private readonly headTitle: HTMLElement;
+  private readonly optsBtn: HTMLButtonElement;
   private readonly root: HTMLElement;
   private readonly strip: HTMLElement;
   private readonly controls: HTMLElement;
-  private readonly stampTitleSummary: HTMLElement;
-  private readonly stampSwitch: HTMLInputElement;
   private readonly holders = new Map<FrameStyle, { card: HTMLButtonElement; thumb: HTMLElement }>();
   private readonly unsubLogo: () => void;
   private tabOpen = false;
+  private optionsOpen = false;
   private cardLayouts = new Map<FrameStyle, FrameLayoutData | null>();
   private layoutSig = '';
   private drawnSig = '';
@@ -65,15 +69,25 @@ export class FrameView {
   private frameQueue = 0;
   private destroyed = false;
 
-  constructor(
-    private readonly shell: HTMLElement,
-    private readonly photo: Photo,
-    private readonly host: FrameHost,
-  ) {
+  constructor(shell: HTMLElement, photo: Photo, host: FrameHost) {
+    this.shell = shell;
+    this.photo = photo;
+    this.host = host;
+
+    this.head = el('div', 'band-frame-hd');
+    this.headTitle = el('b', 'frame-hd-name', FRAME_NAMES[photo.border.style] || '无');
+    this.optsBtn = button('band-act frame-opts-btn', '设置');
+    this.optsBtn.dataset.act = 'frame-opts';
+    this.optsBtn.addEventListener('click', () => {
+      if (this.photo.border.style !== 'none') this.setOptionsOpen(true);
+    });
+    this.head.append(this.headTitle, this.optsBtn);
+
     this.root = el('div', 'panel frame');
     this.root.dataset.panel = 'frame';
-    this.strip = el('div', 'strip inpanel');
+    this.strip = el('div', 'strip');
     this.controls = el('div', 'fcontrols');
+    this.controls.hidden = true;
 
     for (const style of FRAME_ORDER) {
       const card = button('rc', '');
@@ -83,7 +97,11 @@ export class FrameView {
       const name = el('div', 'nm', FRAME_NAMES[style]);
       card.append(thumb, name);
       card.addEventListener('click', () => {
-        if (!this.aliveNow() || this.photo.border.style === style) return;
+        if (!this.aliveNow()) return;
+        if (this.photo.border.style === style) {
+          if (style !== 'none') this.setOptionsOpen(true);
+          return;
+        }
         commitSelectStyle(this.photo, style, () => {
           const monoMsg = autoMonoMessage(this.photo.border);
           if (monoMsg) showToast(this.shell, monoMsg);
@@ -94,27 +112,6 @@ export class FrameView {
       this.holders.set(style, { card, thumb });
       this.strip.append(card);
     }
-
-    const stampRow = el('div', 'stamp-row');
-    const stampBtn = button('stamp-open', '');
-    stampBtn.dataset.act = 'open-stamp';
-    this.stampTitleSummary = el('small', '', stampSummary(this.photo.stamp, this.photo.border));
-    stampBtn.append(el('b', '', '时间戳'), this.stampTitleSummary);
-    stampBtn.addEventListener('click', () => {
-      if (!this.aliveNow()) return;
-      openStampSheet(this.shell, this.photo, () => this.changed(), () => this.aliveNow());
-    });
-
-    this.stampSwitch = document.createElement('input');
-    this.stampSwitch.type = 'checkbox';
-    this.stampSwitch.className = 'switch';
-    this.stampSwitch.checked = this.photo.stamp.enabled;
-    this.stampSwitch.setAttribute('aria-label', '时间戳');
-    this.stampSwitch.addEventListener('change', () => {
-      if (!this.aliveNow()) return;
-      commitStamp(this.photo, { enabled: this.stampSwitch.checked }, () => this.changed());
-    });
-    stampRow.append(stampBtn, this.stampSwitch);
 
     this.unsubLogo = logoStore.onChange(() => {
       queueMicrotask(() => {
@@ -130,17 +127,33 @@ export class FrameView {
       });
     });
 
-    this.root.append(this.strip, this.controls, stampRow);
+    this.root.append(this.strip, this.controls);
     this.syncSelection();
-    this.renderControls();
+    this.syncSubView();
   }
 
   private aliveNow(): boolean {
     return !this.destroyed && (this.host.isAlive?.() ?? true);
   }
 
+  headEl(): HTMLElement {
+    return this.head;
+  }
+
   panelEl(): HTMLElement {
     return this.root;
+  }
+
+  isOptionsOpen(): boolean {
+    return this.optionsOpen;
+  }
+
+  private setOptionsOpen(open: boolean): void {
+    const next = open && this.photo.border.style !== 'none';
+    if (this.optionsOpen === next) return;
+    this.optionsOpen = next;
+    this.syncSubView();
+    this.host.onOptionsChange?.(this.optionsOpen);
   }
 
   tabOpened(): void {
@@ -174,9 +187,7 @@ export class FrameView {
   refresh(): void {
     if (!this.aliveNow()) return;
     this.syncSelection();
-    this.renderControls();
-    this.stampSwitch.checked = this.photo.stamp.enabled;
-    this.stampTitleSummary.textContent = stampSummary(this.photo.stamp, this.photo.border);
+    this.syncSubView();
     if (this.tabOpen) void this.paintCards();
   }
 
@@ -207,6 +218,19 @@ export class FrameView {
     this.host.onChange();
   }
 
+  private syncSubView(): void {
+    const style = this.photo.border.style;
+    if (style === 'none' && this.optionsOpen) {
+      this.optionsOpen = false;
+      this.host.onOptionsChange?.(false);
+    }
+    this.headTitle.textContent = FRAME_NAMES[style] || '无';
+    this.optsBtn.hidden = style === 'none' || this.optionsOpen;
+    this.strip.hidden = this.optionsOpen;
+    this.controls.hidden = !this.optionsOpen;
+    this.renderControls();
+  }
+
   private syncSelection(): void {
     const active = this.photo.border.style;
     for (const [style, { card, thumb }] of this.holders) {
@@ -230,49 +254,51 @@ export class FrameView {
     if (cur.style === 'none') return;
     const opts = STYLE_OPTIONS[cur.style];
 
-    // 颜色色块 + 粗细分段
-    if (opts.includes('color') || opts.includes('weight')) {
-      const row = el('div', 'pad row fctl-row');
-      if (opts.includes('color')) {
-        row.append(el('span', 'dim fctl-lab', '颜色'));
-        const colors: FrameColor[] = cur.style === 'slide_mount' ? ['cream', 'black'] : ['white', 'black', 'cream'];
-        for (const color of colors) {
-          const sw = button(cur.color === color ? 'swc on' : 'swc', '');
-          sw.dataset.color = color;
-          sw.setAttribute('aria-label', COLOR_NAMES[color]);
-          const dot = el('i');
-          dot.style.background = COLOR_HEX[color];
-          sw.append(dot);
-          sw.addEventListener('click', () => {
-            if (!this.aliveNow()) return;
-            commitFrame(this.photo, { color }, () => {
-              const monoMsg = autoMonoMessage(this.photo.border);
-              if (monoMsg) showToast(this.shell, monoMsg);
-              this.changed();
-            });
-          });
-          row.append(sw);
-        }
-      }
-      if (opts.includes('weight')) {
-        const seg = el('div', 'seg push');
-        seg.setAttribute('role', 'group');
-        seg.setAttribute('aria-label', '粗细');
-        (['thin', 'medium', 'thick'] as FrameWeight[]).forEach((weight) => {
-          const btn = button(cur.weight === weight ? 'on' : '', WEIGHT_NAMES[weight]);
-          btn.dataset.weight = weight;
-          btn.addEventListener('click', () => {
-            if (!this.aliveNow()) return;
-            commitFrame(this.photo, { weight }, () => this.changed());
-          });
-          seg.append(btn);
-        });
-        row.append(seg);
-      }
-      this.controls.append(row);
-    }
+    // 第一行：‹ 边框 + 颜色色块 + 粗细分段
+    const row = el('div', 'row fctl-row');
+    const backBtn = button('chip frame-back', '‹ 边框');
+    backBtn.dataset.act = 'frame-back';
+    backBtn.addEventListener('click', () => this.setOptionsOpen(false));
+    row.append(backBtn);
 
-    // 标志 / 参数 / 日期 / 更多
+    if (opts.includes('color')) {
+      const colors: FrameColor[] = cur.style === 'slide_mount' ? ['cream', 'black'] : ['white', 'black', 'cream'];
+      for (const color of colors) {
+        const sw = button(cur.color === color ? 'swc on' : 'swc', '');
+        sw.dataset.color = color;
+        sw.setAttribute('aria-label', COLOR_NAMES[color]);
+        const dot = el('i');
+        dot.style.background = COLOR_HEX[color];
+        sw.append(dot);
+        sw.addEventListener('click', () => {
+          if (!this.aliveNow()) return;
+          commitFrame(this.photo, { color }, () => {
+            const monoMsg = autoMonoMessage(this.photo.border);
+            if (monoMsg) showToast(this.shell, monoMsg);
+            this.changed();
+          });
+        });
+        row.append(sw);
+      }
+    }
+    if (opts.includes('weight')) {
+      const seg = el('div', 'seg push');
+      seg.setAttribute('role', 'group');
+      seg.setAttribute('aria-label', '粗细');
+      (['thin', 'medium', 'thick'] as FrameWeight[]).forEach((weight) => {
+        const btn = button(cur.weight === weight ? 'on' : '', WEIGHT_NAMES[weight]);
+        btn.dataset.weight = weight;
+        btn.addEventListener('click', () => {
+          if (!this.aliveNow()) return;
+          commitFrame(this.photo, { weight }, () => this.changed());
+        });
+        seg.append(btn);
+      });
+      row.append(seg);
+    }
+    this.controls.append(row);
+
+    // 第二行：标志 / 参数 / 日期 / 更多 / 时间戳
     const chips = el('div', 'chips');
     if (opts.includes('logo')) {
       const logoOn = cur.show_logo && cur.logo !== 'none';
@@ -302,13 +328,22 @@ export class FrameView {
       });
       chips.append(dateChip);
     }
-    const moreChip = button('chip push', '更多');
+    const moreChip = button('chip', '更多');
     moreChip.dataset.act = 'frame-more';
     moreChip.addEventListener('click', () => {
       if (!this.aliveNow()) return;
       openFrameMoreSheet(this.shell, this.photo, () => this.changed(), () => this.aliveNow());
     });
     chips.append(moreChip);
+
+    const stampChip = button(this.photo.stamp.enabled ? 'chip on' : 'chip', '时间戳');
+    stampChip.dataset.act = 'open-stamp';
+    stampChip.addEventListener('click', () => {
+      if (!this.aliveNow()) return;
+      openStampSheet(this.shell, this.photo, () => this.changed(), () => this.aliveNow());
+    });
+    chips.append(stampChip);
+
     this.controls.append(chips);
   }
 

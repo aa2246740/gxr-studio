@@ -161,15 +161,20 @@ try {
     return key && key !== prev;
   }, defaultKey, { timeout: 60_000 });
   const chosenKey = await recipeKey(page);
-  await page.locator('.editor .tabs button', { hasText: '配方' }).click();
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
   await page.waitForTimeout(300);
   await snap(page, '03a');
+  const bandText = await page.locator('.editor .band').innerText();
+  await page.locator('.editor .recipe-head [data-act="recipe-filter"]').click();
+  await page.waitForSelector('.filter-sheet');
+  const filterText = await page.locator('.filter-sheet').innerText();
+  await page.locator('.filter-sheet [data-act="close"]').click();
   step('chosen', {
     key: chosenKey,
     bake: await bakeOf(page, chosenKey),
     label: await label(page),
     changed: (await stageSum(page)) !== before,
-    panel: await page.locator('.editor .panel.recipe').innerText(),
+    panel: `${bandText}\n${filterText}`,
     on: await page.locator('.editor .strip[data-recipes] .rc.on').getAttribute('data-card'),
   });
 
@@ -196,9 +201,14 @@ try {
     const drawn = await page
       .waitForFunction((card) => document.querySelector(`.editor .strip[data-recipes] .rc[data-card="${card}"] .th`)?.dataset.source === '电脑预测', id, { timeout: 120_000 })
       .then(() => true, () => false);
+    // 第二次点已选卡片进入微调子页，再选一个非强度旋钮。
+    await look.click();
+    await page.waitForSelector(`.editor .knobs[data-card="${id}"]`);
     const panelText = await page.locator('.editor .panel.recipe').innerText();
-    const row = page.locator(`.editor .knobs[data-card="${id}"] .krow:not([data-knob="amount"])`).first();
-    const knobName = await row.getAttribute('data-knob');
+    const knobChip = page.locator('.editor .knob-chips .chip:not([data-knob-chip="amount"])').first();
+    const knobName = await knobChip.getAttribute('data-knob-chip');
+    await knobChip.click();
+    const row = page.locator(`.editor .knobs[data-card="${id}"] .krow[data-knob="${knobName}"]`);
     const keysBefore = await page.evaluate(() => [...(window.__gxrBakes?.keys() ?? [])].length);
     // 记下这一张 Look 的 resolve 次数（别的卡在后台画小图会装别的表，所以不能数装了几张表）。
     await page.evaluate((recipeId) => {
@@ -230,6 +240,7 @@ try {
       panel: panelText,
       knob: { name: knobName, level, key: knobKey, bake: await bakeOf(page, knobKey, 'phone-knob'), keysBefore, duringDrag, afterRelease },
     });
+    await page.locator('.editor [data-act="recipe-back"]').click();
     await page.locator('.editor .strip[data-recipes] .rc[data-card="builtin:1"]').scrollIntoViewIfNeeded();
     await page.locator('.editor .strip[data-recipes] .rc[data-card="builtin:1"]').click();
     await page.waitForFunction((want) => document.querySelector('.app')?.dataset.recipeKey === want, chosenKey, { timeout: 60_000 });
@@ -293,14 +304,19 @@ try {
   await page.locator('.calib-sheet button', { hasText: '完成' }).click();
   await openFirst(page);
   await page.waitForFunction(() => document.querySelector('.editor .strip[data-recipes]')?.dataset.state === 'uncalibrated', null, { timeout: 60_000 });
-  await page.locator('.editor .tabs button', { hasText: '配方' }).click();
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
   await snap(page, '06c');
+  const noCalTag = await page.locator('.editor .recipe-head [data-state="no-calibration"]').innerText();
+  await page.locator('.editor .recipe-head [data-state="no-calibration"]').click();
+  await page.waitForSelector('.recipe-info-sheet [data-state="no-calibration"]');
+  const noCalBanner = await page.locator('.recipe-info-sheet [data-state="no-calibration"]').innerText();
+  await page.locator('.recipe-info-sheet [data-act="close"]').click();
   step('no-calibration', {
     label: await label(page),
     subs: await page.locator('.editor .strip[data-recipes] .rc .sub').allInnerTexts(),
     on: await page.locator('.editor .strip[data-recipes] .rc.on').getAttribute('data-card'),
-    banner: await page.locator('.editor [data-state="no-calibration"]').innerText(),
-    tag: await page.locator('.editor .recipe-head .tag[data-state]').innerText(),
+    banner: noCalBanner,
+    tag: noCalTag,
     key: await recipeKey(page),
   });
 
@@ -311,13 +327,17 @@ try {
   await page.waitForSelector(`.cell[data-id="${jpgId}"] canvas`, { timeout: 60_000 });
   await page.locator(`.cell[data-id="${jpgId}"]`).click();
   await page.waitForFunction(() => document.querySelector('.editor .strip[data-recipes]')?.dataset.state === 'jpg-only', null, { timeout: 60_000 });
-  await page.locator('.editor .tabs button', { hasText: '配方' }).click();
+  await page.locator('.editor .toolbar [data-tool="recipe"]').click();
   await snap(page, '06e');
+  await page.locator('.editor .recipe-head [data-act="recipe-status"]').click();
+  await page.waitForSelector('.recipe-info-sheet');
+  const jpgPanel = await page.locator('.recipe-info-sheet').innerText();
+  await page.locator('.recipe-info-sheet [data-act="close"]').click();
   step('jpg-only', {
     label: await label(page),
     disabled: await page.locator('.editor .strip[data-recipes] .rc:disabled').count(),
     cards: await page.locator('.editor .strip[data-recipes] .rc').count(),
-    panel: await page.locator('.editor .panel.recipe').innerText(),
+    panel: jpgPanel,
   });
 } finally {
   await browser.close();

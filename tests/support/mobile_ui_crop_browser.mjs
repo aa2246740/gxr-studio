@@ -92,11 +92,11 @@ async function selectPreset(page, id, orient) {
     );
   }
   if (orient) {
-    const segBtn = page.locator(`.crop-panel .seg button[data-orient="${orient}"]`);
-    if ((await segBtn.isVisible()) && !(await segBtn.evaluate((n) => n.classList.contains('on')))) {
-      await segBtn.click();
+    const flipBtn = page.locator('.crop-panel [data-act="crop-flip"]');
+    if ((await flipBtn.isEnabled()) && (await flipBtn.getAttribute('data-orient')) !== orient) {
+      await flipBtn.click();
       await page.waitForFunction(
-        (wantOn) => Boolean(document.querySelector(`.crop-panel .seg button[data-orient="${wantOn}"]`)?.classList.contains('on')),
+        (wantOn) => document.querySelector('.crop-panel [data-act="crop-flip"]')?.dataset.orient === wantOn,
         orient,
         { timeout: 30_000 },
       );
@@ -205,7 +205,7 @@ async function runFinalSize(page) {
   const results = [];
   for (const stem of manifest.stems) {
     await openPhoto(page, stem);
-    await page.locator('.tabs button[data-tab="2"]').click();
+    await page.locator('.editor .toolbar [data-tool="crop"]').click();
     await page.waitForSelector('.crop-panel');
 
     const cases = [
@@ -225,7 +225,7 @@ async function runFinalSize(page) {
       ['xpan-65-24', 'landscape', 2.5],
     ];
     for (const [preset, orient, angle] of cases) {
-      await page.locator('.tabs button[data-tab="2"]').click();
+      await page.locator('.editor .toolbar [data-tool="crop"]').click();
       await page.waitForSelector('.crop-panel');
       if (angle !== 0) await dragStraighten(page, angle, false);
       await selectPreset(page, preset, orient);
@@ -251,14 +251,14 @@ async function runFinalSize(page) {
       });
       const side = await page.evaluate(async (s) => (await window.__gxrRequest(s))?.side ?? null, stem);
       const seq = Number(await page.evaluate(() => document.querySelector('.app')?.dataset.geoSeq || '0'));
-      await page.locator('.tabs button[data-tab="1"]').click();
+      await page.locator('.editor .toolbar [data-tool="adjust"]').click();
       await waitGeo(page, seq);
       const finalSize = await page.evaluate(() => window.__gxrEngine?.finalSize?.() ?? null);
       const layerSize = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
       results.push({ stem, preset, orient, angle, side, finalSize, layerSize, badgeSize, dragBadge });
       // reset straighten to 0 before next non-zero test if needed
       if (angle !== 0) {
-        await page.locator('.tabs button[data-tab="2"]').click();
+        await page.locator('.editor .toolbar [data-tool="crop"]').click();
         await page.locator('.crop-panel .ruler').dblclick();
         await page.waitForFunction(
           (s) => Math.abs(window.__gxrEdits?.().find((r) => r.stem === s)?.geometry?.straighten ?? 99) < 0.05,
@@ -269,9 +269,9 @@ async function runFinalSize(page) {
     }
     if (stem === manifest.stems[0]) {
       // Check recipe card cropped thumbnail marker when XPan is active (RAW photos only; JPG-only uses disabled JPEG preview)
-      await page.locator('.tabs button[data-tab="2"]').click();
+      await page.locator('.editor .toolbar [data-tool="crop"]').click();
       await selectPreset(page, 'xpan-65-24', 'landscape');
-      await page.locator('.tabs button[data-tab="0"]').click();
+      await page.locator('.editor .toolbar [data-tool="recipe"]').click();
       await page.waitForFunction(() => document.querySelectorAll('.strip[data-recipes] .rc .th[data-cropped="1"]').length > 0, null, { timeout: 60_000 });
       out.steps[`croppedCards_${stem}`] = await page.locator('.strip[data-recipes] .rc .th[data-cropped="1"]').count();
     }
@@ -289,7 +289,7 @@ async function runParity(page) {
   const edits = [];
   for (const plan of manifest.plans) {
     await openPhoto(page, plan.stem);
-    await page.locator('.tabs button[data-tab="2"]').click();
+    await page.locator('.editor .toolbar [data-tool="crop"]').click();
     await page.waitForSelector('.crop-panel');
     if (plan.angleDeg) {
       const dragInfo = await dragStraighten(page, plan.angleDeg, !!plan.recordRaf);

@@ -1,40 +1,45 @@
-// 编辑一张。拖滑块时只改 setLook 和滑块上的数字，不重建页面。
+// 编辑一张：大照片舞台（纯黑底边到边）+ 固定 128pt 单带 + 4 工具底栏（配方 · 调整 · 裁剪 · 更多 + 存到相册）+ U1 顶栏与一键导出。
+// 拖滑块和切换工具时不重排舞台；顶栏与一键「存到相册」/ 就绪条衔接 U1。
 
 import type { Engine } from '../../../frontend/src/index';
-import { describeDng, type Described } from '../core/api';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
-import { createHdrPreview } from './hdr_hookup';
-import { histPoint, histShape } from '../lib/hist';
 import { AdjustView, toAdjust } from './adjust_view';
+import { showCalibSheet } from './calib_ui';
 import { CropStage, DEFAULT_GEOMETRY } from './crop_stage';
-import { button, el, icon } from './dom';
+import { openCurvesSheet } from './curves_sheet';
 import { mountCurves, previewCurve, type CurvesView } from './curves_view';
-import { startQuickExport } from './export_ui';
-import { LutView } from './lut_view';
-import { isGone, zeroKnobs, type AppApi, type Photo } from './model';
-import { lookCache } from './looks';
-import { pasteState } from './paste_state';
-import { mountEditorNav, openCopySheet, PASTE_ICON, type EditorNavHandle } from './paste_ui';
-import { RecipeView } from './recipe_view';
+import { el } from './dom';
+import { EditorBand, positionFloatHist } from './editor_band';
+import { EditorBar, type BandTool, type BarTool } from './editor_bar';
+import { createHistWidget, drawHistCanvas, editedFlagsOf, fitGpuCanvas, type HistWidget } from './editor_hist';
+import { EditorMedia, type MediaMode } from './editor_media';
+import { openExportOptions, startQuickExport } from './export_ui';
 import { releaseFinishDrawResources } from './finish_draw';
 import { photoExportSize } from './frame_state';
 import { FrameView } from './frame_view';
+import { createHdrPreview } from './hdr_hookup';
+import { lookCache } from './looks';
+import { LutView } from './lut_view';
+import { zeroKnobs, type AppApi, type Photo } from './model';
+import { openMoreSheet } from './more_sheet';
+import { pasteState } from './paste_state';
+import { mountEditorNav, type EditorNavHandle } from './paste_ui';
+import { RecipeView } from './recipe_view';
 import { cancelHostSheets } from './sheet_lifecycle';
 import { StageDecorController } from './stage_finish';
+import { StageZoom } from './stage_zoom';
+import { StampBandView } from './stamp_band';
 import { showToast } from './toast';
 import './frame.css';
 
 const HIST_FAST_MISSES = 300;
 const HIST_SLOW_MS = 250;
 
-const TABS = ['配方', '调整', '裁剪', '边框', 'LUT', '曲线'] as const;
-
 export class EditorView {
   private token = 0;
   private openGen = 0;
   private photo: Photo | null = null;
-  private mode: 'raw' | 'jpg' | 'still' = 'still';
-  private wantNeighbor = '';
+  private mode: MediaMode = 'still';
   private dragging = false;
   private holding = false;
   /** 直方图：正在数、数完还要再数一次、上次画的是哪个内容版本。静止时不再读显卡。 */
@@ -45,37 +50,46 @@ export class EditorView {
   private histFrame = 0;
   private histTimer = 0;
   private histMisses = 0;
-  private clipLow: HTMLElement | null = null;
-  private clipHigh: HTMLElement | null = null;
+  private histOpen = false;
+  private histWidget: HistWidget | null = null;
   private stageLabel: HTMLElement | null = null;
+  private stage: HTMLElement | null = null;
   private pv: HTMLElement | null = null;
   private gpuCanvas: HTMLCanvasElement | null = null;
   private still: HTMLCanvasElement | null = null;
-  private hist: HTMLCanvasElement | null = null;
   private caption = '';
   private lookCaption = '';
   private sharp: ImageBitmap | null = null;
   private placeholder: HTMLElement | null = null;
+  private screen: HTMLElement | null = null;
+  private band: EditorBand | null = null;
+  private bar: EditorBar | null = null;
+  private stageZoom: StageZoom | null = null;
   private recipes: RecipeView | null = null;
+  private luts: LutView | null = null;
   private adjust: AdjustView | null = null;
   private curves: CurvesView | null = null;
   private cropStage: CropStage | null = null;
-  private pvObserver: ResizeObserver | null = null;
   private frames: FrameView | null = null;
+  private stampBand: StampBandView | null = null;
+  private pvObserver: ResizeObserver | null = null;
   private decor: StageDecorController | null = null;
-  private luts: LutView | null = null;
-  private lutTabBtn: HTMLButtonElement | null = null;
   /** 舞台上套的烘焙表（中性转换或某个配方）。 */
   private recipeKey = NEUTRAL_BAKE_KEY;
   /** 舞台上套的 LUT 渲染令牌和名称。 */
   private lutToken: string | null = null;
   private lutLabel: string | null = null;
-  private tab = 1;
+  private activeTool: BandTool = 'recipe';
+  private recipeSub: 'recipe' | 'lut' = 'recipe';
   /** 这张读完、清楚的图也换上之后才 resolve。只给截图和测试等。 */
   settled: Promise<void> = Promise.resolve();
-  private sharpening: Promise<void> = Promise.resolve();
   private offPaste: (() => void) | null = null;
   private navCtrl: EditorNavHandle | null = null;
+  private readonly host: HTMLElement;
+  private readonly shell: HTMLElement;
+  private readonly api: AppApi;
+  private readonly engine: Engine | null;
+  private readonly media: EditorMedia;
   private readonly hdr = createHdrPreview({
     photo: () => this.photo,
     api: () => this.api,
@@ -89,12 +103,51 @@ export class EditorView {
     mode: () => this.mode,
   });
 
-  constructor(
-    private readonly host: HTMLElement,
-    private readonly shell: HTMLElement,
-    private readonly api: AppApi,
-    private readonly engine: Engine | null,
-  ) {}
+  constructor(host: HTMLElement, shell: HTMLElement, api: AppApi, engine: Engine | null) {
+    this.host = host;
+    this.shell = shell;
+    this.api = api;
+    this.engine = engine;
+    this.media = new EditorMedia({
+      api: () => this.api,
+      engine: () => this.engine,
+      host: () => this.host,
+      shell: () => this.shell,
+      photo: () => this.photo,
+      mode: () => this.mode,
+      setMode: (m) => {
+        this.mode = m;
+      },
+      nextToken: () => ++this.token,
+      same: (token, photo, version, session, rev) => this.same(token, photo, version, session, rev),
+      gpuCanvas: () => this.gpuCanvas,
+      stillCanvas: () => this.still,
+      placeholderEl: () => this.placeholder,
+      cropStage: () => this.cropStage,
+      setSharp: (bitmap) => {
+        this.sharp?.close();
+        this.sharp = bitmap;
+      },
+      setLookCaption: (text) => {
+        this.lookCaption = text;
+      },
+      lookCaption: () => this.lookCaption,
+      caption: () => this.caption,
+      isCropActive: () => this.activeTool === 'crop',
+      setLabel: (text) => this.setLabel(text),
+      push: () => this.push(),
+      setAdjustDisabled: (disabled) => this.adjust?.setDisabled(disabled),
+      startRecipes: (key) => this.recipes?.start(key),
+      refreshRecipes: () => this.recipes?.refresh(),
+      setNeutralRecipe: (bitmap) => this.recipes?.neutral(bitmap),
+      startLuts: (key) => this.luts?.start(key),
+      onMediaReady: () => {
+        this.fitStageCanvas(true);
+        this.decor?.onMediaReady();
+      },
+      syncFloatHistPos: () => this.syncFloatHistPos(),
+    });
+  }
 
   open(photo: Photo): void {
     cancelHostSheets(this.shell);
@@ -108,8 +161,9 @@ export class EditorView {
     });
     this.build(photo, index);
     this.shell.dataset.settled = '0';
-    this.settled = this.load(photo)
-      .then(() => this.sharpening)
+    this.settled = this.media
+      .load(photo)
+      .then(() => this.media.sharpeningPromise())
       .finally(() => {
         if (this.photo === photo) this.shell.dataset.settled = photo.stem;
       });
@@ -132,9 +186,12 @@ export class EditorView {
     this.navCtrl = null;
     this.dragging = false;
     this.holding = false;
+    this.histOpen = false;
+    this.stageZoom?.destroy();
+    this.stageZoom = null;
     this.cropStage?.destroy();
     this.cropStage = null;
-    this.wantNeighbor = '';
+    this.media.reset();
     this.histAgain = false;
     this.cancelHistRetry();
     this.pvObserver?.disconnect();
@@ -151,17 +208,23 @@ export class EditorView {
     this.curves = null;
     this.frames?.destroy();
     this.frames = null;
+    this.stampBand = null;
+    this.band = null;
+    this.bar = null;
+    this.screen = null;
+    this.stage = null;
+    this.pv = null;
     this.decor?.destroy();
     this.decor = null;
     releaseFinishDrawResources();
     this.luts?.destroy();
     this.luts = null;
-    this.lutTabBtn = null;
     this.hdr.close();
-    for (const cv of [this.hist, this.still, this.gpuCanvas]) {
+    for (const cv of [this.histWidget?.canvas ?? null, this.still, this.gpuCanvas]) {
       if (cv) cv.width = cv.height = 0;
     }
-    this.hist = this.still = this.gpuCanvas = null;
+    this.histWidget = null;
+    this.still = this.gpuCanvas = null;
     this.engine?.detach();
   }
 
@@ -176,42 +239,47 @@ export class EditorView {
       this.api.photo(photo.id) === photo &&
       photo.version === version &&
       this.api.session() === session;
-    this.tab = 1;
+
+    // 换下一张时总是回到「配方」工具；单带收起状态由 EditorBand 从本地存储记住。
+    this.activeTool = 'recipe';
+    this.recipeSub = 'recipe';
+    this.histOpen = false;
     this.lookCaption = '';
     this.pvObserver?.disconnect();
     this.pvObserver = null;
+    this.stageZoom?.destroy();
+    this.stageZoom = null;
     this.cropStage?.destroy();
+
     this.cropStage = new CropStage(this.shell, this.api, this.engine, {
       photo: () => this.photo,
       mode: () => this.mode,
-      active: () => this.tab === 2,
+      active: () => this.activeTool === 'crop',
       sharp: () => this.sharp,
       stillCanvas: () => this.still,
       placeholderEl: () => this.placeholder,
       pvEl: () => this.pv,
       caption: () => this.caption,
       holding: () => this.holding,
-      setHolding: (on) => {
-        this.holding = on;
-        this.renderStageLabel();
-        this.push();
-        void this.decor?.sync();
-      },
+      setHolding: (on) => this.setHolding(on),
       setLabel: (text) => this.setLabel(text),
       enterDrag: () => this.enterDrag(),
       leaveDrag: () => this.leaveDrag(),
       dragging: () => this.dragging,
       requestHist: () => this.requestHist(),
       swipe: (id, dir) => this.api.swipe(id, dir),
+      resetZoom: () => this.stageZoom?.reset(),
       onCommitted: (target, changed) => {
         if (changed && this.photo === target) {
           if (this.mode === 'raw') {
             this.recipes?.neutral(null);
-            void this.neutralCards(target, `raw:${target.id}`);
+            void this.media.neutralCards(target, `raw:${target.id}`, this.token);
           }
           this.recipes?.refresh();
           this.decor?.onCropChanged();
           this.frames?.refresh();
+          this.updateEditedDots();
+          this.syncFloatHistPos();
         }
       },
       restLabelText: () => this.restLabelText(),
@@ -221,11 +289,13 @@ export class EditorView {
     const photos = this.api.photos();
     const screen = el('section', 'screen editor');
     screen.dataset.photo = photo.stem;
+    this.screen = screen;
     this.navCtrl?.destroy();
     this.navCtrl = mountEditorNav(this.shell, this.api, photo, index, photos.length);
     const nav = this.navCtrl.el;
 
     const stage = el('div', 'stage');
+    this.stage = stage;
     const pv = el('div', 'pv');
     this.pv = pv;
     this.gpuCanvas = document.createElement('canvas');
@@ -238,15 +308,31 @@ export class EditorView {
 
     pv.append(this.gpuCanvas, this.still, this.placeholder);
     this.cropStage.mountOverlay(pv);
-    this.stageLabel = el('div', 'lbl');
-    stage.append(pv, this.stageLabel);
+
+    const histWidget = createHistWidget();
+    histWidget.root.hidden = true;
+    this.histWidget = histWidget;
+    stage.append(pv, histWidget.root);
+
     if (typeof ResizeObserver === 'function') {
       this.pvObserver = new ResizeObserver(() => {
+        this.fitStageCanvas();
         this.engine?.redraw();
-        if (this.tab === 2) this.cropStage?.renderOverlay();
+        if (this.activeTool === 'crop') this.cropStage?.renderOverlay();
+        this.syncFloatHistPos();
       });
+      this.pvObserver.observe(stage);
       this.pvObserver.observe(pv);
     }
+
+    this.stageZoom = new StageZoom(stage, pv, {
+      isCropActive: () => this.activeTool === 'crop',
+      onTap: () => this.toggleBandCollapsed(),
+      onSwipe: (dir) => {
+        if (this.photo) this.api.swipe(this.photo.id, dir);
+      },
+      onHold: (on) => this.setHolding(on),
+    });
     this.cropStage.bindGesture(stage);
 
     this.recipeKey = NEUTRAL_BAKE_KEY;
@@ -254,35 +340,46 @@ export class EditorView {
     this.lutLabel = null;
     const cropGeo = () =>
       this.cropStage?.resolveBoxGeometry(photo) ?? Promise.resolve({ geometry: { ...DEFAULT_GEOMETRY }, cropped: false });
+
     this.recipes = new RecipeView(this.api, this.engine, photo, {
       mode: () => this.mode,
       look: (key, label) => this.useLook(key, label),
       dragging: () => this.dragging,
-      recipeTab: () => this.tab === 0,
+      recipeTab: () => this.activeTool === 'recipe' && this.recipeSub === 'recipe',
       geometry: cropGeo,
+      openLut: () => this.setRecipeSub('lut'),
+      lutActive: () => this.photo?.lut !== null,
+      onFineTuneChange: () => this.syncCompactHead(),
+      onEditedChanged: () => this.updateEditedDots(),
     });
     this.luts = new LutView(this.shell, this.api, this.engine, photo, {
       mode: () => this.mode,
       recipeGpuKey: () => this.recipeKey,
       stageLut: (token, label) => this.useLut(token, label),
       dragging: () => this.dragging,
-      lutTab: () => this.tab === 4,
-      lutChanged: () => this.updateLutTabDot(),
+      lutTab: () => this.activeTool === 'recipe' && this.recipeSub === 'lut',
+      lutChanged: () => {
+        this.recipes?.syncLutDot();
+        this.updateEditedDots();
+      },
+      openRecipe: () => this.setRecipeSub('recipe'),
     });
     this.adjust?.destroy();
-    this.adjust = new AdjustView(
-      {
-        photo: () => this.photo,
-        push: () => this.push(),
-        enterDrag: () => this.enterDrag(),
-        leaveDrag: () => this.leaveDrag(),
-        dragging: () => this.dragging,
-        refreshCurves: () => this.curves?.refresh(),
-      },
-      this.histEl(),
-    );
-    const strip = this.recipes.stripEl();
+    this.adjust = new AdjustView({
+      photo: () => this.photo,
+      push: () => this.push(),
+      enterDrag: () => this.enterDrag(),
+      leaveDrag: () => this.leaveDrag(),
+      dragging: () => this.dragging,
+      refreshCurves: () => this.curves?.refresh(),
+      openCurves: () => this.openCurves(),
+      toggleHist: () => this.toggleHist(),
+      histVisible: () => this.histOpen,
+      onEditedChanged: () => this.updateEditedDots(),
+    });
     const cropPanelEl = this.cropStage.createPanel();
+    const cropHeadEl = this.cropStage.panelHeadEl();
+
     this.decor?.destroy();
     this.decor = new StageDecorController({
       pv,
@@ -292,85 +389,89 @@ export class EditorView {
       gpuCanvas: this.gpuCanvas,
       still: this.still,
       mode: () => this.mode,
-      frameTab: () => this.tab === 3,
-      cropTab: () => this.tab === 2 || this.holding,
+      frameTab: () => this.activeTool === 'frame' || this.activeTool === 'stamp',
+      cropTab: () => this.activeTool === 'crop' || this.holding,
       geometry: cropGeo,
       isAlive: viewAlive,
-      onMeta: () => this.frames?.refresh(),
+      onMeta: () => {
+        this.frames?.refresh();
+        this.stampBand?.refresh();
+      },
       onBackdrop: () => this.frames?.backdropUpdated(),
+      onDecorClear: () => this.fitStageCanvas(true),
       onToast: (msg) => showToast(this.shell, msg),
     });
+
     this.frames?.destroy();
     this.frames = new FrameView(this.shell, photo, {
       ew: () => photoExportSize(photo, this.engine),
       backdrop: () => this.decor?.backdropCanvas() ?? null,
       backdropKey: () => this.decor?.backdrop()?.key ?? '',
       isAlive: viewAlive,
+      onOptionsChange: () => this.syncCompactHead(),
       onChange: () => {
         void this.decor?.sync();
         this.hdr.invalidate();
+        this.stampBand?.refresh();
+        this.updateEditedDots();
       },
     });
 
-    const sheet = el('div', 'sheet');
-    sheet.append(el('div', 'grab'));
-    const tabs = el('div', 'tabs');
-    const panels: HTMLElement[] = [];
-    this.lutTabBtn = null;
-    TABS.forEach((name, tabIndex) => {
-      const tab = button('', name);
-      tab.dataset.tab = String(tabIndex);
-      tab.setAttribute('role', 'tab');
-      if (tabIndex === 4) {
-        tab.dataset.tab = 'lut';
-        this.lutTabBtn = tab;
-        this.updateLutTabDot();
-      }
-      if (tabIndex === 1) tab.classList.add('on');
-      if (tabIndex === 2) this.cropStage?.attachTabButton(tab);
-      tab.addEventListener('click', () => {
-        if (this.tab === tabIndex) return;
-        const prevTab = this.tab;
-        if (prevTab === 5) this.curves?.cancelDrag();
-        for (const item of tabs.children) item.classList.remove('on');
-        tab.classList.add('on');
-        this.tab = tabIndex;
-        if (tabIndex === 0) this.recipes?.tabOpened();
-        if (tabIndex === 3) {
-          this.frames?.tabOpened();
-          this.decor?.onFrameTabOpened();
-        } else {
-          this.frames?.tabClosed();
-        }
-        if (tabIndex === 4) this.luts?.tabOpened();
-        panels.forEach((panel, panelIndex) => {
-          panel.hidden = panelIndex !== tabIndex;
-        });
-        if (prevTab === 2 || tabIndex === 2) void this.decor?.sync();
-        this.cropStage?.syncTabMode();
-      });
-      tabs.append(tab);
+    this.stampBand = new StampBandView(this.shell, photo, {
+      isAlive: viewAlive,
+      onChange: () => {
+        void this.decor?.sync();
+        this.hdr.invalidate();
+        this.frames?.refresh();
+        this.updateEditedDots();
+      },
     });
-    this.curves = mountCurves(this.curves, { photo: () => this.photo, push: () => this.push(), enterDrag: () => this.enterDrag(false), leaveDrag: () => this.leaveDrag(), dragging: () => this.dragging });
-    panels.push(this.recipes.panelEl(), this.adjust.panelEl(), cropPanelEl, this.frames.panelEl(), this.luts.panelEl(), this.curves.panelEl());
-    panels.forEach((panel, panelIndex) => {
-      panel.hidden = panelIndex !== 1;
+
+    this.curves = mountCurves(this.curves, {
+      photo: () => this.photo,
+      push: () => {
+        this.push();
+        this.updateEditedDots();
+      },
+      enterDrag: () => this.enterDrag(false),
+      leaveDrag: () => this.leaveDrag(),
+      dragging: () => this.dragging,
     });
-    const copy = button('btn', '复制调整');
-    copy.prepend(icon(PASTE_ICON.copy));
-    copy.dataset.act = 'copy';
-    copy.addEventListener('click', () => {
-      if (this.photo) openCopySheet(this.shell, this.api, this.photo, () => undefined);
+    this.curves.panelEl().hidden = true;
+
+    const band = new EditorBand();
+    this.band = band;
+    this.stageLabel = band.labelEl();
+
+    const recipeSlot = el('div', 'band-slot');
+    this.luts.panelEl().hidden = true;
+    recipeSlot.append(this.recipes.panelEl(), this.luts.panelEl());
+    const recipeHeadSlot = el('div', 'band-head-slot');
+    this.luts.headEl().hidden = true;
+    recipeHeadSlot.append(this.recipes.headEl(), this.luts.headEl());
+
+    band.register('recipe', recipeSlot, recipeHeadSlot);
+    band.register('adjust', this.adjust.panelEl(), this.adjust.headEl());
+    band.register('crop', cropPanelEl, cropHeadEl ?? undefined);
+    band.register('frame', this.frames.panelEl(), this.frames.headEl());
+    band.register('stamp', this.stampBand.panelEl(), el('b', 'stamp-hd-title', '时间戳'));
+
+    const bar = new EditorBar({
+      onTool: (tool) => this.onBarTool(tool),
+      onExport: () => {
+        if (!startQuickExport(this.shell, [photo.id])) this.api.exportPhotos([photo.id]);
+      },
     });
-    const save = button('btn primary', '存到相册');
-    save.dataset.act = 'export';
-    save.addEventListener('click', () => {
-      if (!startQuickExport(this.shell, [photo.id])) this.api.exportPhotos([photo.id]);
-    });
-    const acts = el('div', 'actbar');
-    acts.append(copy, save);
-    sheet.append(tabs, ...panels, acts);
-    screen.append(nav, stage, strip, sheet);
+    this.bar = bar;
+    const cropBtn = bar.toolButton('crop');
+    if (cropBtn) this.cropStage.attachTabButton(cropBtn);
+
+    band.setTool('recipe');
+    this.syncCompactHead();
+    bar.setActive('recipe', band.isCollapsed());
+    this.updateEditedDots();
+
+    screen.append(nav, stage, band.el(), bar.el());
     this.host.append(screen);
     if (this.engine && this.gpuCanvas) this.engine.attach(this.gpuCanvas);
     this.cropStage.paintTabDot();
@@ -378,15 +479,170 @@ export class EditorView {
     void this.decor.sync();
   }
 
-  private updateLutTabDot(): void {
-    this.lutTabBtn?.classList.toggle('dot', this.photo?.lut !== null);
+  private onBarTool(tool: BarTool): void {
+    const photo = this.photo;
+    if (!photo) return;
+    if (tool === 'more') {
+      openMoreSheet(this.shell, photo, {
+        onFrame: () => this.selectBandTool('frame', true),
+        onStamp: () => this.selectBandTool('stamp', true),
+        onCurves: () => this.openCurves(),
+        onExport: () => {
+          if (!openExportOptions(this.shell, [photo.id])) this.api.exportPhotos([photo.id]);
+        },
+        onCalib: () => showCalibSheet(this.shell, this.api),
+      });
+      return;
+    }
+    if (this.band?.isCollapsed()) {
+      this.band.setCollapsed(false);
+    } else if (tool === 'recipe' && this.activeTool === 'recipe') {
+      if (this.recipeSub === 'lut') {
+        this.setRecipeSub('recipe');
+        return;
+      }
+      if (this.recipes?.isFineTuning()) {
+        this.recipes.exitFineTune();
+        return;
+      }
+    }
+    this.selectBandTool(tool, false);
+  }
+
+  private selectBandTool(tool: BandTool, expand: boolean): void {
+    const prev = this.activeTool;
+    if (expand && this.band?.isCollapsed()) {
+      this.band.setCollapsed(false);
+    }
+    this.activeTool = tool;
+    if (tool === 'crop') {
+      this.stageZoom?.reset();
+      this.stageZoom?.cancel();
+    }
+    if (tool === 'recipe' && this.recipeSub === 'recipe') {
+      this.recipes?.tabOpened();
+    } else if (tool === 'recipe' && this.recipeSub === 'lut') {
+      this.luts?.tabOpened();
+    }
+    if (tool === 'frame') {
+      this.frames?.tabOpened();
+      this.decor?.onFrameTabOpened();
+    } else if (prev === 'frame') {
+      this.frames?.tabClosed();
+    }
+    if (tool === 'stamp') {
+      this.stampBand?.refresh();
+      this.decor?.onFrameTabOpened();
+    }
+    if (tool === 'adjust') {
+      this.adjust?.refresh();
+    }
+    this.band?.setTool(tool);
+    this.syncCompactHead();
+    this.bar?.setActive(tool, Boolean(this.band?.isCollapsed()));
+    if (prev === 'crop' || tool === 'crop') {
+      void this.decor?.sync();
+      this.cropStage?.syncTabMode();
+    }
+    this.syncFloatHistPos();
+  }
+
+  private setRecipeSub(sub: 'recipe' | 'lut'): void {
+    this.recipeSub = sub;
+    if (this.recipes) {
+      if (sub === 'lut') this.recipes.exitFineTune();
+      this.recipes.panelEl().hidden = sub !== 'recipe';
+      this.recipes.headEl().hidden = sub !== 'recipe';
+    }
+    if (this.luts) {
+      this.luts.panelEl().hidden = sub !== 'lut';
+      this.luts.headEl().hidden = sub !== 'lut';
+      if (sub === 'lut') this.luts.tabOpened();
+    }
+    this.syncCompactHead();
+  }
+
+  private syncCompactHead(): void {
+    if (!this.band) return;
+    let compact = false;
+    if (this.activeTool === 'adjust' || this.activeTool === 'crop' || this.activeTool === 'stamp') {
+      compact = true;
+    } else if (this.activeTool === 'recipe') {
+      compact = this.recipeSub === 'recipe' && Boolean(this.recipes?.isFineTuning());
+    } else if (this.activeTool === 'frame') {
+      compact = Boolean(this.frames?.isOptionsOpen());
+    }
+    this.band.setCompactHead(compact);
+  }
+
+  private toggleBandCollapsed(): void {
+    if (!this.band) return;
+    const collapsed = this.band.toggleCollapsed();
+    this.bar?.setActive(this.activeTool, collapsed);
+    this.fitStageCanvas();
+    this.syncFloatHistPos();
+    const token = this.token;
+    requestAnimationFrame(() => {
+      if (token !== this.token) return;
+      this.fitStageCanvas();
+      this.engine?.redraw();
+      void this.decor?.sync();
+      this.syncFloatHistPos();
+    });
+  }
+
+  private fitStageCanvas(redraw = false): void {
+    if (this.mode === 'still') return;
+    const engineSize = typeof this.engine?.finalSize === 'function' ? this.engine.finalSize() : null;
+    const size = engineSize ?? (this.photo?.bitmap ? { w: this.photo.bitmap.width, h: this.photo.bitmap.height } : null);
+    if (fitGpuCanvas(this.stage, this.pv, this.gpuCanvas, size) && redraw) {
+      this.engine?.redraw();
+    }
+  }
+
+  private openCurves(): void {
+    if (!this.curves || !this.screen) return;
+    openCurvesSheet(this.shell, this.screen, this.curves, () => this.updateEditedDots());
+  }
+
+  private toggleHist(): boolean {
+    this.histOpen = !this.histOpen;
+    if (this.histWidget) this.histWidget.root.hidden = !this.histOpen;
+    this.adjust?.syncHistBtn();
+    if (this.histOpen) {
+      this.syncFloatHistPos();
+      this.requestHist();
+    } else {
+      this.histAgain = false;
+      this.cancelHistRetry();
+    }
+    return this.histOpen;
+  }
+
+  private syncFloatHistPos(): void {
+    if (!this.histOpen || !this.stage || !this.pv || !this.histWidget) return;
+    const photo = this.photo;
+    const dims = photo ? photoExportSize(photo, this.engine) : null;
+    positionFloatHist(this.stage, this.pv, this.histWidget.root, dims ? { w: dims[0], h: dims[1] } : null);
+  }
+
+  private setHolding(on: boolean): void {
+    this.holding = on;
+    this.navCtrl?.setHolding(on);
+    this.renderStageLabel();
+    this.push();
+    void this.decor?.sync();
+  }
+
+  private updateEditedDots(): void {
+    if (this.photo && this.bar) this.bar.setEdited(editedFlagsOf(this.photo));
   }
 
   /** 配方那边定下了舞台该用哪张烘焙表。 */
   private useLook(key: string, label: string): void {
     this.recipeKey = key;
     this.lookCaption = label;
-    if (this.tab !== 2) this.setLabel(label);
+    if (this.activeTool !== 'crop') this.setLabel(label);
     this.navCtrl?.refresh();
     this.push();
     this.luts?.recipeUpdated();
@@ -400,26 +656,12 @@ export class EditorView {
     this.push();
   }
 
-  private histEl(): HTMLElement {
-    const hist = el('div', 'hist');
-    this.hist = document.createElement('canvas');
-    this.hist.width = 816;
-    this.hist.height = 128;
-    this.clipLow = el('span', 'clip l');
-    this.clipHigh = el('span', 'clip r');
-    this.clipLow.setAttribute('aria-label', '暗部压死');
-    this.clipHigh.setAttribute('aria-label', '高光溢出');
-    hist.append(this.hist, this.clipLow, this.clipHigh);
-    return hist;
-  }
-
   private push(): void {
     if (!this.engine || !this.photo || this.mode === 'still') return;
+    this.fitStageCanvas();
     const knobs = this.holding ? zeroKnobs() : this.photo.knobs;
     const lut = this.holding ? null : this.lutToken;
-    if (lut && !this.engine.hasLut(lut)) {
-      this.luts?.ensureActive();
-    }
+    if (lut && !this.engine.hasLut(lut)) this.luts?.ensureActive();
     this.engine.setLook({
       // 按住看原图：中性转换、不用 LUT、调整归零。
       recipe: this.mode === 'raw' ? (this.holding ? NEUTRAL_BAKE_KEY : this.recipeKey) : null,
@@ -477,8 +719,14 @@ export class EditorView {
   private requestHist(retry = false): void {
     if (!this.engine || this.mode === 'still') return;
     if (!retry) {
+      this.fitStageCanvas(true);
       this.histMisses = 0;
       this.cancelHistRetry();
+    }
+    if (!this.histOpen) {
+      this.histAgain = false;
+      this.cancelHistRetry();
+      return;
     }
     if (this.histBusy) {
       this.histAgain = true;
@@ -491,17 +739,15 @@ export class EditorView {
       .catch(() => false)
       .then((drawn) => {
         this.histBusy = false;
-        if (token !== this.token) return;
+        if (token !== this.token || !this.histOpen) return;
         this.histMisses = drawn ? 0 : this.histMisses + 1;
         const engine = this.engine;
-
         if (drawn && !this.histAgain && !(engine && engine.contentVersion !== this.histDrawn)) return;
-
         this.cancelHistRetry();
         const again = (): void => {
           this.histFrame = 0;
           this.histTimer = 0;
-          if (token === this.token) this.requestHist(true);
+          if (token === this.token && this.histOpen) this.requestHist(true);
         };
         if (this.histMisses < HIST_FAST_MISSES) this.histFrame = requestAnimationFrame(again);
         else this.histTimer = window.setTimeout(again, HIST_SLOW_MS);
@@ -515,77 +761,18 @@ export class EditorView {
     this.histTimer = 0;
   }
 
-  /** 数到并画上了才是 true；显卡在忙、这一帧还没画完、换了片都是 false。 */
   private async countHist(token: number): Promise<boolean> {
     const engine = this.engine;
-
-    if (!engine || token !== this.token || engine.pending) return false;
+    if (!engine || token !== this.token || !this.histOpen || engine.pending) return false;
     const data = await engine.histogram();
-    if (!data || token !== this.token) return false;
+    if (!data || token !== this.token || !this.histOpen) return false;
     this.histDrawn = data.version;
-    this.drawHist(data.counts, data.samples, data.version);
+    drawHistCanvas(this.histWidget, data.counts, data.samples, data.version);
     return true;
-  }
-
-  private drawHist(counts: Uint32Array, samples: number, version: number): void {
-    const canvas = this.hist;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const shape = histShape(counts, samples);
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-    const area = (values: Float64Array, color: string) => {
-      ctx.beginPath();
-      ctx.moveTo(0, h);
-      for (let i = 0; i < 256; i++) {
-        const [x, y] = histPoint(i, values[i], w, h);
-        ctx.lineTo(x, y);
-      }
-      ctx.lineTo(w, h);
-      ctx.closePath();
-      ctx.fillStyle = color;
-      ctx.fill();
-    };
-    ctx.globalCompositeOperation = 'screen';
-    area(shape.r, 'rgba(255,70,70,.62)');
-    area(shape.g, 'rgba(60,220,110,.62)');
-    area(shape.b, 'rgba(70,130,255,.7)');
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.beginPath();
-    for (let i = 0; i < 256; i++) {
-      const [x, y] = histPoint(i, shape.l[i], w, h);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.strokeStyle = 'rgba(255,255,255,.85)';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    canvas.dataset.version = String(version);
-    this.clipLow?.classList.toggle('lit', shape.low);
-    this.clipHigh?.classList.toggle('lit', shape.high);
   }
 
   private restLabelText(): string {
     return this.mode === 'raw' ? this.lookCaption || '中性转换' : this.mode === 'jpg' ? '相机 JPG' : this.photo?.jpg ? '相机 JPG' : '只有 RAW';
-  }
-
-  private nextPhoto(dir: -1 | 1): Photo | null {
-    if (!this.photo) return null;
-    const photos = this.api.photos();
-    const index = photos.findIndex((item) => item.id === this.photo?.id);
-    return photos[index + dir] ?? null;
-  }
-
-  private async take(photo: Photo): Promise<ArrayBuffer> {
-    const warm = this.api.takeWarm(photo.id, photo.version);
-    if (warm) return warm;
-    if (!photo.dng) throw new DOMException('没有 RAW', 'NotFoundError');
-    const reply = await this.api.readFull(photo);
-    if (reply.ok) return reply.bytes;
-    if (reply.stale) throw new DOMException('重新选过', 'AbortError');
-    throw new DOMException('读不了', reply.gone ? 'NotReadableError' : 'EncodingError');
   }
 
   private same(token: number, photo: Photo, version: number, session: number, rev?: number): boolean {
@@ -597,201 +784,5 @@ export class EditorView {
       photo.version === version &&
       (rev === undefined || photo.rev === rev)
     );
-  }
-
-  private prefetch(next: Photo | null): void {
-    if (!next?.dng) {
-      this.wantNeighbor = '';
-      return;
-    }
-    const id = next.id;
-    const version = next.version;
-    const session = this.api.session();
-    const token = this.token;
-    this.wantNeighbor = id;
-    void this.api.readFull(next).then((reply) => {
-      if (!reply.ok || this.token !== token || this.wantNeighbor !== id || this.api.session() !== session || this.api.photo(id) !== next || next.version !== version) return;
-      this.api.keepWarm(id, version, reply.bytes);
-    });
-  }
-
-  private async load(photo: Photo): Promise<void> {
-    const token = ++this.token;
-    const version = photo.version;
-    const session = this.api.session();
-    if (!photo.dng) {
-      this.showStillPhoto(photo, photo.jpg ? '相机 JPG' : '只有 RAW');
-      if (this.engine && photo.bitmap) {
-        const key = `jpg:${photo.id}`;
-        this.engine.addJpg(key, photo.bitmap);
-        this.engine.show(key);
-        this.mode = 'jpg';
-        this.luts?.start(key);
-        if (this.gpuCanvas) this.gpuCanvas.hidden = false;
-        if (this.still) this.still.hidden = true;
-        this.push();
-        await this.cropStage?.applyPreviewGeometry();
-        if (!this.same(token, photo, version, session)) return;
-        const frame = this.engine.frame();
-        if (frame) this.shell.dataset.frame = '1';
-        this.adjust?.setDisabled(false);
-        this.cropStage?.syncLoaded();
-        this.decor?.onMediaReady();
-      }
-      return;
-    }
-    const key = `raw:${photo.id}`;
-    if (this.engine && photo.cached === version && this.engine.hasSource(key)) {
-      await this.showRaw(key);
-      return;
-    }
-    if (!this.engine && photo.checked === version) {
-      this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
-      return;
-    }
-    let bytes: ArrayBuffer;
-    try {
-      bytes = await this.take(photo);
-    } catch (err) {
-      if (!this.same(token, photo, version, session)) return;
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      if (isGone(err)) this.api.markGone(photo.id, version);
-      else this.api.markBad(photo.id, version);
-      return;
-    }
-    if (!this.same(token, photo, version, session)) return;
-    let described: Described;
-    try {
-      described = await describeDng(bytes);
-    } catch {
-      if (this.same(token, photo, version, session)) this.api.markBad(photo.id, version);
-      return;
-    }
-    if (!this.same(token, photo, version, session)) return;
-    if (!described.layout || described.reason) {
-      this.api.markBad(photo.id, version);
-      return;
-    }
-    photo.checked = version;
-    photo.dngMeta = described.meta.copyright === undefined && photo.dngMeta?.copyright !== undefined ? { ...described.meta, copyright: photo.dngMeta.copyright } : described.meta;
-    if (!this.engine) {
-      this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览');
-      this.adjust?.setDisabled(true);
-      this.recipes?.refresh();
-      this.prefetch(this.nextPhoto(1));
-      return;
-    }
-    try {
-      const installed = await this.api.uploadRaw(photo, version, described.layout, bytes, described.scene);
-      if (!installed || !this.same(token, photo, version, session)) return;
-      await this.showRaw(key);
-      if (!this.same(token, photo, version, session)) return;
-      this.prefetch(this.nextPhoto(1));
-    } catch {
-      if (!this.same(token, photo, version, session)) return;
-      this.api.markBad(photo.id, version);
-    }
-  }
-
-  /** 这张 RAW 的中性小图：每个版本只请显卡出一次，之后换片回来直接用。 */
-  private async neutralCards(photo: Photo, key: string): Promise<void> {
-    if (!this.engine || !this.cropStage) return;
-    const version = photo.version;
-    const rev = photo.rev;
-    const token = this.token;
-    const session = this.api.session();
-    const alive = () => this.same(token, photo, version, session, rev);
-    if (photo.neutral && photo.neutral.version === version) {
-      if (alive()) this.recipes?.neutral(photo.neutral.bitmap);
-      return;
-    }
-    const look = { recipe: NEUTRAL_BAKE_KEY, lut: null, lutStrength: 1, curve: null, adjust: toAdjust(zeroKnobs()) };
-    const { geometry } = await this.cropStage.resolveBoxGeometry(photo);
-    if (!alive()) return;
-    const out = await this.engine.thumb({ source: key, look, geometry, aspect: null, maxEdge: 192 });
-    if (!out || !alive()) return;
-    const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));
-    if (!alive()) {
-      bitmap.close();
-      return;
-    }
-    this.recipes?.neutral(null);
-    photo.neutral?.bitmap.close();
-    photo.neutral = { version, bitmap };
-    this.recipes?.neutral(bitmap);
-  }
-
-  private async showRaw(key: string): Promise<void> {
-    if (!this.engine || !this.photo) return;
-    const photo = this.photo;
-    const token = this.token;
-    const version = photo.version;
-    const session = this.api.session();
-    this.engine.show(key);
-    this.mode = 'raw';
-    this.push();
-    await this.cropStage?.applyPreviewGeometry();
-    if (!this.same(token, photo, version, session)) return;
-    const frame = this.engine.frame();
-    if (frame) this.shell.dataset.frame = '1';
-    if (!this.lookCaption) this.lookCaption = '中性转换';
-    if (this.tab !== 2 && !this.caption) this.setLabel(this.lookCaption);
-    this.cropStage?.syncLoaded();
-    this.recipes?.start(key);
-    this.luts?.start(key);
-    if (this.gpuCanvas) this.gpuCanvas.hidden = false;
-    if (this.still) this.still.hidden = true;
-    this.adjust?.setDisabled(false);
-    void this.neutralCards(photo, key);
-    this.decor?.onMediaReady();
-  }
-
-  private showStillPhoto(photo: Photo, label: string): void {
-    this.mode = 'still';
-    this.lookCaption = label;
-    if (this.tab !== 2) this.setLabel(label);
-    this.cropStage?.paintStill(photo.bitmap);
-    if (this.gpuCanvas) this.gpuCanvas.hidden = true;
-    if (!this.engine) this.adjust?.setDisabled(true);
-    // 没有相机 JPG、DNG 里也没有预览：照片区写「只有 RAW」，不留一块空灰。
-    if (this.placeholder) this.placeholder.hidden = !!photo.bitmap || !!photo.jpg;
-    this.decor?.onMediaReady();
-    this.sharpening = this.sharpen(photo);
-  }
-
-  /** 先放缩略图，Worker 解好屏幕宽度的那张再换上。主线程只画一次。 */
-  private async sharpen(photo: Photo): Promise<void> {
-    const token = this.token;
-    const version = photo.version;
-    const session = this.api.session();
-    const alive = () => this.same(token, photo, version, session);
-    const fullJpg = !photo.dng && !!photo.jpg && !!this.engine;
-    const width = fullJpg ? Number.POSITIVE_INFINITY : Math.min(2048, Math.round((this.host.clientWidth || 390) * (window.devicePixelRatio || 1)));
-    const bitmap = await this.api.still(photo, width);
-    if (!bitmap) return;
-    if (!alive() || this.mode === 'raw') {
-      bitmap.close();
-      return;
-    }
-    if (this.mode === 'jpg' && this.engine) {
-      // 只有 JPG 又有显卡：换成完整纹理，使 layerSize 和成片尺寸与导出一致。复制进显卡后位图就能关掉。
-      const key = `jpg:${photo.id}`;
-      this.engine.addJpg(key, bitmap);
-      bitmap.close();
-      this.engine.show(key);
-      this.luts?.start(key);
-      this.push();
-      await this.cropStage?.applyPreviewGeometry();
-      if (!alive()) return;
-      this.engine.frame();
-      this.cropStage?.syncLoaded();
-      this.decor?.onMediaReady();
-      return;
-    }
-    this.sharp?.close();
-    this.sharp = bitmap;
-    this.cropStage?.paintStill(bitmap);
-    this.cropStage?.syncLoaded();
-    this.decor?.onMediaReady();
   }
 }

@@ -32,14 +32,14 @@ export async function lutShot(shot: string, api: AppApi, shell: HTMLElement): Pr
   const blackGold = syntheticCube('黑金', 1.0, 0.93, 0.78);
   const res = await api.lutBook().importFiles([warm, tealOrange, blackGold]);
   const first = res.added[0] ?? api.lutBook().list()[0];
-  shell.querySelector<HTMLButtonElement>('.tabs button[data-tab="lut"]')?.click();
+  shell.querySelector<HTMLButtonElement>('.panel.recipe [data-mode="lut"]')?.click();
   await new Promise((done) => setTimeout(done, 400));
   if (first) {
     shell.querySelector<HTMLButtonElement>(`.panel.lut .rc[data-lut="${first.cube_id}"]`)?.click();
     await new Promise((done) => setTimeout(done, 600));
   }
   if (shot === 'lut-space') {
-    shell.querySelector<HTMLButtonElement>('.panel.lut [data-act="lut-space"]')?.click();
+    shell.querySelector<HTMLButtonElement>('.band-lut-hd [data-act="lut-space"]')?.click();
     await new Promise((done) => setTimeout(done, 300));
   }
 }

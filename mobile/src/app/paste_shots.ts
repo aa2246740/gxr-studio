@@ -37,7 +37,9 @@ export async function pasteShot(shot: string, api: AppApi & { take(files: File[]
   await wait(600);
   click(shell, '.editor .strip[data-recipes] .rc[data-card="builtin:2"]');
   await wait(300);
-  click(shell, '[data-act="copy"]');
+  click(shell, '.editor .nav [data-act="editor-more"]');
+  await until(() => !!shell.querySelector('.ms[data-state="editor-more"] [data-act="more-copy"]'));
+  click(shell, '.ms[data-state="editor-more"] [data-act="more-copy"]');
   await until(() => !!shell.querySelector('[data-state="copy-options"]'));
   if (shot === 'paste-04a') return;
   click(shell, '[data-state="copy-options"] .btn.primary');
