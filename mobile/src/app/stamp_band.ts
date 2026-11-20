@@ -38,7 +38,8 @@ export class StampBandView {
     this.root.dataset.panel = 'stamp';
 
     const row1 = el('div', 'band-row pad between');
-    const left = el('div', 'row gap8');
+    const left = document.createElement('label');
+    left.className = 'row gap8 stamp-toggle-hit';
     this.toggle = document.createElement('input');
     this.toggle.type = 'checkbox';
     this.toggle.className = 'switch';

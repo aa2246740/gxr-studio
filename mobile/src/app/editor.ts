@@ -612,6 +612,9 @@ export class EditorView {
     if (this.histOpen) {
       this.syncFloatHistPos();
       this.requestHist();
+    } else {
+      this.histAgain = false;
+      this.cancelHistRetry();
     }
     return this.histOpen;
   }
@@ -718,6 +721,11 @@ export class EditorView {
       this.histMisses = 0;
       this.cancelHistRetry();
     }
+    if (!this.histOpen) {
+      this.histAgain = false;
+      this.cancelHistRetry();
+      return;
+    }
     if (this.histBusy) {
       this.histAgain = true;
       return;
@@ -729,7 +737,7 @@ export class EditorView {
       .catch(() => false)
       .then((drawn) => {
         this.histBusy = false;
-        if (token !== this.token) return;
+        if (token !== this.token || !this.histOpen) return;
         this.histMisses = drawn ? 0 : this.histMisses + 1;
         const engine = this.engine;
         if (drawn && !this.histAgain && !(engine && engine.contentVersion !== this.histDrawn)) return;
@@ -737,7 +745,7 @@ export class EditorView {
         const again = (): void => {
           this.histFrame = 0;
           this.histTimer = 0;
-          if (token === this.token) this.requestHist(true);
+          if (token === this.token && this.histOpen) this.requestHist(true);
         };
         if (this.histMisses < HIST_FAST_MISSES) this.histFrame = requestAnimationFrame(again);
         else this.histTimer = window.setTimeout(again, HIST_SLOW_MS);
@@ -753,9 +761,9 @@ export class EditorView {
 
   private async countHist(token: number): Promise<boolean> {
     const engine = this.engine;
-    if (!engine || token !== this.token || engine.pending) return false;
+    if (!engine || token !== this.token || !this.histOpen || engine.pending) return false;
     const data = await engine.histogram();
-    if (!data || token !== this.token) return false;
+    if (!data || token !== this.token || !this.histOpen) return false;
     this.histDrawn = data.version;
     drawHistCanvas(this.histWidget, data.counts, data.samples, data.version);
     return true;

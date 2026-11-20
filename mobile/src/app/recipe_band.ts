@@ -357,3 +357,27 @@ export function buildKnobRow(
   row.append(el('span', 'lab', KNOB_NAMES[control.name] ?? control.label), track, value);
   return row;
 }
+
+export function centerStripCard(strip: HTMLElement, cardId: string): boolean {
+  if (!strip.isConnected || strip.clientWidth <= 0) return false;
+  const active = strip.querySelector<HTMLElement>('.rc.on');
+  if (!active || active.dataset.card !== cardId) return false;
+  const sr = strip.getBoundingClientRect();
+  const cr = active.getBoundingClientRect();
+  const targetLeft = strip.scrollLeft + (cr.left - sr.left) + cr.width / 2 - sr.width / 2;
+  const maxScroll = Math.max(0, strip.scrollWidth - strip.clientWidth);
+  strip.scrollLeft = Math.max(0, Math.min(maxScroll, targetLeft));
+  return true;
+}
+
+const bitmapIds = new WeakMap<ImageBitmap, number>();
+let nextBitmapId = 1;
+
+export function bitmapId(bitmap: ImageBitmap): number {
+  let id = bitmapIds.get(bitmap);
+  if (!id) {
+    id = nextBitmapId++;
+    bitmapIds.set(bitmap, id);
+  }
+  return id;
+}

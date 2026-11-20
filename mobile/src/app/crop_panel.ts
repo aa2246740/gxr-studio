@@ -345,7 +345,7 @@ export class CropPanel {
     if (!frame) {
       if (!this.sizeLine.textContent && canvas.w > 1 && canvas.h > 1) {
         const px = croppedPixelSize(rectObj, canvas);
-        this.sizeLine.textContent = `${px.w} × ${px.h}`;
+        this.sizeLine.textContent = `成品 ${px.w} × ${px.h} 像素 · ${label}`;
       }
       return;
     }
@@ -354,7 +354,7 @@ export class CropPanel {
         crop ? rectObj : centeredMaxRect({ w: frame.width, h: frame.height }, null, this.hooks.liveStraighten()),
         { w: frame.width, h: frame.height },
       );
-      this.sizeLine.textContent = `${est.w} × ${est.h}`;
+      this.sizeLine.textContent = `成品 ${est.w} × ${est.h} 像素 · ${label}`;
     }
     const seq = ++this.sizeSeq;
     const version = photo.version;
@@ -372,7 +372,7 @@ export class CropPanel {
           return;
         }
         const [w, h] = reply.sizes.original;
-        this.sizeLine.textContent = `${w} × ${h}`;
+        this.sizeLine.textContent = `成品 ${w} × ${h} 像素 · ${label}`;
         this.sizeLine.dataset.label = label;
         this.hooks.onExportSize?.(photo, w, h);
       })

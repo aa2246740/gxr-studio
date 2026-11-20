@@ -104,7 +104,15 @@ try {
       const p1Layer = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
       await page.locator('.editor .toolbar [data-tool="recipe"]').click();
       await page.waitForSelector('.panel.recipe');
-      const p1RecipeText = await page.locator('.editor .band').innerText();
+      let p1RecipeText = await page.locator('.editor .band').innerText();
+      const p1StatusBtn = page.locator('.editor .recipe-head [data-act="recipe-status"]');
+      if (await p1StatusBtn.isVisible().catch(() => false)) {
+        await p1StatusBtn.click();
+        await page.waitForSelector('.recipe-info-sheet', { timeout: 10_000 });
+        p1RecipeText += `\n${await page.locator('.recipe-info-sheet').innerText()}`;
+        await page.locator('.recipe-info-sheet [data-act="close"]').click();
+        await page.waitForSelector('.recipe-info-sheet', { state: 'detached', timeout: 10_000 });
+      }
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
 

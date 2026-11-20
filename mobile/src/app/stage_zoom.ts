@@ -39,6 +39,7 @@ export class StageZoom {
   private moved = false;
   private held = false;
   private holdTimer = 0;
+  private tapTimer = 0;
   private pinchDist0 = 1;
   private pinchMid0: Pt = { x: 0, y: 0 };
   private pinchScale0 = 1;
@@ -74,6 +75,7 @@ export class StageZoom {
 
   cancel(): void {
     this.clearHoldTimer();
+    this.clearTapTimer();
     if (this.held) {
       this.held = false;
       this.hooks.onHold(false);
@@ -107,6 +109,13 @@ export class StageZoom {
     }
   }
 
+  private clearTapTimer(): void {
+    if (this.tapTimer) {
+      window.clearTimeout(this.tapTimer);
+      this.tapTimer = 0;
+    }
+  }
+
   private apply(): void {
     const rect = this.stage.getBoundingClientRect();
     const maxX = Math.max(0, (rect.width * (this.scale - 1)) / 2);
@@ -129,6 +138,7 @@ export class StageZoom {
     const pts = [...this.pointers.values()];
     if (pts.length < 2) return;
     this.clearHoldTimer();
+    this.clearTapTimer();
     if (this.held) {
       this.held = false;
       this.hooks.onHold(false);
@@ -146,6 +156,8 @@ export class StageZoom {
   private readonly onDown = (ev: PointerEvent): void => {
     if (this.destroyed || this.hooks.isCropActive()) return;
     if (ev.button !== 0 && ev.pointerType === 'mouse') return;
+    if (this.pointers.size === 0 && ev.clientX < 24) return;
+    this.clearTapTimer();
     this.pointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
     try {
       this.stage.setPointerCapture(ev.pointerId);
@@ -200,6 +212,7 @@ export class StageZoom {
     if (Math.hypot(dx, dy) > 8) {
       this.moved = true;
       this.clearHoldTimer();
+      this.clearTapTimer();
     }
     if (this.isZoomed() && !this.held && this.moved) {
       this.tx = this.startTx + dx;
@@ -247,9 +260,13 @@ export class StageZoom {
       this.hooks.onHold(false);
       if (!swiped) return;
     }
-    if (ev.type === 'pointercancel') return;
+    if (ev.type === 'pointercancel') {
+      this.clearTapTimer();
+      return;
+    }
 
     if (swiped) {
+      this.clearTapTimer();
       this.hooks.onSwipe(dx < 0 ? 1 : -1);
       return;
     }
@@ -258,17 +275,22 @@ export class StageZoom {
       const now = performance.now();
       const isDouble = now - this.lastTapAt < DOUBLE_TAP_MS && Math.hypot(ev.clientX - this.lastTapX, ev.clientY - this.lastTapY) < DOUBLE_TAP_PX;
       if (isDouble) {
+        this.clearTapTimer();
         this.lastTapAt = 0;
-        if (this.isZoomed()) {
-          this.reset();
-          return;
-        }
+        if (this.isZoomed()) this.reset();
+        return;
       }
       this.lastTapAt = now;
       this.lastTapX = ev.clientX;
       this.lastTapY = ev.clientY;
       if (!this.isZoomed()) {
-        this.hooks.onTap();
+        this.clearTapTimer();
+        this.tapTimer = window.setTimeout(() => {
+          this.tapTimer = 0;
+          if (!this.destroyed && !this.hooks.isCropActive() && !this.isZoomed()) {
+            this.hooks.onTap();
+          }
+        }, DOUBLE_TAP_MS);
       }
     }
   };

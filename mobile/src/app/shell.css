@@ -235,8 +235,8 @@ h1, h2, p { margin: 0; }
 .band-adjust-hd .adj-lab,
 .stamp-hd-title { font: 600 13px/18px var(--font-ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .band-adjust-hd .val,
-.band-crop-hd .crop-angle { font: 600 13px/18px var(--font-num); color: var(--text-1); white-space: nowrap; }
-.band-crop-hd .crop-size-line { margin: 0; font-size: 12px; line-height: 16px; white-space: nowrap; }
+.band-crop-hd .crop-angle { font: 600 13px/18px var(--font-num); color: var(--text-1); white-space: nowrap; flex: none; }
+.band-crop-hd .crop-size-line { margin: 0; font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .band-act {
   min-width: 44px;
   min-height: 44px;
@@ -514,6 +514,8 @@ h1, h2, p { margin: 0; }
 .stamp-band { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; }
 .stamp-band[hidden] { display: none; }
 .stamp-band .band-row { height: 48px; display: flex; align-items: center; padding: 0 12px; gap: 8px; }
+.stamp-band .stamp-toggle-hit { flex: 1; min-width: 44px; min-height: 44px; cursor: pointer; }
+.stamp-band .switch::before { content: ""; position: absolute; inset: -7px 0; }
 .stamp-band .stamp-sum { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stamp-band .stamp-detail { flex: none; padding: 0 6px; }
 .stamp-band .stamp-quick { height: 54px; padding: 0 12px; }
@@ -537,6 +539,7 @@ svg.curve .curve-ghost { opacity: 0.28; stroke-width: 1.5; }
 svg.curve .curve-point { stroke: #111; stroke-width: 1.5; }
 
 .scrim { position: absolute; inset: 0; background: var(--scrim); z-index: 20; }
+.scrim.curves-scrim { background: transparent; }
 .ms, .dlg { position: absolute; z-index: 21; background: var(--surface-overlay); box-shadow: var(--shadow-dialog); }
 .ms { left: 0; right: 0; bottom: 0; border-radius: 22px 22px 0 0; padding: 16px 16px calc(18px + var(--safe-bottom)); }
 .ms h2, .dlg h2 { font: 600 18px/24px var(--font-ui); }

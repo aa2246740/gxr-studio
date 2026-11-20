@@ -439,6 +439,8 @@ const CASES = {
           return v !== undefined && v !== old;
         }, prev ?? null, { timeout: 120_000 });
       await page.locator('.cell').first().click();
+      await page.locator('.editor .toolbar [data-tool="adjust"]').click();
+      await page.locator('.editor .band .panel.adjust [data-act="hist-toggle"]').click();
       await waitDrawn(null);
       const first = await histState();
       await page.evaluate(() => {
@@ -452,7 +454,6 @@ const CASES = {
       });
       await page.waitForTimeout(2000);
       const idleCalls = await page.evaluate(() => window.__histCalls);
-      await page.locator('.editor .toolbar [data-tool="adjust"]').click();
       const slider = page.locator('input[data-key="exposure_ev"]');
       const box = await slider.boundingBox();
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -472,6 +473,8 @@ const CASES = {
       const title = await page.locator('.editor .nav b').innerText();
       await swipeLeft(page);
       await page.waitForFunction((prev) => document.querySelector('.editor .nav b')?.textContent !== prev, title, { timeout: 30_000 });
+      await page.locator('.editor .toolbar [data-tool="adjust"]').click();
+      await page.locator('.editor .band .panel.adjust [data-act="hist-toggle"]').click();
       await waitDrawn(null);
       const next = await histState();
       return { first, idleCalls, dragged, dragCalls, settledCalls, exposure, next, errors };

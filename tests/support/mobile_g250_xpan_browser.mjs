@@ -49,9 +49,9 @@ async function waitCropBadge(page, want) {
   await page.waitForFunction(
     (expected) => {
       const b = document.querySelector('.cbox .csize')?.textContent?.trim() || '';
-      const l = document.querySelector('.crop-size-line')?.textContent?.trim() || '';
+      const l = document.querySelector('.crop-size-line')?.textContent || '';
       const m1 = /^(\d+)\s*×\s*(\d+)$/.exec(b);
-      const m2 = /^(\d+)\s*×\s*(\d+)$/.exec(l);
+      const m2 = /成品\s*(\d+)\s*×\s*(\d+)\s*像素/.exec(l);
       return Boolean(m1 && m2 && m1[1] === String(expected[0]) && m1[2] === String(expected[1]) && m2[1] === m1[1] && m2[2] === m1[2]);
     },
     want,

@@ -25,7 +25,9 @@ import { exportPaused } from './export_pause';
 import { lookCache } from './looks';
 import { ensureCameraRecipe, needsCameraRecipe, onCameraRecipe, type AppApi, type Photo } from './model';
 import {
+  bitmapId,
   buildKnobRow,
+  centerStripCard,
   makeRecipeLutSwitch,
   openAskDatSheet,
   openJpgInfoSheet,
@@ -101,6 +103,8 @@ export class RecipeView {
   private stripKeys: string[] = [];
   private fineTune = false;
   private activeKnob = '';
+  private lastScrolledCardId: string | null = null;
+  private scrollRaf = 0;
   private readonly head = el('div', 'recipe-head band-recipe-hd');
   private readonly strip = el('div', 'strip');
   private readonly fineBox = el('div', 'recipe-fine');
@@ -174,6 +178,10 @@ export class RecipeView {
 
   destroy(): void {
     this.token += 1;
+    if (this.scrollRaf) {
+      cancelAnimationFrame(this.scrollRaf);
+      this.scrollRaf = 0;
+    }
     this.off();
     this.offCam();
     this.closeAsk();
@@ -333,6 +341,7 @@ export class RecipeView {
       this.strip.replaceChildren(this.makeModeSwitch());
       this.slots = [];
       this.stripKeys = ['__empty__'];
+      this.lastScrolledCardId = null;
       this.strip.append(el('p', 'empty faint', MINE_EMPTY));
       return;
     }
@@ -356,12 +365,14 @@ export class RecipeView {
         this.syncMark(slot.node, slot.thumb, Boolean(picked && picked.id === card.id));
       }
       this.paintThumbs();
+      this.scheduleScrollActive(picked?.id ?? null);
       return;
     }
 
     this.strip.replaceChildren(this.makeModeSwitch());
     this.slots = [];
     this.stripKeys = nextKeys;
+    this.lastScrolledCardId = null;
     for (let i = 0; i < cards.length; i += 1) {
       const card = cards[i];
       const node = button('rc', '');
@@ -383,6 +394,19 @@ export class RecipeView {
       this.slots.push({ card, node, thumb, nameEl, sub });
     }
     this.paintThumbs();
+    this.scheduleScrollActive(picked?.id ?? null);
+  }
+
+  private scheduleScrollActive(cardId: string | null): void {
+    if (!cardId || this.fineTune || this.lastScrolledCardId === cardId) return;
+    if (this.scrollRaf) cancelAnimationFrame(this.scrollRaf);
+    const token = this.token;
+    this.scrollRaf = requestAnimationFrame(() => {
+      this.scrollRaf = 0;
+      if (token === this.token && !this.fineTune && centerStripCard(this.strip, cardId)) {
+        this.lastScrolledCardId = cardId;
+      }
+    });
   }
 
   private syncMark(node: HTMLElement, thumb: HTMLElement, on: boolean): void {
@@ -768,16 +792,4 @@ export class RecipeView {
     this.askHandle?.close();
     this.askHandle = null;
   }
-}
-
-const ids = new WeakMap<ImageBitmap, number>();
-let nextId = 1;
-
-function bitmapId(bitmap: ImageBitmap): number {
-  let id = ids.get(bitmap);
-  if (!id) {
-    id = nextId++;
-    ids.set(bitmap, id);
-  }
-  return id;
 }

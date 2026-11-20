@@ -177,7 +177,8 @@ async function tapStageCenter(page, session) {
   await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: pt.x, y: pt.y, id: 1 }] });
   await frame(page, 1);
   await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  await frame(page, 3);
+  await page.waitForTimeout(340);
+  await frame(page, 2);
   return true;
 }
 
@@ -416,21 +417,87 @@ async function runReachability(page, session) {
     await clickVisible(page, page.locator('.editor .band .panel.adjust button', { hasText: '全部重置' }), 'adjust 全部重置');
     paths.adjust_10_and_reset = ['底栏点「调整」', '滑片横条选 10 项参数 + 大滑块', '横条末点「全部重置」'];
 
-    // 直方图开关：默认关闭，点图标打开，再点关闭
+    // P2-2：直方图关闭时 20 步拖滑块必须 0 次 engine.histogram() 读回；打开后拖滑块有读回
     const histVisible0 = await page.locator('.editor .stage .hist-float').isVisible().catch(() => false);
     check(!histVisible0, 'floating histogram must be off by default');
+    await page.evaluate(() => {
+      const engine = window.__gxrEngine;
+      if (!engine || engine.__wrappedForHistCount) return;
+      engine.__wrappedForHistCount = true;
+      window.__histReadbacks = 0;
+      const orig = engine.histogram.bind(engine);
+      engine.histogram = (...args) => {
+        window.__histReadbacks += 1;
+        return orig(...args);
+      };
+    });
+    await page.waitForTimeout(150);
+    await page.evaluate(() => {
+      window.__histReadbacks = 0;
+    });
+    const expChip = page.locator('.editor .band .panel.adjust .chips .chip', { hasText: /^曝光$/ });
+    await clickVisible(page, expChip, 'select 曝光 for hist readback check');
+    const expSlider = page.locator('.editor .band .panel.adjust input[type="range"]').first();
+    const expBox = await expSlider.boundingBox();
+    if (expBox && expBox.width > 20) {
+      const sy = expBox.y + expBox.height / 2;
+      await page.mouse.move(expBox.x + expBox.width * 0.5, sy);
+      await page.mouse.down();
+      for (let step = 1; step <= 20; step += 1) {
+        await page.mouse.move(expBox.x + expBox.width * (0.5 + 0.35 * (step / 20)), sy);
+        await frame(page, 1);
+      }
+      await page.mouse.up();
+      await page.waitForTimeout(200);
+    }
+    const closedHistReadbacks = await page.evaluate(() => window.__histReadbacks ?? -1);
+    behaviour.histClosedDragReadbacks = closedHistReadbacks;
+    check(closedHistReadbacks === 0, `histogram closed 20-step drag triggered ${closedHistReadbacks} engine.histogram() readbacks, want 0`);
+
     if (await clickVisible(page, '.editor .band .panel.adjust [data-act="hist-toggle"]', 'hist toggle on')) {
       const histVisible1 = await page.locator('.editor .stage .hist-float').isVisible().catch(() => false);
       check(histVisible1, 'floating histogram did not appear when toggled on');
       const hasClips = await page.locator('.editor .stage .hist-float .clip').count();
       check(hasClips === 2, `floating histogram clip indicators=${hasClips}, want 2`);
+      await page.waitForTimeout(200);
+      await page.evaluate(() => {
+        window.__histReadbacks = 0;
+      });
+      if (expBox && expBox.width > 20) {
+        const sy = expBox.y + expBox.height / 2;
+        await page.mouse.move(expBox.x + expBox.width * 0.85, sy);
+        await page.mouse.down();
+        for (let step = 1; step <= 10; step += 1) {
+          await page.mouse.move(expBox.x + expBox.width * (0.85 - 0.35 * (step / 10)), sy);
+          await frame(page, 1);
+        }
+        await page.mouse.up();
+        await page.waitForTimeout(250);
+      }
+      const openHistReadbacks = await page.evaluate(() => window.__histReadbacks ?? 0);
+      behaviour.histOpenDragReadbacks = openHistReadbacks;
+      check(openHistReadbacks > 0, `histogram open drag triggered ${openHistReadbacks} engine.histogram() readbacks, want > 0`);
       await clickVisible(page, '.editor .band .panel.adjust [data-act="hist-toggle"]', 'hist toggle off');
+      await clickVisible(page, page.locator('.editor .band .panel.adjust button', { hasText: '全部重置' }), 'adjust reset after hist check');
       paths.histogram = ['底栏点「调整」', '点直方图图标开/关浮窗直方图'];
     }
 
-    // 曲线 ›：打开更高抽屉并验证曲线拖动盒子不动
+    // 曲线 ›：打开更高抽屉，验证遮罩不压暗照片（P2-3）、点遮罩可关且拖动盒子不动
     if (await clickVisible(page, page.locator('.editor .band .panel.adjust button', { hasText: '曲线' }), 'open curves sheet')) {
       await page.waitForSelector('.editor svg.curve', { timeout: 5000 }).catch(() => {});
+      const scrimBg = await page.evaluate(() => {
+        const s = document.querySelector('.curves-scrim');
+        return s ? getComputedStyle(s).backgroundColor : null;
+      });
+      const scrimAlpha = (() => {
+        if (!scrimBg) return -1;
+        if (scrimBg === 'transparent') return 0;
+        const m = scrimBg.match(/rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+(?:\s*,\s*([\d.]+))?\s*\)/);
+        if (!m) return -1;
+        return m[1] === undefined ? 1 : Number(m[1]);
+      })();
+      behaviour.curvesScrimBg = scrimBg;
+      check(scrimAlpha === 0, `curves scrim dims photo: background=${scrimBg}, want transparent (alpha=0)`);
       const box0 = await page.locator('.editor svg.curve').boundingBox();
       check(Boolean(box0 && box0.width > 100 && box0.height > 100), 'curves sheet svg.curve missing or too small');
       if (box0) {
@@ -463,7 +530,18 @@ async function runReachability(page, session) {
       }
       const resetCurve = page.getByRole('button', { name: '重置全部曲线', exact: true });
       if (await resetCurve.isEnabled().catch(() => false)) await resetCurve.click();
-      await clickVisible(page, '.curves-sheet [data-act="close"], .curves-sheet .nb', 'close curves sheet');
+      // 点击遮罩空白处（舞台上半部）关闭曲线工作表
+      const stageTop = await page.locator('.editor .stage').boundingBox();
+      if (stageTop) {
+        await page.mouse.click(stageTop.x + stageTop.width * 0.5, stageTop.y + 40);
+        await frame(page, 2);
+      }
+      const curvesClosedByScrim = !(await page.locator('.curves-sheet').isVisible().catch(() => false));
+      behaviour.curvesClosedByScrim = curvesClosedByScrim;
+      check(curvesClosedByScrim, 'tapping transparent .curves-scrim outside sheet did not close curves sheet');
+      if (!curvesClosedByScrim) {
+        await clickVisible(page, '.curves-sheet [data-act="close"], .curves-sheet .nb', 'close curves sheet');
+      }
       paths.curves = ['底栏点「调整」', '横条末点「曲线 ›」（或「更多 → 曲线」）'];
     }
   }
@@ -479,9 +557,13 @@ async function runReachability(page, session) {
     await frame(page, 2);
   };
 
-  // 4. 裁剪：比例、拉直、横竖对调、参考线
+  // 4. 裁剪：比例、拉直、横竖对调、参考线与成品尺寸文案（P3-4）
   if (await clickVisible(page, '.editor .toolbar [data-tool="crop"]', 'reach crop')) {
     await clickVisible(page, page.locator('.editor .band .panel.crop-panel .chips .chip', { hasText: '3:2' }), 'crop ratio 3:2');
+    await frame(page, 3);
+    const cropSizeLine = (await page.locator('.editor .band-crop-hd .crop-size-line').innerText().catch(() => '')).trim();
+    behaviour.cropSizeLine = cropSizeLine;
+    check(/^成品\s+\d+\s*×\s*\d+\s*像素\s*·\s*.+$/.test(cropSizeLine), `crop size line "${cropSizeLine}" missing 成品 W × H 像素 · <ratio>`);
     await clickVisible(page, '.editor .band .panel.crop-panel [data-act="crop-flip"]', 'crop 横竖对调');
     const ruler = page.locator('.editor .band .panel.crop-panel .ruler');
     check(await ruler.isVisible().catch(() => false), 'crop straighten ruler not visible');
@@ -518,10 +600,20 @@ async function runReachability(page, session) {
     }
   }
 
-  // 6. 更多 -> 时间戳
+  // 6. 更多 -> 时间戳（含 P3-2 >= 44pt 触控热区检查）
   if (await clickVisible(page, '.editor .toolbar [data-tool="more"]', 'open more for stamp')) {
     if (await clickVisible(page, '.more-sheet [data-more="stamp"]', 'more -> stamp')) {
       check(await page.locator('.editor .band .switch').isVisible().catch(() => false), 'stamp band switch missing');
+      const stampHit = await page.evaluate(() => {
+        const sw = document.querySelector('.editor .band .stamp-band input.switch');
+        const label = sw?.closest('label');
+        const target = label ?? sw;
+        if (!target) return null;
+        const r = target.getBoundingClientRect();
+        return { tag: target.tagName.toLowerCase(), w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10 };
+      });
+      behaviour.stampSwitchHit = stampHit;
+      check(Boolean(stampHit && stampHit.w >= 44 && stampHit.h >= 44), `stamp switch hit area ${JSON.stringify(stampHit)}, want >= 44x44`);
       if (await clickVisible(page, '.editor .band [data-act="stamp-sheet"]', 'open stamp detail sheet')) {
         check(await page.locator('.ms.stamp-sheet').isVisible().catch(() => false), 'stamp_sheet did not open');
         await closeSheet('.ms.stamp-sheet');
@@ -704,6 +796,150 @@ async function runBehaviourChecks(page, session) {
     await frame(page, 2);
     behaviour.longPressShowsOriginal = lblText.includes('原图');
     check(lblText.includes('原图'), `long-press label was "${lblText}", expected 原图`);
+  }
+
+  // 5. P3-1：未放大时双击照片不会闪动收起/再展开单带
+  if (sb4) {
+    if ((await measurePhoto(page))?.bandCollapsed === '1') await tapStageCenter(page, session);
+    const cx = sb4.x + sb4.width / 2;
+    const cy = sb4.y + sb4.height / 2;
+    await page.evaluate(() => {
+      const band = document.querySelector('.editor .band');
+      window.__collapseChanges = [];
+      window.__collapseObserver?.disconnect();
+      if (!band) return;
+      window.__collapseObserver = new MutationObserver(() => {
+        window.__collapseChanges.push(band.getAttribute('data-collapsed'));
+      });
+      window.__collapseObserver.observe(band, { attributes: true, attributeFilter: ['data-collapsed'] });
+    });
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: cx, y: cy, id: 1 }] });
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.waitForTimeout(80);
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: cx, y: cy, id: 1 }] });
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.waitForTimeout(420);
+    const collapseChanges = await page.evaluate(() => {
+      window.__collapseObserver?.disconnect();
+      return window.__collapseChanges ?? [];
+    });
+    behaviour.unzoomedDoubleTapCollapseChanges = collapseChanges;
+    check(collapseChanges.length === 0, `unzoomed double-tap mutated data-collapsed ${collapseChanges.length} times (${collapseChanges.join(',')}), want 0`);
+  }
+
+  // 6. P3-6：左边缘 clientX < 24 起手右滑不拦截（保留 iOS 边缘返回手势；先停在 idx >= 2 确保右滑会触发上一张）
+  await openEditorPhoto(page, manifest.portrait1Stem);
+  if ((await measurePhoto(page))?.bandCollapsed === '1') await tapStageCenter(page, session);
+  const subEdge0 = await page.locator('.editor .nav small').innerText().catch(() => '');
+  if (/^\s*1\s*\//.test(subEdge0)) {
+    const sbAdv = await page.locator('.editor .stage').boundingBox();
+    if (sbAdv) {
+      await swipeStage(page, session, sbAdv, true);
+      await page.waitForFunction(
+        (prev) => {
+          const ed = document.querySelector('.screen.editor');
+          const app = document.querySelector('.app');
+          const cur = ed?.getAttribute('data-photo') ?? '';
+          return Boolean(cur && cur !== prev && app?.getAttribute('data-settled') === cur);
+        },
+        manifest.portrait1Stem,
+        { timeout: 30_000 },
+      );
+      await frame(page, 3);
+    }
+  }
+  const sbEdge = await page.locator('.editor .stage').boundingBox();
+  if (sbEdge) {
+    const beforeEdgePhoto = await page.locator('.screen.editor').getAttribute('data-photo');
+    const y = sbEdge.y + sbEdge.height / 2;
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 10, y, id: 1 }] });
+    for (let i = 1; i <= 5; i += 1) {
+      await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 10 + i * 35, y, id: 1 }] });
+      await frame(page, 1);
+    }
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await page.waitForTimeout(360);
+    const afterEdgePhoto = await page.locator('.screen.editor').getAttribute('data-photo');
+    const afterEdgeCollapsed = await page.locator('.editor .band').getAttribute('data-collapsed');
+    behaviour.leftEdgeSwipeIgnored = beforeEdgePhoto === afterEdgePhoto && afterEdgeCollapsed === '0';
+    check(beforeEdgePhoto === afterEdgePhoto, `left-edge swipe (x=10) switched photo instead of yielding to iOS back gesture`);
+    check(afterEdgeCollapsed === '0', `left-edge swipe (x=10) toggled band collapsed=${afterEdgeCollapsed}`);
+  }
+
+  // 7. P2-4：选中的远端配方卡在打开照片与横滑换片后自动滚入 .strip 可见区域
+  const readActiveCardVisibility = () =>
+    page.evaluate(() => {
+      const strip = document.querySelector('.editor .band .panel.recipe .strip');
+      const card = strip?.querySelector('.rc.on');
+      if (!strip || !card) return null;
+      const sr = strip.getBoundingClientRect();
+      const cr = card.getBoundingClientRect();
+      return {
+        cardId: card.getAttribute('data-card'),
+        scrollLeft: Math.round(strip.scrollLeft),
+        stripLeft: Math.round(sr.left),
+        stripRight: Math.round(sr.right),
+        cardLeft: Math.round(cr.left),
+        cardRight: Math.round(cr.right),
+        visible: cr.left >= sr.left - 1 && cr.right <= sr.right + 1,
+      };
+    });
+
+  // 给第一张（portrait1）与第二张（下一张）分别选远端配方卡（超出首屏）
+  await openEditorPhoto(page, manifest.portrait1Stem);
+  if ((await measurePhoto(page))?.bandCollapsed === '1') await tapStageCenter(page, session);
+  const p1Cards = page.locator('.editor .band .panel.recipe .strip .rc');
+  const p1Count = await p1Cards.count();
+  if (p1Count >= 6) {
+    await clickVisible(page, p1Cards.nth(p1Count - 1), 'select far-right recipe on photo 1');
+    const sbSwipe = await page.locator('.editor .stage').boundingBox();
+    if (sbSwipe) {
+      await swipeStage(page, session, sbSwipe, true);
+      await page.waitForFunction(
+        (prev) => {
+          const ed = document.querySelector('.screen.editor');
+          const app = document.querySelector('.app');
+          const cur = ed?.getAttribute('data-photo') ?? '';
+          return Boolean(cur && cur !== prev && app?.getAttribute('data-settled') === cur);
+        },
+        manifest.portrait1Stem,
+        { timeout: 30_000 },
+      );
+      await frame(page, 3);
+      const p2Cards = page.locator('.editor .band .panel.recipe .strip .rc');
+      const p2Count = await p2Cards.count();
+      if (p2Count >= 6) {
+        await clickVisible(page, p2Cards.nth(p2Count - 2), 'select far-right recipe on photo 2');
+      }
+      // 回到网格再重新打开 photo 1：选中的远端配方卡应可见
+      await page.locator('.editor .nav .nb').first().click();
+      await page.waitForSelector('[data-screen="grid"]', { timeout: 10_000 });
+      await openEditorPhoto(page, manifest.portrait1Stem);
+      await frame(page, 4);
+      const onOpenVis = await readActiveCardVisibility();
+      behaviour.recipeStripScrollOnOpen = onOpenVis;
+      check(Boolean(onOpenVis && onOpenVis.visible && onOpenVis.scrollLeft > 0), `selected recipe card not scrolled into view on open: ${JSON.stringify(onOpenVis)}`);
+
+      // 横滑到下一张：其选中的远端配方卡也应自动滚入可见区域
+      const sbSwipe2 = await page.locator('.editor .stage').boundingBox();
+      if (sbSwipe2) {
+        await swipeStage(page, session, sbSwipe2, true);
+        await page.waitForFunction(
+          (prev) => {
+            const ed = document.querySelector('.screen.editor');
+            const app = document.querySelector('.app');
+            const cur = ed?.getAttribute('data-photo') ?? '';
+            return Boolean(cur && cur !== prev && app?.getAttribute('data-settled') === cur);
+          },
+          manifest.portrait1Stem,
+          { timeout: 30_000 },
+        );
+        await frame(page, 4);
+        const onSwipeVis = await readActiveCardVisibility();
+        behaviour.recipeStripScrollOnSwipe = onSwipeVis;
+        check(Boolean(onSwipeVis && onSwipeVis.visible && onSwipeVis.scrollLeft > 0), `selected recipe card not scrolled into view after swipe: ${JSON.stringify(onSwipeVis)}`);
+      }
+    }
   }
 }
 
