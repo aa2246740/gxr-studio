@@ -462,7 +462,25 @@ export function centerStripCard(strip: HTMLElement, cardId: string): boolean {
   if (!active || active.dataset.card !== cardId) return false;
   const sr = strip.getBoundingClientRect();
   const cr = active.getBoundingClientRect();
-  const targetLeft = strip.scrollLeft + (cr.left - sr.left) + cr.width / 2 - sr.width / 2;
+  let targetLeft = strip.scrollLeft + (cr.left - sr.left) + cr.width / 2 - sr.width / 2;
+  const usable = (el: Element | null): HTMLElement | null =>
+    el instanceof HTMLElement && el.classList.contains('rc') && !el.classList.contains('lockd') ? el : null;
+  const neighbor = usable(active.nextElementSibling) ?? usable(active.previousElementSibling);
+  if (neighbor) {
+    const nr = neighbor.getBoundingClientRect();
+    const pairLeft = Math.min(cr.left, nr.left);
+    const pairWidth = Math.max(cr.right, nr.right) - pairLeft;
+    const gap = Math.max(0, pairWidth - cr.width - nr.width);
+    // 390pt 竖屏下横条可视宽约 231pt，只把选中卡放正中会把左右邻卡各裁切一截；
+    // 让「选中卡 + 一张邻卡」靠边缘完整落入视口，另一侧邻卡中心也保留在视口内，兼顾完整邻卡点击与三卡中心可达。
+    if (pairWidth <= sr.width && (sr.width - cr.width) / 2 < nr.width + gap) {
+      const edgeInset = Math.max(2, Math.min(6, Math.floor(sr.width - pairWidth - gap - cr.width / 2 - 2)));
+      targetLeft =
+        nr.left >= cr.left
+          ? strip.scrollLeft + (nr.right - sr.right) + edgeInset
+          : strip.scrollLeft + (nr.left - sr.left) - edgeInset;
+    }
+  }
   const maxScroll = Math.max(0, strip.scrollWidth - strip.clientWidth);
   strip.scrollLeft = Math.max(0, Math.min(maxScroll, targetLeft));
   return true;
