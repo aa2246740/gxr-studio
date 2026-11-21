@@ -494,6 +494,7 @@ export class EditorView {
     this.adjust?.syncHistBtn();
     if (this.histOpen) this.requestHist();
     else { this.histAgain = false; this.cancelHistRetry(); }
+    if (initial) return; // 打开照片时版式已经在挂进 DOM 前定好，舞台照常由 mount 和 ResizeObserver 摆
     const body = this.band?.el().querySelector('.band-body');
     if (body) body.scrollTop = 0;
     this.refitStage();
