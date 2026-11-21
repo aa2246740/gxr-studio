@@ -16,28 +16,50 @@ const browser = await launchPinnedChromium({
 function hits(page) {
   return page.evaluate(() => {
     const round = (n) => Math.round(n * 10) / 10;
+    const chipBar = document.querySelector('.editor .recipe-fine .knob-chips');
+    if (chipBar) chipBar.scrollLeft = 0;
     const controls = [
       ...document.querySelectorAll('.editor .recipe-fine .chip, .editor .recipe-fine input[type="range"]'),
     ];
     const misses = [];
-    for (const el of controls) {
-      const style = getComputedStyle(el);
-      const r = el.getBoundingClientRect();
-      if (style.display === 'none' || style.visibility === 'hidden' || r.width < 1 || r.height < 1) continue;
-      const cx = r.left + r.width / 2;
-      const cy = r.top + r.height / 2;
-      if (cx < 0 || cy < 0 || cx >= window.innerWidth || cy >= window.innerHeight) continue;
+    let chipsTested = 0;
+    let slidersTested = 0;
+    const isClipped = (el, cx, cy) => {
       let clip = el.parentElement;
-      let clipped = false;
       while (clip && clip !== document.body) {
         const clipStyle = getComputedStyle(clip);
         if (/(auto|scroll|hidden)/.test(`${clipStyle.overflowX}${clipStyle.overflowY}`)) {
           const b = clip.getBoundingClientRect();
-          if (cx < b.left || cx > b.right || cy < b.top || cy > b.bottom) clipped = true;
+          if (cx < b.left + 0.5 || cx > b.right - 0.5 || cy < b.top + 0.5 || cy > b.bottom - 0.5) return true;
         }
         clip = clip.parentElement;
       }
-      if (clipped) continue;
+      return false;
+    };
+    for (const el of controls) {
+      const style = getComputedStyle(el);
+      let r = el.getBoundingClientRect();
+      if (style.display === 'none' || style.visibility === 'hidden' || r.width < 1 || r.height < 1) continue;
+      let cx = r.left + r.width / 2;
+      let cy = r.top + r.height / 2;
+      if (cx < 0 || cx >= window.innerWidth || isClipped(el, cx, cy)) {
+        el.scrollIntoView({ inline: 'center', block: 'nearest' });
+        r = el.getBoundingClientRect();
+        cx = r.left + r.width / 2;
+        cy = r.top + r.height / 2;
+      }
+      if (cx < 0 || cy < 0 || cx >= window.innerWidth || cy >= window.innerHeight || isClipped(el, cx, cy)) {
+        misses.push({
+          cls: el.className,
+          knob: el.dataset.knobChip || el.dataset.act || '',
+          x: round(r.x),
+          w: round(r.width),
+          hit: 'offscreen',
+        });
+        continue;
+      }
+      if (el.matches('input[type="range"]')) slidersTested += 1;
+      else chipsTested += 1;
       const hit = document.elementFromPoint(cx, cy);
       const own = Boolean(hit && (hit === el || el.contains(hit) || hit.contains(el)));
       if (!own || hit?.closest('.mode-switch')) {
@@ -50,12 +72,15 @@ function hits(page) {
         });
       }
     }
+    if (chipBar) chipBar.scrollLeft = 0;
     const sw = document.querySelector('.editor .panel.recipe > .mode-switch');
     const sr = sw?.getBoundingClientRect();
     return {
       layout: document.querySelector('.app')?.dataset.layout ?? '',
       fine: !document.querySelector('.editor .recipe-fine')?.hidden,
-      tested: controls.filter((el) => el.getBoundingClientRect().width > 1 && getComputedStyle(el).display !== 'none').length,
+      chipsTested,
+      slidersTested,
+      tested: chipsTested + slidersTested,
       switchHidden: sw ? sw.hidden || getComputedStyle(sw).display === 'none' : null,
       switchBox: sr && sr.width ? { x: round(sr.x), y: round(sr.y), w: round(sr.width), h: round(sr.height) } : null,
       misses,

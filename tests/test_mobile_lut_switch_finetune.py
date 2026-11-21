@@ -53,5 +53,8 @@ def test_phone_finetune_controls_are_not_under_the_mode_switch(tmp_path: Path) -
     assert [view["label"] for view in got["views"]] == ["390x844", "440x956"]
     for view in got["views"]:
         assert view["fine"] is True, view
-        assert view["tested"] >= 2, view
+        assert view["chipsTested"] >= 2, view
+        assert view["slidersTested"] >= 1, view
+        assert view["tested"] == view["chipsTested"] + view["slidersTested"], view
         assert view["misses"] == [], view
+        assert view["switchHidden"] is True, view
