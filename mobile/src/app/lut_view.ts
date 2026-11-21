@@ -18,6 +18,7 @@ import { lookCache } from './looks';
 import { closeLutSheets, openLutActionSheet, openLutSpaceSheet } from './lut_sheet';
 import type { AppApi, Photo } from './model';
 import { makeRecipeLutSwitch } from './recipe_band';
+import './lut_deck.css';
 
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
 const PLUS = 'M12 5v14M5 12h14';
@@ -72,6 +73,7 @@ export class LutView {
   private readonly pin = el('div', 'lut-pin');
   private readonly strip = el('div', 'strip');
   private readonly statusEl = el('div', 'lut-err', '');
+  private readonly footEl = el('p', 'lut-foot', 'LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。');
   private readonly spaceBtn = button('rc filter-tile lut-space-tile', '');
   private readonly spaceTxt = el('span', 'lut-space-txt', '色彩空间');
   private readonly addBtn = button('rc filter-tile lut-import-tile', '');
@@ -139,7 +141,8 @@ export class LutView {
     this.head.append(this.headTitle);
     this.pin.append(this.addBtn, this.spaceBtn);
     this.stripWrap.append(this.pin, this.strip);
-    this.panel.append(this.stripWrap, this.ipadMeta, this.statusEl);
+    this.footEl.hidden = true;
+    this.panel.append(this.stripWrap, this.ipadMeta, this.footEl, this.statusEl);
 
     this.seenNotice = api.lutBook().lastNotice().seq;
     this.off = api.lutBook().onChange(() => {
@@ -337,17 +340,20 @@ export class LutView {
         addCard.append(addThumb, el('span', 'nm', '导入 LUT'));
         addCard.addEventListener('click', () => this.api.pickLut());
         this.strip.append(addCard);
-      } else if (!list.length && !deleted) {
-        this.strip.append(el('p', 'lut-foot', 'LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。'));
       }
       if (scrollLeft > 0) this.strip.scrollLeft = scrollLeft;
     }
+
+    const emptyLibrary = !this.ipadMode && !list.length && !deleted;
+    this.footEl.hidden = !emptyLibrary;
 
     this.pin.hidden = this.ipadMode;
     const sp = this.spaceButtonLabel(selectedRec);
     this.spaceTxt.textContent = sp.text;
     this.spaceBtn.classList.toggle('warn', sp.warn);
     this.spaceBtn.disabled = !selectedRec;
+    // 没选 LUT 时色彩空间无事可做：手机竖屏收起这颗 56pt 瓷砖，好腾出两张卡的位置。
+    this.spaceBtn.classList.toggle('collapsed', !selectedRec);
     this.spaceBtn.setAttribute('aria-label', selectedRec ? `色彩空间：${sp.text}` : '色彩空间');
     this.headTitle.textContent = selectedRec ? selectedRec.name : deleted ? 'LUT 已删除' : 'LUT';
     this.ipadName.textContent = selectedRec ? selectedRec.name : deleted ? 'LUT 已删除' : '不用 LUT';
