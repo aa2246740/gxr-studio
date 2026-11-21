@@ -181,7 +181,11 @@ try {
     ids.undeclared,
     { timeout: 15_000 },
   );
-  const spaceRowAfterPick = await page.locator('.editor .panel.lut [data-act="lut-space"]').innerText();
+  await page.locator('.editor .panel.lut [data-act="lut-menu"]').click();
+  await page.waitForSelector('.lut-menu-pop:popover-open', { timeout: 5_000 });
+  const spaceRowAfterPick = await page.locator('.lut-menu-pop:popover-open [data-act="lut-menu-space"] .lut-menu-val').innerText();
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.lut-menu-pop:popover-open'), null, { timeout: 5_000 });
 
   // 4. 连续切换 3 张 Display LUT，核对短命 table Worker 每次销毁、引擎槽 <= 3，最后停在 disp33
   const switchStats = [];
@@ -388,7 +392,9 @@ try {
   await recCard.scrollIntoViewIfNeeded();
   await recCard.click();
   await waitLutReady(page, rec709Id);
-  await page.locator('.editor .panel.lut [data-act="lut-space"]').click();
+  await page.locator('.editor .panel.lut [data-act="lut-menu"]').click();
+  await page.waitForSelector('.lut-menu-pop:popover-open', { timeout: 5_000 });
+  await page.locator('.lut-menu-pop:popover-open [data-act="lut-menu-space"]').click();
   await page.waitForSelector('.lut-space-sheet[data-state="lut-space"]', { timeout: 10_000 });
   const outputSpaceChoices = await page.evaluate(() =>
     [...document.querySelectorAll('.lut-adv-row[data-field="output_space"] button')].map((b) => ({

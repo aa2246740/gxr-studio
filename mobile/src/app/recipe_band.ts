@@ -504,6 +504,206 @@ export function buildIpadRecipeMeta(
 
 const bitmapIds = new WeakMap<ImageBitmap, number>();
 let nextBitmapId = 1;
+let nextLutMenuSeq = 1;
+
+export interface LutPinMenuHandle {
+  trigger: HTMLButtonElement;
+  popover: HTMLElement;
+  sync(selected: boolean, badgeText: string | null, spaceLabel: string, warn: boolean): void;
+  close(fromPointer?: boolean, restoreFocus?: boolean): void;
+  destroy(): void;
+}
+
+/** 手机竖屏 LUT 左侧合并瓷砖（44×70pt）与原生顶层弹出菜单（导入 LUT + 色彩空间）。 */
+export function createLutPinMenu(onImport: () => void, onSpace: () => void): LutPinMenuHandle {
+  const seq = nextLutMenuSeq++;
+  const triggerId = `lut-pin-trigger-${seq}`;
+  const menuId = `lut-pin-menu-${seq}`;
+
+  const trigger = button('rc filter-tile lut-menu-tile', '');
+  trigger.id = triggerId;
+  trigger.dataset.act = 'lut-menu';
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.setAttribute('commandfor', menuId);
+  trigger.setAttribute('command', 'toggle-popover');
+  const th = el('div', 'th filter-th');
+  const label = el('span', 'nm', '导入');
+  trigger.append(th, label);
+
+  const popover = el('div', 'lut-menu-pop');
+  popover.id = menuId;
+  popover.setAttribute('popover', 'auto');
+  const list = el('div', 'lut-menu-list');
+  list.setAttribute('focusgroup', 'menu nomemory');
+  list.setAttribute('aria-labelledby', triggerId);
+
+  const importBtn = button('lut-menu-item', '');
+  importBtn.dataset.act = 'lut-menu-import';
+  importBtn.append(icon(PLUS), el('span', 'lut-menu-lab', '导入 LUT'));
+
+  const spaceBtn = button('lut-menu-item', '');
+  spaceBtn.dataset.act = 'lut-menu-space';
+  const spaceVal = el('span', 'lut-menu-val', '未选 LUT');
+  spaceBtn.append(el('span', 'lut-menu-lab', '色彩空间'), spaceVal);
+
+  list.append(importBtn, spaceBtn);
+  popover.append(list);
+
+  let enterOnOpen = false;
+  let pointerOpen = false;
+
+  const isOpen = (): boolean => {
+    try {
+      return popover.matches(':popover-open');
+    } catch {
+      return false;
+    }
+  };
+  const enabledItems = (): HTMLButtonElement[] => [importBtn, spaceBtn].filter((btn) => !btn.disabled);
+  const focusItem = (index: number): void => {
+    const target = enabledItems()[index];
+    if (target) target.focus({ preventScroll: true });
+  };
+  const close = (fromPointer = false, restoreFocus = false): void => {
+    if (!isOpen()) return;
+    if (restoreFocus) {
+      if (fromPointer) trigger.focus({ focusVisible: false } as FocusOptions);
+      else trigger.focus();
+    }
+    const pop = popover as HTMLElement & { hidePopover?: () => void };
+    pop.hidePopover?.();
+  };
+  const positionFallback = (): void => {
+    if (typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('position-area', 'block-end')) {
+      return;
+    }
+    const trig = trigger.getBoundingClientRect();
+    const pop = popover.getBoundingClientRect();
+    const gap = 8;
+    const left = Math.max(8, Math.min(window.innerWidth - pop.width - 8, trig.left + 4));
+    const above = trig.top - pop.height - gap;
+    const top = above >= 8 ? above : Math.min(window.innerHeight - pop.height - 8, trig.bottom + gap);
+    popover.style.left = `${Math.round(left)}px`;
+    popover.style.top = `${Math.round(Math.max(8, top))}px`;
+  };
+
+  importBtn.addEventListener('click', (ev) => {
+    close(ev.detail !== 0, true);
+    onImport();
+  });
+  spaceBtn.addEventListener('click', (ev) => {
+    close(ev.detail !== 0, true);
+    onSpace();
+  });
+
+  trigger.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    pointerOpen = true;
+  });
+  trigger.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      enterOnOpen = true;
+      if (!isOpen()) trigger.click();
+      else focusItem(0);
+    } else if (ev.key === 'Enter' || ev.key === ' ') {
+      enterOnOpen = true;
+    }
+  });
+  if (!('commandForElement' in HTMLButtonElement.prototype)) {
+    trigger.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      if (isOpen()) {
+        close(ev.detail !== 0, true);
+      } else {
+        enterOnOpen = ev.detail === 0;
+        const pop = popover as HTMLElement & { showPopover?: (opts?: { source?: HTMLElement }) => void };
+        pop.showPopover?.({ source: trigger });
+      }
+    });
+  }
+
+  popover.addEventListener('toggle', (ev) => {
+    const open = (ev as ToggleEvent).newState === 'open';
+    trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      positionFallback();
+      if (enterOnOpen) {
+        enterOnOpen = false;
+        pointerOpen = false;
+        focusItem(0);
+      } else if (pointerOpen) {
+        pointerOpen = false;
+        trigger.focus({ focusVisible: false } as FocusOptions);
+      }
+    } else {
+      enterOnOpen = false;
+      pointerOpen = false;
+    }
+  });
+
+  const nativeFocusGroup = 'focusGroup' in HTMLElement.prototype;
+  if (!nativeFocusGroup) {
+    list.setAttribute('role', 'menu');
+    importBtn.setAttribute('role', 'menuitem');
+    spaceBtn.setAttribute('role', 'menuitem');
+  }
+  list.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Tab') {
+      close(false, false);
+      return;
+    }
+    const items = enabledItems();
+    if (!items.length) return;
+    if (ev.key === 'Home') {
+      ev.preventDefault();
+      items[0].focus({ preventScroll: true });
+    } else if (ev.key === 'End') {
+      ev.preventDefault();
+      items[items.length - 1].focus({ preventScroll: true });
+    } else if (!nativeFocusGroup && (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')) {
+      ev.preventDefault();
+      const cur = items.indexOf(document.activeElement as HTMLButtonElement);
+      const step = ev.key === 'ArrowUp' ? -1 : 1;
+      items[cur < 0 ? 0 : (cur + step + items.length) % items.length].focus({ preventScroll: true });
+    }
+  });
+
+  const onDocFocusIn = (ev: FocusEvent) => {
+    if (!isOpen()) return;
+    const target = ev.target;
+    if (target instanceof Node && (popover.contains(target) || trigger.contains(target))) return;
+    close(false, false);
+  };
+  document.addEventListener('focusin', onDocFocusIn);
+
+  return {
+    trigger,
+    popover,
+    sync(selected, badgeText, spaceLabel, warn) {
+      trigger.classList.toggle('has-lut', selected);
+      trigger.classList.toggle('warn', selected && warn);
+      if (selected) {
+        th.replaceChildren(el('span', 'lut-menu-badge', badgeText ?? '选空间'));
+        label.textContent = '管理';
+        trigger.setAttribute('aria-label', `LUT 管理：${spaceLabel}`);
+      } else {
+        th.replaceChildren(icon(PLUS));
+        label.textContent = '导入';
+        trigger.setAttribute('aria-label', '导入 LUT 与色彩空间');
+      }
+      spaceBtn.disabled = !selected;
+      spaceBtn.classList.toggle('warn', selected && warn);
+      spaceVal.textContent = selected ? spaceLabel : '未选 LUT';
+    },
+    close,
+    destroy() {
+      close(false, false);
+      document.removeEventListener('focusin', onDocFocusIn);
+    },
+  };
+}
 
 export function bitmapId(bitmap: ImageBitmap): number {
   let id = bitmapIds.get(bitmap);

@@ -66,18 +66,31 @@ def test_phone_lut_deck_fits_two_cards_at_390(tmp_path: Path) -> None:
     assert got.get("error") is None, got["error"]
 
     empty = got["empty"]
+    empty_menu = got["emptyMenu"]
     filled = got["filled"]
+    selected = got["selected"]
+    selected_menu = got["selectedMenu"]
     assert empty["footText"], empty
     assert empty["footClipped"] is False, empty["foot"]
     assert empty["footHitsName"] is False, empty["foot"]
-    assert empty["spaceW"] <= 52.5, empty["space"]
-    # 78pt 的卡不缩小。横条可见宽装不下一张「不用 LUT」再加两张已导入的卡：
-    # 第一张差 1pt，第二张可见宽度是 0。差大约 87pt 才能两张都完整落在横条里。
+    # 手机竖屏已把「导入 LUT」与「色彩空间」合并进一颗 44pt 瓷砖，不再占满 56pt 色彩空间瓷砖。
+    assert empty["space"] is None, empty["space"]
+    assert empty["menuTile"] and empty["menuTile"]["w"] >= 43.5 and empty["menuTile"]["h"] >= 43.5, empty["menuTile"]
+    assert empty_menu["importItem"]["hitOk"] is True and empty_menu["importItem"]["disabled"] is False, empty_menu
+    assert empty_menu["importItem"]["w"] >= 43.5 and empty_menu["importItem"]["h"] >= 43.5, empty_menu
+    assert empty_menu["spaceItem"]["hitOk"] is True and empty_menu["spaceItem"]["disabled"] is True, empty_menu
+    assert empty_menu["spaceItem"]["w"] >= 43.5 and empty_menu["spaceItem"]["h"] >= 43.5, empty_menu
+    # 78pt 卡片不缩小，按横条可见视口度量，空选和选中态都能完整放下两张已导入 LUT 卡。
     imported = filled["imported"]
     assert [item["w"] for item in imported] == [78, 78], imported
-    assert imported[0]["fully"] is False and imported[0]["visibleW"] == 77, imported
-    assert imported[1]["visibleW"] == 0 and imported[1]["fully"] is False, imported
-    assert filled["visibleCards"] == 0, filled["strip"]
+    assert all(item["fully"] and item["visibleW"] >= 77.5 for item in imported), (filled["strip"], imported)
+    assert filled["visibleCards"] >= 2, (filled["strip"], imported)
+    sel_imported = selected["imported"]
+    assert [item["w"] for item in sel_imported] == [78, 78], sel_imported
+    assert selected["visibleCards"] >= 2, (selected["strip"], sel_imported)
+    assert selected_menu["spaceItem"]["disabled"] is False and selected_menu["spaceItem"]["val"] == "sRGB · 文件已写明", selected_menu
+    for btn in filled["switchBtns"]:
+        assert btn and btn["w"] >= 43.5 and btn["h"] >= 43.5, filled["switchBtns"]
     assert filled["noticeText"] == "已经导入过", filled["noticeText"]
     assert filled["noticeOverlapBottom22"] == 0, filled["notice"]
     assert filled["noticeHitsName"] is False, filled["notice"]

@@ -17,7 +17,7 @@ import { exportPaused } from './export_pause';
 import { lookCache } from './looks';
 import { closeLutSheets, openLutActionSheet, openLutSpaceSheet } from './lut_sheet';
 import type { AppApi, Photo } from './model';
-import { makeRecipeLutSwitch } from './recipe_band';
+import { createLutPinMenu, makeRecipeLutSwitch, type LutPinMenuHandle } from './recipe_band';
 import './lut_deck.css';
 
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
@@ -77,6 +77,7 @@ export class LutView {
   private readonly spaceBtn = button('rc filter-tile lut-space-tile', '');
   private readonly spaceTxt = el('span', 'lut-space-txt', '色彩空间');
   private readonly addBtn = button('rc filter-tile lut-import-tile', '');
+  private readonly pinMenu: LutPinMenuHandle;
   private readonly ipadMeta = el('div', 'ipad-lut-meta');
   private readonly ipadName = el('b', 'rname', '不用 LUT');
   private readonly ipadSpaceBtn = button('lrow ipad-lut-row', '');
@@ -127,6 +128,7 @@ export class LutView {
       if (rec) this.openSpaceFor(rec, false);
     };
     this.spaceBtn.addEventListener('click', openSelectedSpace);
+    this.pinMenu = createLutPinMenu(() => this.api.pickLut(), openSelectedSpace);
 
     const metaHd = el('div', 'rmeta');
     metaHd.append(this.ipadName);
@@ -139,7 +141,7 @@ export class LutView {
     this.ipadMeta.append(metaHd, this.ipadSpaceBtn, this.ipadAddBtn);
 
     this.head.append(this.headTitle);
-    this.pin.append(this.addBtn, this.spaceBtn);
+    this.pin.append(this.pinMenu.trigger, this.pinMenu.popover, this.addBtn, this.spaceBtn);
     this.stripWrap.append(this.pin, this.strip);
     this.panel.append(this.makeModeSwitch());
     this.footEl.hidden = true;
@@ -172,6 +174,7 @@ export class LutView {
   setIpadMode(on: boolean): void {
     if (this.ipadMode === on) return;
     this.ipadMode = on;
+    if (on) this.pinMenu.close(false, false);
     this.modeSwitchEl?.remove();
     this.modeSwitchEl = on ? null : this.makeModeSwitch();
     if (this.modeSwitchEl) this.panel.append(this.modeSwitchEl);
@@ -182,6 +185,7 @@ export class LutView {
   destroy(): void {
     this.token += 1;
     this.thumbToken += 1;
+    this.pinMenu.destroy();
     this.off();
     closeLutSheets(this.shell);
   }
@@ -353,9 +357,14 @@ export class LutView {
     this.spaceTxt.textContent = sp.text;
     this.spaceBtn.classList.toggle('warn', sp.warn);
     this.spaceBtn.disabled = !selectedRec;
-    // 没选 LUT 时色彩空间无事可做：手机竖屏收起这颗 56pt 瓷砖，好腾出两张卡的位置。
     this.spaceBtn.classList.toggle('collapsed', !selectedRec);
     this.spaceBtn.setAttribute('aria-label', selectedRec ? `色彩空间：${sp.text}` : '色彩空间');
+    this.pinMenu.sync(
+      Boolean(selectedRec),
+      selectedRec?.input_space ? spaceShortLabel(selectedRec.input_space) : null,
+      sp.text,
+      sp.warn,
+    );
     this.headTitle.textContent = selectedRec ? selectedRec.name : deleted ? 'LUT 已删除' : 'LUT';
     this.ipadName.textContent = selectedRec ? selectedRec.name : deleted ? 'LUT 已删除' : '不用 LUT';
     this.ipadSpaceVal.textContent = sp.text;
