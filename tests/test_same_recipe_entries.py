@@ -20,6 +20,8 @@ def test_same_entry_different_slots_agree_in_exif_and_edit() -> None:
         return Plan("l08firm", slot, False, {}, entry, sha, 200, True, (), "电脑预测", None, "r" * 64, "b" * 64, selection)
 
     left, right = plan(1, digest, "local:1"), plan(6, digest, "local:6")
+    assert same_recipe_entries("", "") is False
+    assert same_recipe_entries(digest, "") is False
     assert same_recipe_entries(left.entry_sha256, right.entry_sha256)
     assert _same_plan_recipe(left, right)
     assert not _same_plan_recipe(left, plan(6, other, "local:6"))
