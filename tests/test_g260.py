@@ -165,7 +165,7 @@ def test_g259_and_g260_reject_wrong_library_and_envelope_tamper(generation: int,
     for bad_lib in (None, lib185, lib250_old):
         with pytest.raises(intake.IntakeError) as exc_info:
             intake.inspect_dat(raw, bad_lib)
-        assert exc_info.value.code != "generation_unsupported"
+        assert exc_info.value.code == "dat_invalid", exc_info.value.code
 
     xdata_at, xdata_len = struct.unpack_from(">II", raw, 128 + 12 * 2 + 4)
     assert xdata_len > 0
