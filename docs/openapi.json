@@ -1109,6 +1109,45 @@
         "title": "LutPatch",
         "type": "object"
       },
+      "OffImageExportRequest": {
+        "properties": {
+          "dest_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dest Dir"
+          },
+          "preview_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Token"
+          },
+          "shot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shot Id"
+          }
+        },
+        "title": "OffImageExportRequest",
+        "type": "object"
+      },
       "PasteRequest": {
         "properties": {
           "batch_id": {
@@ -3348,6 +3387,88 @@
           }
         },
         "summary": "Recipes Rename"
+      }
+    },
+    "/api/off-image/export": {
+      "post": {
+        "description": "将通过严格校验的 GXROFF.JPG 写入目标文件夹，拒绝挂载的存储卡与受保护目录。",
+        "operationId": "export_off_image_api_off_image_export_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OffImageExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Off Image"
+      }
+    },
+    "/api/off-image/preview": {
+      "post": {
+        "description": "生成 640×480 GXROFF.JPG 预览：传 shot_id 用图库照片的当前成片；否则读取上传的原始图片字节。",
+        "operationId": "preview_off_image_api_off_image_preview_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "shot_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shot Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Off Image"
       }
     },
     "/api/photos": {

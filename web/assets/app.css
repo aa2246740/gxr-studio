@@ -713,6 +713,25 @@ table.keys h4, .keys-group { margin: 14px 0 6px; font: var(--fw-semibold) var(--
 .camdata-guide { border-radius: var(--r-lg); background: var(--surface-raised); box-shadow: inset 3px 0 0 var(--accent-text); padding: 10px 12px; margin: 10px 0; }
 .camdata-guide h3 { margin: 0 0 4px; }
 
+/* 关机图（GXROFF.JPG）导出对话框与编辑器导出下拉按钮 */
+.export-menu-btn { margin-left: -4px; }
+.off-img-stage {
+  position: relative; width: 100%; aspect-ratio: 4 / 3; max-width: 480px; margin: 0 auto 10px;
+  border-radius: var(--r-md); overflow: hidden; background: #000; display: grid; place-items: center;
+  box-shadow: inset 0 0 0 1px var(--line-subtle);
+}
+.off-img-preview { width: 100%; height: 100%; object-fit: contain; display: block; }
+.off-img-state { padding: 12px; text-align: center; }
+.off-img-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.off-img-meta { margin: 0; }
+.off-img-src { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.off-img-source { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.off-img-notes {
+  display: grid; gap: 4px; padding: 8px 10px; margin-bottom: 10px;
+  border-radius: var(--r-md); background: var(--surface-raised);
+}
+.off-img-notes p { margin: 0; }
+
 /* ================= 动效 ================= */
 @keyframes fadein { from { opacity: 0; } }
 @keyframes fadeout { to { opacity: 0; } }
