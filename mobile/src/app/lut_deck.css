@@ -6,6 +6,9 @@
 .app[data-layout="phone-portrait"] .rc.lut-space-tile.collapsed .filter-th,
 .app:not([data-layout]) .rc.lut-space-tile.collapsed .filter-th { width: 52px; }
 
+/* hidden 属性盖不过 .mode-switch 自己的 display:flex，所以微调时要写明收起。 */
+.panel > .mode-switch[hidden] { display: none; }
+
 /* 切换键钉在滚动条右边、面板内侧。两种模式都在同一处，横滑也不带动它。 */
 .app[data-layout="phone-portrait"] .panel.recipe > .mode-switch,
 .app[data-layout="phone-portrait"] .panel.lut > .mode-switch,

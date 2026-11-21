@@ -330,7 +330,11 @@ export class RecipeView {
     const target = this.target(scene);
     const canFine = Boolean(scene.raw && scene.dat && scene.state.state === 'ready' && target && target.controls.length);
     if (this.fineTune && !canFine) this.fineTune = false;
-    if (!this.ipadMode) this.stripWrap.hidden = this.fineTune;
+    if (!this.ipadMode) {
+      this.stripWrap.hidden = this.fineTune;
+      // 切换键现在在面板上，不再跟着横条一起藏。微调时藏起来，和 04e8b92 一样不挡住旋钮。
+      if (this.modeSwitchEl) this.modeSwitchEl.hidden = this.fineTune;
+    }
     this.fineBox.hidden = !this.ipadMode && !this.fineTune;
     const datError = this.api.book().datError;
     if (datError && scene.raw) {
