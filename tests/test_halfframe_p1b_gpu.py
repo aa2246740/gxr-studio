@@ -366,14 +366,14 @@ def test_pair_shader_recipe_chain2_generated_from_common() -> None:
     assert m is not None, "common.wgsl missing fn recipeChain"
     expected = m.group(0).replace("fn recipeChain(", "fn recipeChain2(", 1).replace("rec[", "rec2[").replace("p.bake", "pp.bake")
     assert "__RECIPE_CHAIN_2__" not in bundle and expected in bundle
+    for js in sorted((repo / "mobile" / "dist").rglob("*.js")) if (repo / "mobile" / "dist").is_dir() else []:
+        assert "__RECIPE_CHAIN_2__" not in js.read_text("utf-8"), f"unexpanded marker in {js}"
     if (node := shutil.which("node")) and node_can_strip_types(node):
         cmd = [node, "--experimental-strip-types", "--input-type=module", "-e", PAIR_WGSL_PROBE]
         proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, check=True)
         assert expected in proc.stdout and "__RECIPE_CHAIN_2__" not in proc.stdout
     elif node is not None:
         pytest.skip("Node < 22.18 导入 .ts 需要类型剥离（Node ≥ 22.18）")
-    for js in sorted((repo / "mobile" / "dist").rglob("*.js")) if (repo / "mobile" / "dist").is_dir() else []:
-        assert "__RECIPE_CHAIN_2__" not in js.read_text("utf-8"), f"unexpanded marker in {js}"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node")
