@@ -181,7 +181,7 @@ export class AdjustView {
     slider.append(this.input);
     big.append(l1, slider);
 
-    const hintRow = el('div', 'hint-row adj-hint');
+    const hintRow = el('div', 'adj-hint');
     const hintReset = button('fbtn', '全部重置');
     hintReset.dataset.act = 'adjust-reset-all';
     hintReset.addEventListener('click', () => this.resetAll());

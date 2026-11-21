@@ -2,8 +2,8 @@
    尺寸照 round-6/ipad-design-r2/mockups/alt-a-desktop.html（主屏幕打开：iPad 顶上 24 状态栏、底下 20 横条；
    手机横屏左右各让出 safe-area，底下 21 横条）。 */
 
-/* 只在 iPad / 横屏用到的节点，默认隐藏，手机竖屏像素不变。 */
-.ipad-dock, .ipad-hist-area, .adj-l1, .adj-hint, .crop-inline-hd, .ipad-sub-hd, .ipad-lut-meta { display: none; }
+/* 只在 iPad / 横屏用到的节点，默认隐藏（加 .app 提高优先级，不被 shell.css 里同级的规则盖掉），手机竖屏像素不变。 */
+.app .ipad-dock, .app .ipad-hist-area, .app .adj-l1, .app .adj-hint, .app .crop-inline-hd, .app .ipad-sub-hd, .app .ipad-lut-meta { display: none; }
 
 /* 左右安全区只有横屏才用到。 */
 :root { --safe-left: env(safe-area-inset-left, 0px); --safe-right: env(safe-area-inset-right, 0px); }

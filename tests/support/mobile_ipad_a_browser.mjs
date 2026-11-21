@@ -639,11 +639,20 @@ try {
     // 手机竖屏的 DOM 里不多出 iPad 的块，也不多出同名的隐藏控件（旧测试按这些选择器严格定位）
     const extra = await page.evaluate(() => ({
       ipadNodes: document.querySelectorAll('.editor .ipad-dock, .editor .ipad-hist-area').length,
+      shown: [...document.querySelectorAll('.editor .adj-l1, .editor .adj-hint, .editor .crop-inline-hd, .editor .ipad-sub-hd, .editor .ipad-lut-meta')]
+        .filter((node) => getComputedStyle(node).display !== 'none').map((node) => node.className),
       dup: ['[data-act="adjust-reset"]', '[data-act="lut-space"]', '[data-act="recipe-filter"]', '[data-act="hist-toggle"]', '.crop-angle', '.crop-size-line']
         .map((sel) => [sel, document.querySelectorAll(`.editor ${sel}`).length])
         .filter(([, count]) => count > 1),
     }));
-    check(extra.ipadNodes === 0 && extra.dup.length === 0, `${vp.label}: phone portrait DOM has iPad extras ${JSON.stringify(extra)}`);
+    check(extra.ipadNodes === 0 && extra.dup.length === 0 && extra.shown.length === 0, `${vp.label}: phone portrait DOM has iPad extras ${JSON.stringify(extra)}`);
+    // 旧测试按无障碍名字找按钮（getByRole），iPad 的隐藏控件不能多出一份同名按钮
+    await page.locator('.toolbar [data-tool="adjust"]').click();
+    await frame(page, 2);
+    const resets = await page.getByRole('button', { name: '全部重置', exact: true }).count();
+    check(resets === 1, `${vp.label}: ${resets} accessible 「全部重置」 buttons in phone 调整, want 1`);
+    await page.locator('.toolbar [data-tool="recipe"]').click();
+    await frame(page, 2);
     const want = MAIN_PHONE_RECTS?.[vp.label];
     check(Boolean(want), `${vp.label}: no main reference rects in manifest`);
     for (const kind of ['portrait', 'landscape']) {
