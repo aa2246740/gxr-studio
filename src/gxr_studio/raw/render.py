@@ -43,6 +43,7 @@ class Renderer:
     display: Callable[[np.ndarray], np.ndarray]
     description: str = ""  # 写进导出文件 EXIF ImageDescription 的话（只能是 ASCII）；空 = 用默认说明
     recipe_binding: dict[str, str] | None = None
+    entry_sha256: str = ""
 
 
 NEUTRAL = Renderer(

@@ -122,6 +122,8 @@ PROFILES = {
     250: _r6(250, _R6_LIB_23, _R6_LIB_KUBIK),
     253: _r6(253, _R6_LIB_KUBIK),
     256: _r6(256, _R6_LIB_KUBIK),
+    257: _r6(257, _R6_LIB_KUBIK),
+    258: _r6(258, _R6_LIB_KUBIK),
 }
 
 

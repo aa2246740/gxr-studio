@@ -19,6 +19,7 @@ import init, {
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { mapInkError, shouldDecodeCameraJpg, shouldRetryWithCameraJpg } from '../lib/export_request';
 import { momentFromIso } from '../lib/frame_spec';
+import { sliceDiptychHalfRgb, sliceFirstHalfStripRgb, stripExifCopyrightFromJpeg } from '../lib/halfframe';
 import { shotSize, jpegSize, dngSize } from '../lib/photo_size';
 import { isDisplaySpace, LUT_ERRORS } from '../lib/lut';
 import type { ExportIn, ExportJob, ExportMemory, ExportOut, ExportSetup, FailKind, SizesJob } from './export_protocol';
@@ -145,7 +146,7 @@ async function runJob(job: ExportJob): Promise<void> {
   let dngBytes: Uint8Array | null = job.dng ? await readAll(job.dng) : null;
   const size = shotSize(jpgBytes, dngBytes);
   const shot: Record<string, unknown> = { ...req.shot, ...(size ? { width: size.width, height: size.height } : {}) };
-  const shotText = JSON.stringify(shot);
+  let shotText = JSON.stringify(shot);
   const sideText = JSON.stringify(req.side);
   // 2. 计划：没有可见编辑、有相机 JPG 时原样导出相机 JPG。
   const plan = JSON.parse(export_plan(shotText, sideText, '{}', req.base)) as { original?: boolean };
@@ -176,7 +177,16 @@ async function runJob(job: ExportJob): Promise<void> {
   const isLogLut = Boolean(lutId && isLogLutSpace(spaceText));
   const isLocalRecipe = (req.side as { recipe?: { kind?: unknown } }).recipe?.kind === 'local';
   let jpg: { data: Uint8Array; width: number; height: number } | null = null;
-  if (
+  if (job.halfframeSource && jpgBytes) {
+    const decoded = await decodeJpeg(jpgBytes);
+    jpg =
+      job.halfframeSource === 'first-strip'
+        ? sliceFirstHalfStripRgb(decoded.data, decoded.width, decoded.height)
+        : sliceDiptychHalfRgb(decoded.data, decoded.width, decoded.height, job.halfframeSource === 'diptych-first' ? 'first' : 'second');
+    shot.width = jpg.width;
+    shot.height = jpg.height;
+    shotText = JSON.stringify(shot);
+  } else if (
     jpgBytes &&
     shouldDecodeCameraJpg({
       hasJpg: true,
@@ -303,7 +313,17 @@ async function runJob(job: ExportJob): Promise<void> {
       .then((body) => fetch(`/__dev/report/${name}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body }))
       .catch(() => undefined);
   }
-  const done = export_complete(canvas, width, height, JSON.stringify(json.prepared.state), source, layer, stampMask, maskWidth, maskHeight);
+  const completeState = json.prepared.state as { labels?: Record<string, unknown> };
+  if (job.halfframeSource && completeState && typeof completeState === 'object') {
+    const labels = completeState.labels && typeof completeState.labels === 'object' ? { ...completeState.labels } : {};
+    const prevTag = typeof labels.tag === 'string' ? labels.tag : '';
+    labels.tag = `${prevTag}_half`;
+    completeState.labels = labels;
+  }
+  if (job.stripCopyright && source.length) {
+    source = stripExifCopyrightFromJpeg(source);
+  }
+  const done = export_complete(canvas, width, height, JSON.stringify(completeState), source, layer, stampMask, maskWidth, maskHeight);
   canvas = EMPTY;
   stampMask = EMPTY;
   layer = NO_LAYER;
