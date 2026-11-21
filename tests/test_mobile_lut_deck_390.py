@@ -70,7 +70,7 @@ def test_phone_lut_deck_fits_two_cards_at_390(tmp_path: Path) -> None:
     assert empty["footText"], empty
     assert empty["footClipped"] is False, empty["foot"]
     assert empty["footHitsName"] is False, empty["foot"]
-    assert empty["space"] is None, empty["space"]
+    assert empty["spaceW"] <= 52.5, empty["space"]
     assert filled["visibleCards"] >= 2, filled["cards"]
     assert filled["noticeText"] == "已经导入过", filled["noticeText"]
     assert filled["noticeOverlapBottom22"] == 0, filled["notice"]

@@ -1,25 +1,27 @@
 /* 手机竖屏 LUT 甲板（polish-2）。只挂在 phone-portrait 和还没判定版式的壳上，iPad 与手机横屏不走这里。 */
 
-/* 没选 LUT 时色彩空间无事可做，收起这颗 56pt 瓷砖，好腾出两张卡的位置。 */
+/* 没选 LUT 时色彩空间无事可做：收到 52pt，和「导入 LUT」一样宽，不再占满 56pt。 */
 .app[data-layout="phone-portrait"] .rc.lut-space-tile.collapsed,
-.app:not([data-layout]) .rc.lut-space-tile.collapsed { display: none; }
+.app:not([data-layout]) .rc.lut-space-tile.collapsed,
+.app[data-layout="phone-portrait"] .rc.lut-space-tile.collapsed .filter-th,
+.app:not([data-layout]) .rc.lut-space-tile.collapsed .filter-th { width: 52px; }
 
-/* 切换键钉在面板右缘，不跟左缘瓷砖一起横移；LUT 卡收到 64pt，390pt 里能放下两张。 */
-.app[data-layout="phone-portrait"] .recipe-strip-wrap .strip > .mode-switch,
-.app[data-layout="phone-portrait"] .lut-strip-wrap .strip > .mode-switch,
-.app:not([data-layout]) .recipe-strip-wrap .strip > .mode-switch,
-.app:not([data-layout]) .lut-strip-wrap .strip > .mode-switch {
+/* 切换键钉在滚动条右边、面板内侧。两种模式都在同一处，横滑也不带动它。 */
+.app[data-layout="phone-portrait"] .panel.recipe > .mode-switch,
+.app[data-layout="phone-portrait"] .panel.lut > .mode-switch,
+.app:not([data-layout]) .panel.recipe > .mode-switch,
+.app:not([data-layout]) .panel.lut > .mode-switch {
   position: absolute;
   right: 6px;
   top: 6px;
   z-index: 2;
 }
-.app[data-layout="phone-portrait"] .recipe-strip-wrap .strip,
-.app[data-layout="phone-portrait"] .lut-strip-wrap .strip,
-.app:not([data-layout]) .recipe-strip-wrap .strip,
-.app:not([data-layout]) .lut-strip-wrap .strip { padding-right: 108px; }
+.app[data-layout="phone-portrait"] .recipe-strip-wrap,
+.app[data-layout="phone-portrait"] .lut-strip-wrap,
+.app:not([data-layout]) .recipe-strip-wrap,
+.app:not([data-layout]) .lut-strip-wrap { padding-right: 100px; }
 .app[data-layout="phone-portrait"] .panel.lut .strip > .rc,
-.app:not([data-layout]) .panel.lut .strip > .rc { width: 64px; }
+.app:not([data-layout]) .panel.lut .strip > .rc { width: 56px; }
 
 /* LUT 提示贴在缩略图上沿，卡名留在底下 22pt，提示不压到那一行。 */
 .app[data-layout="phone-portrait"] .panel.lut > .lut-err,

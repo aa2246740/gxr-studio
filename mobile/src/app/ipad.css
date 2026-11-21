@@ -236,8 +236,12 @@
 .app[data-layout="phone-landscape"] .lut-strip-wrap .strip,
 .app[data-layout="phone-landscape"] .panel.frame .strip { height: auto; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; overflow: visible; }
 .app[data-layout="phone-landscape"] .panel.frame .strip { padding: 8px; }
-.app[data-layout="phone-landscape"] .strip .mode-switch { grid-column: 1 / -1; height: 48px; }
-.app[data-layout="phone-landscape"] .strip .mode-btn { flex: 1; height: 44px; min-height: 44px; }
+.app[data-layout="phone-landscape"] .strip .mode-switch,
+.app[data-layout="phone-landscape"] .panel > .mode-switch { position: static; order: -1; height: 48px; right: auto; top: auto; }
+.app[data-layout="phone-landscape"] .strip .mode-btn,
+.app[data-layout="phone-landscape"] .panel > .mode-switch .mode-btn { flex: 1; height: 44px; min-height: 44px; }
+.app[data-layout="phone-landscape"] .recipe-strip-wrap,
+.app[data-layout="phone-landscape"] .lut-strip-wrap { padding-right: 0; }
 .app[data-layout="phone-landscape"] .strip .rc { width: 100%; }
 .app[data-layout="phone-landscape"] .strip .rc .th { height: 56px; }
 .app[data-layout="phone-landscape"] .strip .rc .nm { font-size: 11px; line-height: 14px; }

@@ -82,6 +82,7 @@ function measure(page) {
       footClipped,
       switchBox: box(sw),
       space: box(space),
+      spaceW: box(space)?.w ?? 0,
       spaceDisabled: space ? space.disabled : null,
       cards,
       visibleCards: cards.filter((c) => c.fully && c.lut !== 'none').length,

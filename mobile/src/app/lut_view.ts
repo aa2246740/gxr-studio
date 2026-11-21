@@ -141,6 +141,7 @@ export class LutView {
     this.head.append(this.headTitle);
     this.pin.append(this.addBtn, this.spaceBtn);
     this.stripWrap.append(this.pin, this.strip);
+    this.panel.append(this.makeModeSwitch());
     this.footEl.hidden = true;
     this.panel.append(this.stripWrap, this.ipadMeta, this.footEl, this.statusEl);
 
@@ -171,6 +172,9 @@ export class LutView {
   setIpadMode(on: boolean): void {
     if (this.ipadMode === on) return;
     this.ipadMode = on;
+    this.modeSwitchEl?.remove();
+    this.modeSwitchEl = on ? null : this.makeModeSwitch();
+    if (this.modeSwitchEl) this.panel.append(this.modeSwitchEl);
     this.stripKeys = [];
     this.build();
   }
@@ -275,12 +279,7 @@ export class LutView {
       }
     } else {
       const scrollLeft = this.strip.scrollLeft;
-      if (this.ipadMode) {
-        this.modeSwitchEl = null;
-        this.strip.replaceChildren();
-      } else {
-        this.strip.replaceChildren(this.makeModeSwitch());
-      }
+      this.strip.replaceChildren();
       this.slots = [];
       this.stripKeys = nextKeys;
 
