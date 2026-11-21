@@ -31,15 +31,16 @@ function measure(page) {
     const foot = document.querySelector('.editor .panel.lut .lut-foot');
     const footBox = foot && !foot.hidden ? box(foot) : null;
     const sw = document.querySelector('.editor .panel.lut .mode-switch');
+    const strip = document.querySelector('.editor .panel.lut .strip');
+    const stripBox = box(strip);
     const cards = [...document.querySelectorAll('.editor .panel.lut .strip .rc')].map((node) => {
       const r = box(node);
       const name = node.querySelector('.nm');
       const nr = name ? box(name) : null;
       const nameBox = nr;
-      const fully =
-        r && deckBox
-          ? r.x >= deckBox.x - 0.5 && r.x + r.w <= deckBox.x + deckBox.w + 0.5
-          : false;
+      const visibleW = r && stripBox ? Math.max(0, Math.min(r.x + r.w, stripBox.x + stripBox.w) - Math.max(r.x, stripBox.x)) : 0;
+      const visibleH = r && stripBox ? Math.max(0, Math.min(r.bottom, stripBox.bottom) - Math.max(r.y, stripBox.y)) : 0;
+      const fully = Boolean(r && visibleW >= r.w - 0.5 && visibleH >= r.h - 0.5);
       const nameClipped = name
         ? name.scrollWidth - name.clientWidth > 1 || (nr && deckBox && (nr.x < deckBox.x - 0.5 || nr.x + nr.w > deckBox.x + deckBox.w + 0.5))
         : false;
@@ -48,6 +49,7 @@ function measure(page) {
         box: r,
         name: name?.textContent ?? '',
         nameBox,
+        visibleW: round(visibleW),
         fully,
         nameClipped,
       };
@@ -84,7 +86,9 @@ function measure(page) {
       space: box(space),
       spaceW: box(space)?.w ?? 0,
       spaceDisabled: space ? space.disabled : null,
+      strip: stripBox,
       cards,
+      imported: cards.filter((c) => c.lut !== 'none').map((c) => ({ w: c.box?.w ?? 0, visibleW: c.visibleW, fully: c.fully })),
       visibleCards: cards.filter((c) => c.fully && c.lut !== 'none').length,
       photo: box(photo),
       band: box(band),

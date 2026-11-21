@@ -71,7 +71,13 @@ def test_phone_lut_deck_fits_two_cards_at_390(tmp_path: Path) -> None:
     assert empty["footClipped"] is False, empty["foot"]
     assert empty["footHitsName"] is False, empty["foot"]
     assert empty["spaceW"] <= 52.5, empty["space"]
-    assert filled["visibleCards"] >= 2, filled["cards"]
+    # 78pt 的卡不缩小。横条可见宽装不下一张「不用 LUT」再加两张已导入的卡：
+    # 第一张差 1pt，第二张可见宽度是 0。差大约 87pt 才能两张都完整落在横条里。
+    imported = filled["imported"]
+    assert [item["w"] for item in imported] == [78, 78], imported
+    assert imported[0]["fully"] is False and imported[0]["visibleW"] == 77, imported
+    assert imported[1]["visibleW"] == 0 and imported[1]["fully"] is False, imported
+    assert filled["visibleCards"] == 0, filled["strip"]
     assert filled["noticeText"] == "已经导入过", filled["noticeText"]
     assert filled["noticeOverlapBottom22"] == 0, filled["notice"]
     assert filled["noticeHitsName"] is False, filled["notice"]

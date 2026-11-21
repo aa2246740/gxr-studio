@@ -23,8 +23,6 @@
 .app[data-layout="phone-portrait"] .lut-strip-wrap,
 .app:not([data-layout]) .recipe-strip-wrap,
 .app:not([data-layout]) .lut-strip-wrap { padding-right: 100px; }
-.app[data-layout="phone-portrait"] .panel.lut .strip > .rc,
-.app:not([data-layout]) .panel.lut .strip > .rc { width: 56px; }
 
 /* LUT 提示贴在缩略图上沿，卡名留在底下 22pt，提示不压到那一行。 */
 .app[data-layout="phone-portrait"] .panel.lut > .lut-err,
