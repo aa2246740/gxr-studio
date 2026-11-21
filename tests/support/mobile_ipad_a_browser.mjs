@@ -19,18 +19,24 @@ verifyPinnedRuntime();
 const RECT_SLOP = 1.0;
 const HIT_MIN = 43.5;
 
+// 主屏幕打开时的安全区：iPad 顶 24（状态栏）底 20（横条）；手机横过来左右各让出刘海 / 灵动岛，底 21。
+// 照片目标照样稿 alt-a-desktop.html 实测：13" 958×636、11" 757×503、竖屏 1008×670、844×390 553×367；
+// 956×440 样稿没画，按「照片铺满整个高度」算（高 = 440 − 21 − 2，宽按照片比例）。
 const TARGETS = [
-  { label: '1366x1024', width: 1366, height: 1024, layout: 'ipad-landscape', ipad: true, wantW: 958, wantH: 636 },
-  { label: '1024x1366', width: 1024, height: 1366, layout: 'ipad-portrait', ipad: true, wantW: 1008, wantH: 670 },
-  { label: '1180x820', width: 1180, height: 820, layout: 'ipad-landscape', ipad: true, wantW: 757, wantH: 503 },
-  { label: '844x390', width: 844, height: 390, layout: 'phone-landscape', ipad: false, wantW: 553, wantH: 367 },
-  { label: '956x440', width: 956, height: 440, layout: 'phone-landscape', ipad: false, wantW: null, wantH: null },
+  { label: '1366x1024', width: 1366, height: 1024, layout: 'ipad-landscape', ipad: true, wantW: 958, wantH: 636, safe: { top: 24, bottom: 20, left: 0, right: 0 }, panelW: 392 },
+  { label: '1024x1366', width: 1024, height: 1366, layout: 'ipad-portrait', ipad: true, wantW: 1008, wantH: 670, safe: { top: 24, bottom: 20, left: 0, right: 0 } },
+  { label: '1180x820', width: 1180, height: 820, layout: 'ipad-landscape', ipad: true, wantW: 757, wantH: 503, safe: { top: 24, bottom: 20, left: 0, right: 0 }, panelW: 360 },
+  { label: '844x390', width: 844, height: 390, layout: 'phone-landscape', ipad: false, wantW: 553, wantH: 367, safe: { top: 0, bottom: 21, left: 47, right: 47 } },
+  { label: '956x440', width: 956, height: 440, layout: 'phone-landscape', ipad: false, wantW: 'fullHeight', wantH: 417, safe: { top: 0, bottom: 21, left: 62, right: 62 } },
 ];
 
+// 手机竖屏：照片矩形必须和 main（6e95983）逐项相同。数值用本驱动的 phoneOnly 模式在 main 上量得。
 const PHONE_PORTRAIT = [
-  { label: '390x844', width: 390, height: 844, safeTop: 47, safeBottom: 34 },
-  { label: '440x956', width: 440, height: 956, safeTop: 62, safeBottom: 34 },
+  { label: '390x844', width: 390, height: 844, safe: { top: 47, bottom: 34, left: 0, right: 0 } },
+  { label: '440x956', width: 440, height: 956, safe: { top: 62, bottom: 34, left: 0, right: 0 } },
+  { label: '390x844-nosafe', width: 390, height: 844, safe: { top: 0, bottom: 0, left: 0, right: 0 } },
 ];
+const MAIN_PHONE_RECTS = manifest.mainPhoneRects ?? null;
 
 const browser = await launchPinnedChromium({
   args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'],
@@ -82,14 +88,12 @@ async function frame(page, n = 2) {
   );
 }
 
-async function setSafeArea(page, topPx, bottomPx) {
-  await page.evaluate(
-    ({ top, bottom }) => {
-      document.documentElement.style.setProperty('--safe-top', `${top}px`);
-      document.documentElement.style.setProperty('--safe-bottom', `${bottom}px`);
-    },
-    { top: topPx, bottom: bottomPx },
-  );
+async function setSafeArea(page, safe) {
+  await page.evaluate((sa) => {
+    for (const side of ['top', 'bottom', 'left', 'right']) {
+      document.documentElement.style.setProperty(`--safe-${side}`, `${sa[side] ?? 0}px`);
+    }
+  }, safe);
   await frame(page, 3);
 }
 
@@ -159,7 +163,16 @@ async function measurePhoto(page, aspect) {
       const r = el.getBoundingClientRect();
       return r.width > 1 && r.height > 1;
     };
+    const rr = (el) => {
+      if (!el || !vis(el)) return null;
+      const b = el.getBoundingClientRect();
+      return { x: Math.round(b.left * 10) / 10, y: Math.round(b.top * 10) / 10, w: Math.round(b.width * 10) / 10, h: Math.round(b.height * 10) / 10 };
+    };
     return {
+      dockRect: rr(dock),
+      bandRect: rr(document.querySelector('.editor > .band')),
+      barRect: rr(document.querySelector('.editor > .toolbar')),
+      navRect: rr(document.querySelector('.editor > .nav')),
       layout: app?.getAttribute('data-layout') ?? null,
       x: Math.round(x * 10) / 10,
       y: Math.round(y * 10) / 10,
@@ -184,6 +197,12 @@ async function checkHit(page, selector, label, { click = false, timeout = 3000 }
       return null;
     }
     check(box.width >= HIT_MIN && box.height >= HIT_MIN, `${label}: hit ${box.width.toFixed(1)}x${box.height.toFixed(1)} < 44pt`);
+    const onTop = await loc.evaluate((node) => {
+      const r = node.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return Boolean(hit && (hit === node || node.contains(hit)));
+    });
+    check(onTop, `${label}: covered at its centre`);
     if (click) {
       await loc.click({ timeout });
       await frame(page, 2);
@@ -193,6 +212,26 @@ async function checkHit(page, selector, label, { click = false, timeout = 3000 }
     check(false, `${label}: unreachable (${err.message.split('\n')[0]})`);
     return null;
   }
+}
+
+// 视觉比 44 小、靠伪元素扩命中区的控件（顶栏 HDR 胶囊）：在以它为中心的 44×44 方框四边各点一下，都要落在它身上。
+async function checkHitArea(page, selector, label) {
+  const res = await page.evaluate((sel) => {
+    const node = [...document.querySelectorAll(sel)].find((n) => n.getBoundingClientRect().width > 0);
+    if (!node) return null;
+    const r = node.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const w = Math.max(44, r.width);
+    const probes = [[cx, cy - 21.5], [cx, cy + 21.5], [cx - w / 2 + 1, cy], [cx + w / 2 - 1, cy]];
+    const ok = probes.every(([x, y]) => {
+      const hit = document.elementFromPoint(x, y);
+      return Boolean(hit && (hit === node || node.contains(hit)));
+    });
+    return { ok, w: Math.round(w * 10) / 10, h: 44 };
+  }, selector);
+  check(Boolean(res?.ok), `${label}: 44pt hit area not covered by the control (${JSON.stringify(res)})`);
+  return res ? { w: res.w, h: res.h } : null;
 }
 
 async function closeTopSheet(page) {
@@ -287,7 +326,7 @@ async function installShareMock(page) {
 
 async function auditLayout(page, session, spec, lAspect, shotDir) {
   await page.setViewportSize({ width: spec.width, height: spec.height });
-  await setSafeArea(page, 0, 0);
+  await setSafeArea(page, spec.safe);
   await openEditorPhoto(page, manifest.landscapeStem);
   await closeTopSheet(page);
 
@@ -302,11 +341,24 @@ async function auditLayout(page, session, spec, lAspect, shotDir) {
   if (!baseM) return;
 
   check(baseM.layout === spec.layout, `${spec.label}: layout=${baseM.layout}, want ${spec.layout}`);
-  if (spec.wantW && spec.wantH) {
-    check(withinPct(baseM.w, spec.wantW), `${spec.label}: width ${baseM.w} not within 2% of ${spec.wantW}`);
-    check(withinPct(baseM.h, spec.wantH), `${spec.label}: height ${baseM.h} not within 2% of ${spec.wantH}`);
-  } else {
-    check(baseM.w >= 550 && baseM.h >= 360, `${spec.label}: rotated phone photo too small (${baseM.w}x${baseM.h})`);
+  const wantH = spec.wantH;
+  const wantW = spec.wantW === 'fullHeight' ? Math.round(wantH * lAspect * 10) / 10 : spec.wantW;
+  check(withinPct(baseM.w, wantW), `${spec.label}: width ${baseM.w} not within 2% of ${wantW}`);
+  check(withinPct(baseM.h, wantH), `${spec.label}: height ${baseM.h} not within 2% of ${wantH}`);
+  if (spec.layout === 'ipad-landscape') {
+    // 样稿骨架：面板在照片右边、工具在面板最下面，配方卡和胶片条横跨整屏宽度、在两者下面。
+    const d = baseM.dockRect;
+    const b = baseM.bandRect;
+    const t = baseM.barRect;
+    check(Boolean(d && Math.abs(d.x) <= 1 && Math.abs(d.w - spec.width) <= 1), `${spec.label}: strips not full width (${JSON.stringify(d)})`);
+    check(Boolean(b && Math.abs(b.w - spec.panelW) <= 1.5), `${spec.label}: panel width ${b?.w} != ${spec.panelW}`);
+    check(Boolean(t && d && Math.abs(t.y + t.h - d.y) <= 1 && t.x >= spec.width - spec.panelW - 1), `${spec.label}: tools not at the panel bottom above the strips`);
+    check(Boolean(d && Math.abs(d.y + d.h - spec.height) <= 1), `${spec.label}: strips do not reach the screen bottom`);
+  } else if (spec.layout === 'phone-landscape') {
+    // 照片避开左边的刘海 / 灵动岛；右边一列让出右安全区和底下横条。
+    check(baseM.x >= spec.safe.left - 0.5, `${spec.label}: photo starts at x=${baseM.x}, under the left safe area ${spec.safe.left}`);
+    const t = baseM.barRect;
+    check(Boolean(t && t.x >= baseM.x + baseM.w - 1), `${spec.label}: tools not in the right column`);
   }
 
   if (spec.ipad) {
@@ -330,10 +382,9 @@ async function auditLayout(page, session, spec, lAspect, shotDir) {
   };
 
   // Screenshot: default Recipe view on this viewport (wait for selected recipe card thumb to paint)
-  if (spec.ipad) {
-    await page.waitForSelector('[data-recipes="1"] .rc.on .th canvas', { timeout: 25_000 }).catch(() => {});
-    await frame(page, 2);
-  }
+  await page.waitForSelector('[data-recipes="1"] .rc.on .th canvas', { timeout: 25_000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+  await frame(page, 2);
   if (spec.label === '1366x1024') await snap(page, shotDir, 'ipad-13-landscape-recipe');
   else if (spec.label === '1024x1366') await snap(page, shotDir, 'ipad-13-portrait');
   else if (spec.label === '1180x820') await snap(page, shotDir, 'ipad-11-landscape');
@@ -358,8 +409,16 @@ async function auditLayout(page, session, spec, lAspect, shotDir) {
   await checkHit(page, '[data-act="recipe-filter"]', `${spec.label} recipe_filter reopen`, { click: true });
   await checkHit(page, '.filter-sheet [data-filter="all"]', `${spec.label} filter all`, { click: true });
 
+  // 顶栏：返回、HDR、⋯
+  hits.nav_back = await checkHit(page, '.editor .nav .nav-back', `${spec.label} nav_back`);
+  hits.nav_hdr = await checkHitArea(page, '.editor .nav [data-act="hdr-toggle"]', `${spec.label} nav_hdr`);
+
   // 4. lut
   hits.lut = await checkHit(page, '[data-mode="lut"]', `${spec.label} lut_tab`, { click: true });
+  if (spec.label === '1366x1024') {
+    await page.waitForTimeout(800);
+    await snap(page, shotDir, 'ipad-13-landscape-lut');
+  }
   await checkHit(page, '[data-act="lut-import"]', `${spec.label} lut_import_hit`);
   const lutCard = page.locator('[data-luts="1"] .rc[data-lut]:not([data-lut="none"])').first();
   if (await lutCard.isVisible().catch(() => false)) {
@@ -389,6 +448,9 @@ async function auditLayout(page, session, spec, lAspect, shotDir) {
     check(adjOverflow.scrollW <= adjOverflow.clientW + 2, `${spec.label}: adjust chips scroll horizontally (${adjOverflow.scrollW} > ${adjOverflow.clientW})`);
     if (spec.label === '1366x1024') await snap(page, shotDir, 'ipad-13-landscape-adjust');
   }
+  if (spec.label === '1180x820') await snap(page, shotDir, 'ipad-11-landscape-adjust');
+  else if (spec.label === '1024x1366') await snap(page, shotDir, 'ipad-13-portrait-adjust');
+  else if (!spec.ipad) await snap(page, shotDir, `phone-${spec.label}-adjust`);
   hits.adjust_10 = await checkHit(page, '.panel.adjust [data-key="exposure_ev"]', `${spec.label} adjust_exposure`, { click: true });
   const sliderLoc = page.locator('.panel.adjust .big input[type="range"]').first();
   const sBox = await sliderLoc.boundingBox();
@@ -434,6 +496,10 @@ async function auditLayout(page, session, spec, lAspect, shotDir) {
     if (spec.label === '1366x1024') await snap(page, shotDir, 'ipad-13-landscape-more');
     hits.frame = await checkHit(page, '.more-panel [data-more="frame"]', `${spec.label} more_frame`, { click: true });
     await trackShift('tools', 'frame');
+    if (spec.label === '1366x1024') {
+      await page.waitForTimeout(800);
+      await snap(page, shotDir, 'ipad-13-landscape-frame');
+    }
     await checkHit(page, '.panel.frame [data-act="more-back"]', `${spec.label} frame_back`, { click: true });
     hits.stamp = await checkHit(page, '.more-panel [data-more="stamp"]', `${spec.label} more_stamp`, { click: true });
     await trackShift('tools', 'stamp');
@@ -493,6 +559,16 @@ async function auditLayout(page, session, spec, lAspect, shotDir) {
   await trackShift('export', 'export-running-or-ready');
   await page.waitForFunction(() => document.querySelector('.pdock')?.dataset.phase === 'ready', null, { timeout: 90_000 });
   await trackShift('export', 'export-ready');
+  // 导出条占着面板的槽时，顶栏、4 个工具、存到相册、直方图开关和「存进相册」都还点得到
+  await checkHit(page, '.pdock [data-act="share"]', `${spec.label} ready share`);
+  await checkHit(page, '.editor .nav [data-act="editor-more"]', `${spec.label} ready editor_more`);
+  for (const tool of ['recipe', 'adjust', 'crop', 'more']) {
+    await checkHit(page, `.toolbar [data-tool="${tool}"]`, `${spec.label} ready tool_${tool}`);
+  }
+  await checkHit(page, '.toolbar [data-act="export"]', `${spec.label} ready save`);
+  if (spec.ipad) await checkHit(page, '.ipad-hist-area [data-act="hist-toggle"]', `${spec.label} ready hist_toggle`);
+  await page.waitForTimeout(600);
+  await snap(page, shotDir, `${spec.ipad ? 'ipad' : 'phone'}-${spec.label}-export-ready`);
   const dismiss = page.locator('.pdock [data-act="dismiss"]').filter({ visible: true }).first();
   if (await dismiss.isVisible().catch(() => false)) {
     await dismiss.click();
@@ -500,10 +576,16 @@ async function auditLayout(page, session, spec, lAspect, shotDir) {
   }
 
   rects[spec.label] = {
+    x: baseM.x,
+    y: baseM.y,
     w: baseM.w,
     h: baseM.h,
-    wantW: spec.wantW,
-    wantH: spec.wantH,
+    wantW,
+    wantH,
+    safe: spec.safe,
+    dock: baseM.dockRect,
+    band: baseM.bandRect,
+    bar: baseM.barRect,
     layout: baseM.layout,
     strips: { dock: baseM.dockVis, recipe: baseM.rstripVis, film: baseM.filmVis },
     maxShift,
@@ -539,7 +621,42 @@ try {
   );
   await frame(page, 3);
 
-  // 打开横图并导入测试 LUT（供全部版式复用）
+  // 手机竖屏先量（不受后面 iPad 操作影响）：照片矩形必须和 main 逐项相同。
+  for (const vp of PHONE_PORTRAIT) {
+    await page.setViewportSize({ width: vp.width, height: vp.height });
+    await setSafeArea(page, vp.safe);
+    await openEditorPhoto(page, manifest.portrait1Stem);
+    const pm = await measurePhoto(page, manifest.portraitAspect);
+    await openEditorPhoto(page, manifest.landscapeStem);
+    const lm = await measurePhoto(page, manifest.landscapeAspect);
+    const pick = (m) => (m ? { x: m.x, y: m.y, w: m.w, h: m.h, band: m.bandRect, bar: m.barRect } : null);
+    phonePortraitRects[vp.label] = { portrait: pick(pm), landscape: pick(lm) };
+    if (manifest.phoneOnly) continue;
+    check(pm?.layout === 'phone-portrait' && !pm?.dockVis, `${vp.label}: phone portrait layout regression`);
+    check(lm?.layout === 'phone-portrait' && !lm?.dockVis, `${vp.label}: phone portrait landscape-photo regression`);
+    const film = await page.locator('.ipad-filmstrip .cell').count();
+    check(film === 0, `${vp.label}: phone portrait built ${film} hidden filmstrip cells`);
+    const want = MAIN_PHONE_RECTS?.[vp.label];
+    check(Boolean(want), `${vp.label}: no main reference rects in manifest`);
+    for (const kind of ['portrait', 'landscape']) {
+      const got = phonePortraitRects[vp.label][kind];
+      const ref = want?.[kind];
+      if (!ref) continue;
+      for (const key of ['x', 'y', 'w', 'h']) {
+        check(Math.abs((got?.[key] ?? -1) - ref[key]) <= 0.5, `${vp.label} ${kind} photo ${key} ${got?.[key]} != main ${ref[key]}`);
+      }
+      for (const part of ['band', 'bar']) {
+        for (const key of ['x', 'y', 'w', 'h']) {
+          check(Math.abs((got?.[part]?.[key] ?? -1) - (ref[part]?.[key] ?? -2)) <= 0.5, `${vp.label} ${kind} ${part} ${key} ${got?.[part]?.[key]} != main ${ref[part]?.[key]}`);
+        }
+      }
+    }
+  }
+  if (manifest.phoneOnly) throw new Error('phoneOnly');
+
+  // iPad：打开横图并导入测试 LUT（供全部版式复用）
+  await page.setViewportSize({ width: 1366, height: 1024 });
+  await setSafeArea(page, TARGETS[0].safe);
   await openEditorPhoto(page, manifest.landscapeStem);
   await checkHit(page, '[data-mode="lut"]', 'lut_init_tab', { click: true });
   await page.locator('input.lutpick').setInputFiles([manifest.lut]);
@@ -547,7 +664,7 @@ try {
   await closeTopSheet(page);
   await checkHit(page, '[data-mode="recipe"]', 'lut_init_back', { click: true });
 
-  // iPad 直方图默认开 & 记住关（跨切图 + 跨刷新）
+  // iPad 直方图默认开、关了记住（跨切图）
   const histDefaultOn = await page.locator('.ipad-hist-slot .hist').isVisible();
   check(histDefaultOn, 'iPad histogram must default ON');
   await checkHit(page, '.ipad-hist-area [data-act="hist-toggle"]', 'ipad_hist_off', { click: true });
@@ -556,58 +673,50 @@ try {
   const savedOff = await page.evaluate(() => localStorage.getItem('gxr.mobile.ipad_hist'));
   check(savedOff === '0', `ipad_hist localStorage is ${savedOff}, want 0`);
 
-  // 胶片条切照片，验证关闭记忆保留
+  // 胶片条切照片，关闭记忆保留
   const otherThumb = page.locator('.ipad-filmstrip .cell:not(.cur)').first();
   await checkHit(page, otherThumb, 'filmstrip_switch', { click: true });
   await frame(page, 4);
+  const switched = await page.locator('.screen.editor').getAttribute('data-photo');
+  check(switched !== manifest.landscapeStem, 'filmstrip tap did not switch the photo');
   const histStillOff = await page.locator('.ipad-hist-slot .hist').isVisible();
   check(!histStillOff, 'iPad histogram OFF was not remembered across photo switch');
-  // 重新打开供截图与后续验收
   await checkHit(page, '.ipad-hist-area [data-act="hist-toggle"]', 'ipad_hist_on', { click: true });
   const histBackOn = await page.locator('.ipad-hist-slot .hist').isVisible();
   check(histBackOn, 'iPad histogram did not turn back ON');
   behaviour.ipadHist = { defaultOn: histDefaultOn, offAfterToggle: !histAfterOff, rememberedAcrossSwitch: !histStillOff, restoredOn: histBackOn };
 
-  // 切回横图并运行全部 5 个新视口验收
+  // 5 个新视口
   await openEditorPhoto(page, manifest.landscapeStem);
   for (const spec of TARGETS) {
     await auditLayout(page, session, spec, manifest.landscapeAspect, manifest.screenshotsDir);
   }
 
-  // iPad 点照片收起面板 + 双底条，仅留底栏，且跨切图记住
+  // iPad 点照片收起面板和两条，只留底栏，并记住
   await page.setViewportSize({ width: 1366, height: 1024 });
-  await setSafeArea(page, 0, 0);
+  await setSafeArea(page, TARGETS[0].safe);
   await openEditorPhoto(page, manifest.landscapeStem);
   await tapStageCenter(page, session);
   const colM = await measurePhoto(page, manifest.landscapeAspect);
   check(colM?.collapsed === '1', 'iPad tap photo did not collapse');
   check(!colM?.dockVis && !colM?.rstripVis && !colM?.filmVis, 'iPad collapse did not hide bottom strips');
+  check(!colM?.bandRect, 'iPad collapse did not hide the panel');
   const barVis = await page.locator('.editor .toolbar').isVisible();
   check(barVis, 'iPad collapse must keep bottom toolbar visible');
+  for (const tool of ['recipe', 'adjust', 'crop', 'more']) {
+    await checkHit(page, `.toolbar [data-tool="${tool}"]`, `collapsed tool_${tool}`);
+  }
+  await checkHit(page, '.toolbar [data-act="export"]', 'collapsed save');
   const colStored = await page.evaluate(() => localStorage.getItem('gxr.mobile.band_collapsed'));
   check(colStored === '1', `band_collapsed localStorage is ${colStored}, want 1`);
   await snap(page, manifest.screenshotsDir, 'ipad-13-landscape-collapsed');
-  // 点底栏按钮恢复
+  await openEditorPhoto(page, manifest.portrait1Stem);
+  const colNext = await measurePhoto(page, manifest.portraitAspect);
+  check(colNext?.collapsed === '1', 'iPad collapsed state not remembered on the next photo');
   await checkHit(page, '.toolbar [data-tool="recipe"]', 'ipad_uncollapse_via_bar', { click: true });
-  const uncolM = await measurePhoto(page, manifest.landscapeAspect);
+  const uncolM = await measurePhoto(page, manifest.portraitAspect);
   check(uncolM?.collapsed === '0' && uncolM?.dockVis, 'iPad toolbar tap did not restore panel + strips');
-  behaviour.ipadCollapse = { collapsed: colM?.collapsed === '1', stripsHidden: !colM?.dockVis, barVis, stored: colStored === '1', restored: uncolM?.collapsed === '0' };
-
-  // 手机竖屏基线回归检查（390x844 与 440x956）
-  for (const vp of PHONE_PORTRAIT) {
-    await page.setViewportSize({ width: vp.width, height: vp.height });
-    await setSafeArea(page, vp.safeTop, vp.safeBottom);
-    await openEditorPhoto(page, manifest.portrait1Stem);
-    const pm = await measurePhoto(page, manifest.portraitAspect);
-    await openEditorPhoto(page, manifest.landscapeStem);
-    const lm = await measurePhoto(page, manifest.landscapeAspect);
-    check(pm?.layout === 'phone-portrait' && !pm?.dockVis, `${vp.label}: phone portrait layout regression`);
-    check(lm?.layout === 'phone-portrait' && !lm?.dockVis, `${vp.label}: phone portrait landscape-photo regression`);
-    phonePortraitRects[vp.label] = {
-      portrait: pm ? { w: pm.w, h: pm.h } : null,
-      landscape: lm ? { w: lm.w, h: lm.h } : null,
-    };
-  }
+  behaviour.ipadCollapse = { collapsed: colM?.collapsed === '1', stripsHidden: !colM?.dockVis, barVis, stored: colStored === '1', rememberedNext: colNext?.collapsed === '1', restored: uncolM?.collapsed === '0', collapsedPhoto: colM ? { w: colM.w, h: colM.h } : null };
 } catch (err) {
   const diag = await page
     .evaluate(() => ({
@@ -619,7 +728,9 @@ try {
       datBusy: Boolean(window.__gxrBook?.datBusy),
     }))
     .catch(() => null);
-  failures.push(redact(`${err?.stack || err?.message || String(err)} diag=${JSON.stringify(diag)}`));
+  if (!(manifest.phoneOnly && err?.message === 'phoneOnly')) {
+    failures.push(redact(`${err?.stack || err?.message || String(err)} diag=${JSON.stringify(diag)}`));
+  }
 } finally {
   await browser.close();
 }

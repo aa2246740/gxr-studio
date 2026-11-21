@@ -1,6 +1,10 @@
 """iPad 方案 A + 手机横屏真实浏览器验收测试（`browser_serial`）。
 
 只用本地 card250 实拍照片和合成校准包；stdout 只打印结构化度量与点击路径，绝不打印照片名、拍摄时间或 EXIF。
+
+`MAIN_PHONE_RECTS` 是 main（6e95983）上量得的手机竖屏照片、带子和底栏矩形：用
+`GXR_IPAD_A_PHONE_ONLY=1 GXR_IPAD_A_MOBILE_DIR=<main 检出>/mobile GXR_IPAD_A_REPORT=<json>` 跑本测试得到。
+同样把 `GXR_IPAD_A_MOBILE_DIR` 指到 main，就是「在旧代码上必须失败」的反证。
 """
 
 from __future__ import annotations
@@ -30,6 +34,63 @@ pytestmark = pytest.mark.browser_serial
 REPO = Path(__file__).resolve().parents[1]
 DRIVER = REPO / "tests" / "support" / "mobile_ipad_a_browser.mjs"
 FORBIDDEN_PORTS = {60887, 18772, 18801, 18802, 18803, 5290}
+
+MAIN_PHONE_RECTS: dict[str, Any] = {
+    "390x844": {
+        "portrait": {
+            "x": 17.5,
+            "y": 91.3,
+            "w": 355,
+            "h": 534.5,
+            "band": {"x": 0, "y": 626, "w": 390, "h": 128},
+            "bar": {"x": 0, "y": 754, "w": 390, "h": 90},
+        },
+        "landscape": {
+            "x": 0,
+            "y": 229,
+            "w": 390,
+            "h": 259,
+            "band": {"x": 0, "y": 626, "w": 390, "h": 128},
+            "bar": {"x": 0, "y": 754, "w": 390, "h": 90},
+        },
+    },
+    "440x956": {
+        "portrait": {
+            "x": 10.1,
+            "y": 106,
+            "w": 419.8,
+            "h": 632,
+            "band": {"x": 0, "y": 738, "w": 440, "h": 128},
+            "bar": {"x": 0, "y": 866, "w": 440, "h": 90},
+        },
+        "landscape": {
+            "x": 0.2,
+            "y": 276,
+            "w": 439.6,
+            "h": 292,
+            "band": {"x": 0, "y": 738, "w": 440, "h": 128},
+            "bar": {"x": 0, "y": 866, "w": 440, "h": 90},
+        },
+    },
+    "390x844-nosafe": {
+        "portrait": {
+            "x": 0.1,
+            "y": 58.5,
+            "w": 389.9,
+            "h": 587,
+            "band": {"x": 0, "y": 660, "w": 390, "h": 128},
+            "bar": {"x": 0, "y": 788, "w": 390, "h": 56},
+        },
+        "landscape": {
+            "x": 0,
+            "y": 222.5,
+            "w": 390,
+            "h": 259,
+            "band": {"x": 0, "y": 660, "w": 390, "h": 128},
+            "bar": {"x": 0, "y": 788, "w": 390, "h": 56},
+        },
+    },
+}
 
 
 def _port() -> int:
@@ -113,6 +174,8 @@ def test_mobile_ipad_a_layouts_reachability_and_behaviour(tmp_path: Path) -> Non
         "landscapeAspect": _aspect(jpg_l1),
         "portraitAspect": _aspect(jpg_p1),
         "screenshotsDir": os.environ.get("GXR_IPAD_A_SCREENSHOTS", ""),
+        "phoneOnly": os.environ.get("GXR_IPAD_A_PHONE_ONLY") == "1",
+        "mainPhoneRects": MAIN_PHONE_RECTS,
     }
     manifest_path = tmp_path / "ipad-a-manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -127,7 +190,7 @@ def test_mobile_ipad_a_layouts_reachability_and_behaviour(tmp_path: Path) -> Non
         with log.open("w", encoding="utf-8") as stream:
             vite = subprocess.Popen(
                 ["node", str(MODULES / "vite" / "bin" / "vite.js"), "--host", "127.0.0.1", "--port", str(port), "--strictPort"],
-                cwd=REPO / "mobile",
+                cwd=Path(os.environ.get("GXR_IPAD_A_MOBILE_DIR", str(REPO / "mobile"))),
                 env=env,
                 stdout=stream,
                 stderr=subprocess.STDOUT,

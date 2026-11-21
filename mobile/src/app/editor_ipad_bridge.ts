@@ -170,6 +170,7 @@ export function createEditorIpadBridge(opts: {
       mountHistForLayout(s.mode, s.histOpen, histArea, s.stage, s.histWidget);
       syncStripsForLayout(s.mode, s.recipeSub, dock, s.recipes, s.luts);
       dock.syncSub(s.recipeSub, s.lutActive);
+      dock.setActive(isIpadLayout(s.mode));
     },
     destroy: () => {
       watch.destroy();

@@ -82,12 +82,9 @@ export class IpadDock {
     this.lutBtn.classList.toggle('dot', lutActive);
   }
 
-  setCurrentPhoto(photoId: string): void {
-    this.filmstrip.setCurrent(photoId);
-  }
-
-  refreshFilmstrip(): void {
-    this.filmstrip.refresh();
+  /** iPad 版式才画胶片条；手机上这一块整个隐藏，也不建缩略图。 */
+  setActive(on: boolean): void {
+    this.filmstrip.setActive(on);
   }
 
   destroy(): void {

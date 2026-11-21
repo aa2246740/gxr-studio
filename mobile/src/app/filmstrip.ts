@@ -34,9 +34,11 @@ export class FilmstripView {
   private readonly api: AppApi;
   private readonly root: HTMLElement;
   private currentId: string;
-  private cells = new Map<string, { btn: HTMLButtonElement; canvas: HTMLCanvasElement | null; drawn: ImageBitmap | null }>();
+  private cells = new Map<string, { btn: HTMLButtonElement; canvas: HTMLCanvasElement | null }>();
   private scrollRaf = 0;
+  private built = false;
 
+  /** 先不画：只有 iPad 版式才 setActive(true)，手机竖屏和横屏不为它建任何缩略图。 */
   constructor(api: AppApi, currentId: string) {
     this.api = api;
     this.currentId = currentId;
@@ -44,29 +46,33 @@ export class FilmstripView {
     this.root.dataset.filmstrip = '1';
     this.root.setAttribute('role', 'region');
     this.root.setAttribute('aria-label', '照片胶片条');
-    this.render();
+  }
+
+  /** 进入 iPad 版式时画一次；离开时放掉画布。 */
+  setActive(on: boolean): void {
+    if (on === this.built) {
+      if (on) this.scheduleCenter();
+      return;
+    }
+    if (on) {
+      this.built = true;
+      this.render();
+    } else {
+      this.built = false;
+      this.clear();
+    }
   }
 
   el(): HTMLElement {
     return this.root;
   }
 
-  setCurrent(photoId: string): void {
-    this.currentId = photoId;
-    for (const [id, entry] of this.cells) {
-      const active = id === photoId;
-      entry.btn.classList.toggle('cur', active);
-      if (active) entry.btn.setAttribute('aria-current', 'true');
-      else entry.btn.removeAttribute('aria-current');
-    }
-    this.scheduleCenter();
-  }
-
-  refresh(): void {
-    this.render();
-  }
-
   destroy(): void {
+    this.built = false;
+    this.clear();
+  }
+
+  private clear(): void {
     if (this.scrollRaf) {
       cancelAnimationFrame(this.scrollRaf);
       this.scrollRaf = 0;
@@ -89,11 +95,7 @@ export class FilmstripView {
     const indexById = new Map<string, number>();
     photos.forEach((p, idx) => indexById.set(p.id, idx + 1));
 
-    for (const entry of this.cells.values()) {
-      if (entry.canvas) entry.canvas.width = entry.canvas.height = 0;
-    }
-    this.cells.clear();
-    this.root.replaceChildren();
+    this.clear();
 
     let firstHeader = true;
     for (const item of entries) {
@@ -124,7 +126,7 @@ export class FilmstripView {
       btn.addEventListener('click', () => {
         if (id !== this.currentId) this.api.open(id);
       });
-      this.cells.set(id, { btn, canvas, drawn: photo.bitmap });
+      this.cells.set(id, { btn, canvas });
       this.root.append(btn);
     }
     this.scheduleCenter();
