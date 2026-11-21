@@ -341,6 +341,8 @@ export class LutView {
         this.strip.append(addCard);
       }
       if (scrollLeft > 0) this.strip.scrollLeft = scrollLeft;
+      const rebuiltLut = this.modeSwitchEl?.querySelector('[data-mode="lut"]');
+      if (rebuiltLut) rebuiltLut.classList.toggle('dot', selectedId !== null);
     }
 
     const emptyLibrary = !this.ipadMode && !list.length && !deleted;
