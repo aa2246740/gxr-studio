@@ -9,6 +9,7 @@
 
 pub mod hdr_track;
 pub mod meta;
+pub mod off_image;
 pub mod pipeline;
 pub mod source;
 
