@@ -89,6 +89,8 @@ def test_phone_lut_deck_fits_two_cards_at_390(tmp_path: Path) -> None:
     assert [item["w"] for item in sel_imported] == [78, 78], sel_imported
     assert selected["visibleCards"] >= 2, (selected["strip"], sel_imported)
     assert selected_menu["spaceItem"]["disabled"] is False and selected_menu["spaceItem"]["val"] == "sRGB · 文件已写明", selected_menu
+    assert got["dotSelected"] is True, got
+    assert got["dotAfterRebuild"] is False, got
     for btn in filled["switchBtns"]:
         assert btn and btn["w"] >= 43.5 and btn["h"] >= 43.5, filled["switchBtns"]
     assert filled["noticeText"] == "已经导入过", filled["noticeText"]

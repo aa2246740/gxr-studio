@@ -267,8 +267,6 @@ export class LutView {
       this.slots.length === 1 + list.length;
 
     if (sameStrip) {
-      const lutModeBtn = this.modeSwitchEl?.querySelector('[data-mode="lut"]');
-      if (lutModeBtn) lutModeBtn.classList.toggle('dot', selectedId !== null);
       this.syncMark(this.slots[0].node, this.slots[0].thumb, selectedId === null);
       for (let i = 0; i < list.length; i += 1) {
         const record = list[i];
@@ -345,9 +343,10 @@ export class LutView {
         this.strip.append(addCard);
       }
       if (scrollLeft > 0) this.strip.scrollLeft = scrollLeft;
-      const rebuiltLut = this.modeSwitchEl?.querySelector('[data-mode="lut"]');
-      if (rebuiltLut) rebuiltLut.classList.toggle('dot', selectedId !== null);
     }
+
+    const lutModeBtn = this.modeSwitchEl?.querySelector('[data-mode="lut"]');
+    if (lutModeBtn) lutModeBtn.classList.toggle('dot', selectedId !== null);
 
     const emptyLibrary = !this.ipadMode && !list.length && !deleted;
     this.footEl.hidden = !emptyLibrary;

@@ -134,7 +134,19 @@ async function probePinMenu(page) {
   return items;
 }
 
-const out = { error: null, empty: null, emptyMenu: null, filled: null, selected: null, selectedMenu: null, photo: null, band: null, bar: null };
+const out = {
+  error: null,
+  empty: null,
+  emptyMenu: null,
+  filled: null,
+  selected: null,
+  selectedMenu: null,
+  dotSelected: null,
+  dotAfterRebuild: null,
+  photo: null,
+  band: null,
+  bar: null,
+};
 
 try {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, hasTouch: true, isMobile: true });
@@ -188,6 +200,21 @@ try {
   await page.waitForSelector('.editor .panel.lut .strip .rc.on:not([data-lut="none"])', { timeout: 10_000 });
   out.selected = await measure(page);
   out.selectedMenu = await probePinMenu(page);
+  const selectedId = await page.locator('.editor .panel.lut .strip .rc.on:not([data-lut="none"])').getAttribute('data-lut');
+  out.dotSelected = await page.evaluate(() => Boolean(document.querySelector('.editor .panel.lut .mode-switch [data-mode="lut"].dot')));
+
+  // F3：删掉选中中的 LUT 产生 deleted 卡，再点「不用 LUT」触发整条重建，切换键 LUT 蓝点必须同步熄灭。
+  await page.evaluate((id) => window.__gxrLutBook.removeChecked(id), selectedId);
+  await page.waitForSelector('.editor .panel.lut .strip .rc[data-lut="deleted"]', { timeout: 10_000 });
+  await page.locator('.editor .panel.lut .strip .rc[data-lut="none"]').click();
+  await page.waitForFunction(
+    () =>
+      !document.querySelector('.editor .panel.lut .strip .rc[data-lut="deleted"]') &&
+      Boolean(document.querySelector('.editor .panel.lut .strip .rc[data-lut="none"].on')),
+    null,
+    { timeout: 10_000 },
+  );
+  out.dotAfterRebuild = await page.evaluate(() => Boolean(document.querySelector('.editor .panel.lut .mode-switch [data-mode="lut"].dot')));
 
   await page.locator('.editor .panel.lut .mode-switch [data-mode="recipe"]').click();
   await page.waitForSelector('.panel.recipe:not([hidden]) .mode-switch', { timeout: 10_000 });
