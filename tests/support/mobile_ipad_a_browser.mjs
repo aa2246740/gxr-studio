@@ -734,6 +734,18 @@ try {
   const uncolM = await measurePhoto(page, manifest.portraitAspect);
   check(uncolM?.collapsed === '0' && uncolM?.dockVis, 'iPad toolbar tap did not restore panel + strips');
   behaviour.ipadCollapse = { collapsed: colM?.collapsed === '1', stripsHidden: !colM?.dockVis, barVis, stored: colStored === '1', rememberedNext: colNext?.collapsed === '1', restored: uncolM?.collapsed === '0', collapsedPhoto: colM ? { w: colM.w, h: colM.h } : null };
+
+  // 回到图库后转屏：data-layout 仍跟着窗口走（Grok r1 P3：监听不能随编辑器一起销毁）
+  await page.locator('.editor .nav .nb').first().click();
+  await page.waitForSelector('[data-screen="grid"]', { timeout: 10_000 });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'phone-portrait', null, { timeout: 5_000 }).catch(() => {});
+  const gridPhone = await page.evaluate(() => document.querySelector('.app')?.getAttribute('data-layout') ?? null);
+  await page.setViewportSize({ width: 1366, height: 1024 });
+  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'ipad-landscape', null, { timeout: 5_000 }).catch(() => {});
+  const gridIpad = await page.evaluate(() => document.querySelector('.app')?.getAttribute('data-layout') ?? null);
+  check(gridPhone === 'phone-portrait' && gridIpad === 'ipad-landscape', `data-layout on the grid did not follow the window: ${gridPhone} -> ${gridIpad}`);
+  behaviour.gridLayoutFollows = { gridPhone, gridIpad };
 } catch (err) {
   const diag = await page
     .evaluate(() => ({

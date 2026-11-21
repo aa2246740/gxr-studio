@@ -23,6 +23,7 @@ import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
 import type { ThumbFail, ThumbOk } from '../workers/thumb';
 import './shell.css';
+import { watchViewportLayout } from './layout';
 
 type Reply = ThumbOk | ThumbFail;
 
@@ -82,6 +83,7 @@ class App implements AppApi {
     private readonly pageErrors: string[],
   ) {
     this.exporter = new ExportFlow(shell, this, perf);
+    watchViewportLayout(shell, () => {}); // data-layout 跟着窗口走，图库和开始页上也一样（不只编辑器里）
   }
 
   async start(engine: Engine | null): Promise<void> {
