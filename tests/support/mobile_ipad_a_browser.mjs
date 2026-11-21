@@ -427,7 +427,7 @@ async function auditLayout(page, session, spec, lAspect, shotDir) {
       await checkHit(page, '.lut-space-sheet [data-space="srgb"]', `${spec.label} lut_space_pick`, { click: true });
       await closeTopSheet(page);
     }
-    await checkHit(page, '[data-act="lut-space"]', `${spec.label} lut_space_hit`);
+    await checkHit(page, '[data-act="lut-space"], [data-act="lut-space-panel"]', `${spec.label} lut_space_hit`);
     await checkHit(page, '[data-luts="1"] .rc[data-lut="none"]', `${spec.label} lut_none`, { click: true });
   }
   await checkHit(page, '[data-mode="recipe"]', `${spec.label} back_to_recipe_sub`, { click: true });
@@ -462,7 +462,7 @@ async function auditLayout(page, session, spec, lAspect, shotDir) {
     await page.mouse.up();
     await trackShift('drag', 'slider-drag-end');
   }
-  hits.adjust_reset = await checkHit(page, '.panel.adjust [data-act="adjust-reset"]', `${spec.label} adjust_reset`, { click: true });
+  hits.adjust_reset = await checkHit(page, '.panel.adjust [data-act="adjust-reset"], .panel.adjust [data-act="adjust-reset-all"]', `${spec.label} adjust_reset`, { click: true });
 
   hits.histogram = await checkHit(page, '[data-act="hist-toggle"]', `${spec.label} hist_toggle`, { click: true });
   // Restore histogram state
@@ -636,6 +636,14 @@ try {
     check(lm?.layout === 'phone-portrait' && !lm?.dockVis, `${vp.label}: phone portrait landscape-photo regression`);
     const film = await page.locator('.ipad-filmstrip .cell').count();
     check(film === 0, `${vp.label}: phone portrait built ${film} hidden filmstrip cells`);
+    // 手机竖屏的 DOM 里不多出 iPad 的块，也不多出同名的隐藏控件（旧测试按这些选择器严格定位）
+    const extra = await page.evaluate(() => ({
+      ipadNodes: document.querySelectorAll('.editor .ipad-dock, .editor .ipad-hist-area').length,
+      dup: ['[data-act="adjust-reset"]', '[data-act="lut-space"]', '[data-act="recipe-filter"]', '[data-act="hist-toggle"]', '.crop-angle', '.crop-size-line']
+        .map((sel) => [sel, document.querySelectorAll(`.editor ${sel}`).length])
+        .filter(([, count]) => count > 1),
+    }));
+    check(extra.ipadNodes === 0 && extra.dup.length === 0, `${vp.label}: phone portrait DOM has iPad extras ${JSON.stringify(extra)}`);
     const want = MAIN_PHONE_RECTS?.[vp.label];
     check(Boolean(want), `${vp.label}: no main reference rects in manifest`);
     for (const kind of ['portrait', 'landscape']) {

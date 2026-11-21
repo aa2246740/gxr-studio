@@ -128,7 +128,7 @@ export class LutView {
 
     const metaHd = el('div', 'rmeta');
     metaHd.append(this.ipadName);
-    this.ipadSpaceBtn.dataset.act = 'lut-space';
+    this.ipadSpaceBtn.dataset.act = 'lut-space-panel';
     this.ipadSpaceBtn.append(el('span', 'grow', '输入色彩空间'), this.ipadSpaceVal);
     this.ipadSpaceBtn.addEventListener('click', openSelectedSpace);
     this.ipadAddBtn.dataset.act = 'lut-import-panel';

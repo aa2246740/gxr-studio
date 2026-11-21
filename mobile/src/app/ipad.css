@@ -247,9 +247,11 @@
 .app[data-layout="phone-landscape"] .panel.recipe .knob-chips { flex-wrap: wrap; overflow: visible; }
 .app[data-layout="phone-landscape"] .panel.recipe .knobs { margin-top: 0; padding: 0; height: auto; }
 .app[data-layout="phone-landscape"] .panel.adjust { padding: 8px; gap: 6px; }
-.app[data-layout="phone-landscape"] .panel.adjust .adjust-row { height: auto; padding: 0; align-items: flex-start; }
-.app[data-layout="phone-landscape"] .panel.adjust .adjust-row .chips { flex-wrap: wrap; padding: 0; gap: 5px; overflow: visible; }
-.app[data-layout="phone-landscape"] .panel.adjust .adjust-row .chip { height: 44px; border-radius: 22px; padding: 0 10px; font-size: 13px; }
+/* 一列太窄，参数名要排好几行：滑块放最上面，选完参数不用往下翻就能拖 */
+.app[data-layout="phone-landscape"] .panel.adjust .big { order: -1; }
+.app[data-layout="phone-landscape"] .panel.adjust .adjust-row { height: auto; padding: 0; align-items: flex-start; flex-wrap: wrap; gap: 5px; }
+.app[data-layout="phone-landscape"] .panel.adjust .adjust-row .chips { flex: 1 1 100%; flex-wrap: wrap; padding: 0; gap: 5px; overflow: visible; }
+.app[data-layout="phone-landscape"] .panel.adjust .adjust-row .chip { height: 44px; border-radius: 22px; padding: 0 9px; font-size: 13px; }
 .app[data-layout="phone-landscape"] .panel.adjust .adjust-row .chip.reset-chip { display: none; }
 .app[data-layout="phone-landscape"] .adj-l1 { display: flex; align-items: baseline; justify-content: space-between; }
 .app[data-layout="phone-landscape"] .adj-l1 .val { color: var(--accent-text); }

@@ -183,7 +183,7 @@ export class AdjustView {
 
     const hintRow = el('div', 'hint-row adj-hint');
     const hintReset = button('fbtn', '全部重置');
-    hintReset.dataset.act = 'adjust-reset';
+    hintReset.dataset.act = 'adjust-reset-all';
     hintReset.addEventListener('click', () => this.resetAll());
     hintRow.append(el('span', 'faint', '点两下圆点回到 0'), hintReset);
 

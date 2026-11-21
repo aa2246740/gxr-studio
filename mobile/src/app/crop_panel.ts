@@ -68,7 +68,7 @@ export class CropPanel {
   private readonly guideText = el('span', 'guide-txt', '参考线');
   private readonly straightenBox = el('div', 'pad straighten');
   private readonly angleVal = el('span', 'crop-angle num', '0.0°');
-  private readonly inlineAngle = el('span', 'crop-angle num crop-inline-angle', '0.0°');
+  private readonly inlineAngle = el('span', 'num crop-inline-angle', '0.0°');
   private readonly ruler = el('div', 'ruler');
   private readonly tape = el('div', 'ruler-tape');
   private readonly sizeLine = el('span', 'dim small num crop-size-line', '');

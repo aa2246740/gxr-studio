@@ -117,11 +117,29 @@ export function syncStripsForLayout(
   }
 }
 
+/**
+ * iPad 才有的两块（面板顶上的直方图槽、照片下面的两条）只在 iPad 版式时挂进 DOM，
+ * 手机上整个摘掉：手机竖屏的 DOM 和以前一样，选择器也不会多出一份同名的隐藏控件。
+ */
+export function attachIpadNodes(
+  ipad: boolean,
+  histRoot: HTMLElement,
+  band: HTMLElement | null,
+  dock: HTMLElement,
+  screen: HTMLElement | null,
+): void {
+  if (!ipad || !band || !screen) {
+    histRoot.remove();
+    dock.remove();
+    return;
+  }
+  if (histRoot.parentElement !== band) band.insertBefore(histRoot, band.querySelector(':scope > .band-body'));
+  if (dock.parentElement !== screen) screen.append(dock);
+}
+
 export interface EditorIpadBridge {
   mode(): LayoutMode;
   isIpad(): boolean;
-  dockEl(): HTMLElement;
-  histAreaEl(): HTMLElement;
   morePanelEl(): HTMLElement;
   refreshMore(photo: Photo): void;
   syncHistUi(open: boolean): void;
@@ -131,6 +149,7 @@ export interface EditorIpadBridge {
     histOpen: boolean;
     recipeSub: 'recipe' | 'lut';
     lutActive: boolean;
+    band: HTMLElement | null;
     stage: HTMLElement | null;
     histWidget: HistWidget | null;
     recipes: RecipeView | null;
@@ -160,13 +179,12 @@ export function createEditorIpadBridge(opts: {
   return {
     mode: () => watch.mode(),
     isIpad: () => isIpadLayout(watch.mode()),
-    dockEl: () => dock.el(),
-    histAreaEl: () => histArea.root,
     morePanelEl: () => morePanel.panelEl(),
     refreshMore: (photo) => morePanel.refresh(photo),
     syncHistUi: (open) => histArea.sync(open),
     syncSub: (sub, lutActive) => dock.syncSub(sub, lutActive),
     apply: (s) => {
+      attachIpadNodes(isIpadLayout(s.mode), histArea.root, s.band, dock.el(), s.stage?.parentElement ?? null);
       mountHistForLayout(s.mode, s.histOpen, histArea, s.stage, s.histWidget);
       syncStripsForLayout(s.mode, s.recipeSub, dock, s.recipes, s.luts);
       dock.syncSub(s.recipeSub, s.lutActive);
@@ -175,6 +193,8 @@ export function createEditorIpadBridge(opts: {
     destroy: () => {
       watch.destroy();
       dock.destroy();
+      dock.el().remove();
+      histArea.root.remove();
     },
   };
 }

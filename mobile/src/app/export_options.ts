@@ -110,7 +110,7 @@ export function mountExportSheet(
 
   const head = el('div', 'row');
   const cancel = button('nb', isIpadPopover ? '好' : '取消');
-  cancel.dataset.act = 'close';
+  if (isIpadPopover) cancel.dataset.act = 'close';
   cancel.addEventListener('click', () => host.onClose());
   head.append(el('h2', '', opts.title ?? `导出 ${n} 张`), cancel);
 

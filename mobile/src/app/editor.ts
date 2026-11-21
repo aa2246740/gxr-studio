@@ -434,7 +434,6 @@ export class EditorView {
       onSubChange: (sub) => this.setRecipeSub(sub),
       onRecipeFilter: () => this.recipes?.openFilter(),
     });
-    band.mountHistArea(this.ipad.histAreaEl());
 
     const recipeSlot = el('div', 'band-slot');
     this.luts.panelEl().hidden = true;
@@ -463,7 +462,7 @@ export class EditorView {
     screen.dataset.collapsed = band.isCollapsed() ? '1' : '0';
     this.updateEditedDots();
 
-    screen.append(nav, stage, band.el(), bar.el(), this.ipad.dockEl());
+    screen.append(nav, stage, band.el(), bar.el());
     this.host.append(screen);
     this.applyLayout(this.ipad.mode(), true);
     syncExportDock(this.shell);
@@ -491,10 +490,7 @@ export class EditorView {
       this.histOpen = nowIpad ? loadIpadHist() : false;
       if (!nowIpad && this.activeTool === 'more') this.selectBandTool('recipe', false);
     }
-    this.ipad?.apply({
-      mode, histOpen: this.histOpen, recipeSub: this.recipeSub, lutActive: this.photo?.lut !== null,
-      stage: this.stage, histWidget: this.histWidget, recipes: this.recipes, luts: this.luts,
-    });
+    this.syncIpad(mode, this.recipeSub);
     this.adjust?.syncHistBtn();
     if (this.histOpen) this.requestHist();
     else { this.histAgain = false; this.cancelHistRetry(); }
@@ -562,8 +558,12 @@ export class EditorView {
       this.luts.headEl().hidden = sub !== 'lut';
       if (sub === 'lut') this.luts.tabOpened();
     }
+    this.syncIpad(this.layoutMode, sub);
+  }
+
+  private syncIpad(mode: LayoutMode, recipeSub: 'recipe' | 'lut'): void {
     this.ipad?.apply({
-      mode: this.layoutMode, histOpen: this.histOpen, recipeSub: sub, lutActive: this.photo?.lut !== null,
+      mode, histOpen: this.histOpen, recipeSub, lutActive: this.photo?.lut !== null, band: this.band?.el() ?? null,
       stage: this.stage, histWidget: this.histWidget, recipes: this.recipes, luts: this.luts,
     });
   }
