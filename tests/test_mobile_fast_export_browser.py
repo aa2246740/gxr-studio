@@ -149,15 +149,15 @@ def test_mobile_fast_export_acceptance(tmp_path: Path) -> None:
     check(hdr["jpgHdrToast"] == "HDR 需要 RAW 文件", "tapping disabled HDR shows reason text")
     check(hdr["diptychHdrDisabled"] is True and hdr["diptychHdrReason"] == "HDR 需要 RAW 文件", "P0-diptych HDR disabled with reason")
 
-    # Acceptance 4: Working ⋯ (hides paste/apply before copying, shows all 5 after copying, approved footnote)
+    # Acceptance 4: Working ⋯ (hides paste/apply before copying, shows all 6 after copying, approved footnote)
     more = steps["more"]
     check(
-        more["moreEntriesBeforeCopy"] == ["复制调整", "导出选项", "照片信息"],
+        more["moreEntriesBeforeCopy"] == ["复制调整", "导出选项", "做成关机图", "照片信息"],
         "⋯ hides 粘贴 and 套用到这一组 before copying",
     )
     check(
-        more["moreEntriesAfterCopy"] == ["复制调整", "粘贴", "套用到这一组", "导出选项", "照片信息"],
-        "⋯ has all 5 entries in order after copying",
+        more["moreEntriesAfterCopy"] == ["复制调整", "粘贴", "套用到这一组", "导出选项", "做成关机图", "照片信息"],
+        "⋯ has all 6 entries in order after copying",
     )
     check(more["photoInfoHasStem"] is True, "照片信息 shows filename")
     check(more["exportOptionsTitle"] == "导出选项", "导出选项 sheet opens with correct title")

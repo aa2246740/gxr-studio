@@ -744,8 +744,8 @@ async function runReachability(page, session) {
     const topMoreBefore = await page.locator('.ms[data-state="editor-more"] .lrow b').allInnerTexts();
     behaviour.topMoreEntriesBeforeCopy = topMoreBefore;
     check(
-      JSON.stringify(topMoreBefore) === JSON.stringify(['复制调整', '导出选项', '照片信息']),
-      `top ⋯ items before copy=${JSON.stringify(topMoreBefore)}, want ['复制调整','导出选项','照片信息']`,
+      JSON.stringify(topMoreBefore) === JSON.stringify(['复制调整', '导出选项', '做成关机图', '照片信息']),
+      `top ⋯ items before copy=${JSON.stringify(topMoreBefore)}, want ['复制调整','导出选项','做成关机图','照片信息']`,
     );
     if (await clickVisible(page, '.ms[data-state="editor-more"] [data-act="more-copy"]', 'top ⋯ -> 复制调整')) {
       check(await page.locator('.ms.paste-sheet[data-state="copy-options"]').isVisible().catch(() => false), 'copy sheet did not open from top ⋯');

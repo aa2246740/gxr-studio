@@ -14,6 +14,7 @@ import { NOT_SET, NOTHING_COPIED, ONLY_SOURCE, PASTE_GROUPS, chosenGroups, remem
 import { curveSummary, groupsPresent } from '../lib/paste';
 import { button, el, icon, ICON } from './dom';
 import { openExportOptions } from './export_ui';
+import { openOffImageSheet } from './off_image_sheet';
 import { ensureCameraRecipe, needsCameraRecipe, onCameraRecipe, photoMs, type AppApi, type Knobs, type Photo } from './model';
 import { groupsAnd, groupsText, pasteState, rangeOf } from './paste_state';
 import { showToast } from './toast';
@@ -563,6 +564,12 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
       () => {
         openExportOptions(host, [photo.id]);
       },
+    ],
+    [
+      'more-off-image',
+      '做成关机图',
+      '生成 640×480 的 GXROFF.JPG',
+      () => openOffImageSheet(host, api, photo),
     ],
     [
       'more-photo-info',
