@@ -468,6 +468,40 @@ export function centerStripCard(strip: HTMLElement, cardId: string): boolean {
   return true;
 }
 
+export function buildIpadRecipeMeta(
+  scene: RecipeStatusScene & { raw: boolean; dat: boolean },
+  targetName: string,
+  targetTag: string,
+  diptych: boolean,
+  datError: string | null,
+  onStatusClick: (action: RecipeStatusSpec['action']) => void,
+): HTMLElement {
+  const wrap = el('div', 'ipad-recipe-meta');
+  const head = el('div', 'rmeta');
+  if (!scene.raw) {
+    head.append(el('b', 'rname dim', diptych ? '半格双联' : '相机 JPG'));
+  } else if (!scene.dat) {
+    head.append(el('b', 'rname dim', '未选配方文件'));
+  } else {
+    head.append(el('b', 'rname', targetName));
+    if (targetTag) head.append(el('span', 'tag neutral-tag', targetTag));
+  }
+  wrap.append(head);
+
+  const spec = recipeStatusSpec(scene, diptych, Boolean(datError));
+  if (spec) {
+    const btn = button(`ipad-status-btn ${spec.tone}`, spec.label);
+    btn.dataset.act = 'recipe-status';
+    if (spec.stateAttr) btn.dataset.state = spec.stateAttr;
+    if (spec.cameraRecipeError) btn.dataset.cameraRecipeError = spec.cameraRecipeError;
+    if (spec.cameraRecipeNote) btn.dataset.cameraRecipeNote = spec.cameraRecipeNote;
+    btn.prepend(icon(WARN));
+    btn.addEventListener('click', () => onStatusClick(spec.action));
+    wrap.append(btn);
+  }
+  return wrap;
+}
+
 const bitmapIds = new WeakMap<ImageBitmap, number>();
 let nextBitmapId = 1;
 

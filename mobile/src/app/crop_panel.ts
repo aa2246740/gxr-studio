@@ -68,9 +68,11 @@ export class CropPanel {
   private readonly guideText = el('span', 'guide-txt', '参考线');
   private readonly straightenBox = el('div', 'pad straighten');
   private readonly angleVal = el('span', 'crop-angle num', '0.0°');
+  private readonly inlineAngle = el('span', 'num crop-inline-angle', '0.0°');
   private readonly ruler = el('div', 'ruler');
   private readonly tape = el('div', 'ruler-tape');
   private readonly sizeLine = el('span', 'dim small num crop-size-line', '');
+  private readonly inlineSize = el('span', 'dim small num crop-inline-size', '');
   private readonly errBanner = el('div', 'bn crop-err');
   private readonly errText = el('span', 'tx', '');
   private currentPortrait = false;
@@ -149,7 +151,9 @@ export class CropPanel {
     this.ruler.append(this.tape, needle);
     this.bindRuler();
 
-    this.straightenBox.append(this.ruler);
+    const inlineHd = el('div', 'crop-inline-hd');
+    inlineHd.append(this.inlineSize, this.inlineAngle);
+    this.straightenBox.append(inlineHd, this.ruler);
 
     this.errBanner.hidden = true;
     this.errBanner.dataset.role = 'crop-error';
@@ -266,10 +270,17 @@ export class CropPanel {
   }
 
   private paintAngle(angle: number): void {
-    this.angleVal.textContent = fmtDeg(angle);
+    const text = fmtDeg(angle);
+    this.angleVal.textContent = text;
+    this.inlineAngle.textContent = text;
     this.ruler.setAttribute('aria-valuenow', String(angle));
     const mid = MAX_ANGLE * PX_PER_DEG;
     this.tape.style.transform = `translate3d(${-mid - angle * PX_PER_DEG}px, 0, 0)`;
+  }
+
+  private setSizeText(text: string): void {
+    this.sizeLine.textContent = text;
+    this.inlineSize.textContent = text;
   }
 
   private openGuideSheet(): void {
@@ -356,7 +367,7 @@ export class CropPanel {
     if (!frame) {
       if (!this.sizeLine.textContent && canvas.w > 1 && canvas.h > 1) {
         const px = croppedPixelSize(rectObj, canvas);
-        this.sizeLine.textContent = `成品 ${px.w} × ${px.h} 像素 · ${label}`;
+        this.setSizeText(`成品 ${px.w} × ${px.h} 像素 · ${label}`);
       }
       return;
     }
@@ -365,7 +376,7 @@ export class CropPanel {
         crop ? rectObj : centeredMaxRect({ w: frame.width, h: frame.height }, null, this.hooks.liveStraighten()),
         { w: frame.width, h: frame.height },
       );
-      this.sizeLine.textContent = `成品 ${est.w} × ${est.h} 像素 · ${label}`;
+      this.setSizeText(`成品 ${est.w} × ${est.h} 像素 · ${label}`);
     }
     const seq = ++this.sizeSeq;
     const version = photo.version;
@@ -383,7 +394,7 @@ export class CropPanel {
           return;
         }
         const [w, h] = reply.sizes.original;
-        this.sizeLine.textContent = `成品 ${w} × ${h} 像素 · ${label}`;
+        this.setSizeText(`成品 ${w} × ${h} 像素 · ${label}`);
         this.sizeLine.dataset.label = label;
         this.hooks.onExportSize?.(photo, w, h);
       })

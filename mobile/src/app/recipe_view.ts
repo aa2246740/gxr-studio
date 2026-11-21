@@ -26,6 +26,7 @@ import { lookCache } from './looks';
 import { ensureCameraRecipe, needsCameraRecipe, onCameraRecipe, type AppApi, type Photo } from './model';
 import {
   bitmapId,
+  buildIpadRecipeMeta,
   buildKnobRow,
   centerStripCard,
   makeRecipeFilterTile,
@@ -115,6 +116,7 @@ export class RecipeView {
   private readonly fineBox = el('div', 'recipe-fine');
   private readonly datErrBar = button('dat-err', '');
   private readonly panel = el('div', 'panel recipe');
+  private ipadMode = false;
   private modeSwitchEl: HTMLElement | null = null;
   private rawKey: string | null = null;
   private neutralBitmap: ImageBitmap | null = null;
@@ -154,27 +156,34 @@ export class RecipeView {
     this.build();
   }
 
-  headEl(): HTMLElement {
-    return this.head;
+  headEl(): HTMLElement { return this.head; }
+  stripEl(): HTMLElement { return this.strip; }
+  stripWrapEl(): HTMLElement { return this.stripWrap; }
+  panelEl(): HTMLElement { return this.panel; }
+  isFineTuning(): boolean { return this.fineTune; }
+
+  setIpadMode(on: boolean): void {
+    if (this.ipadMode === on) return;
+    this.ipadMode = on;
+    if (on) this.fineTune = false;
+    this.stripKeys = [];
+    this.build();
   }
 
-  stripEl(): HTMLElement {
-    return this.strip;
-  }
-
-  panelEl(): HTMLElement {
-    return this.panel;
-  }
-
-  isFineTuning(): boolean {
-    return this.fineTune;
+  openFilter(): void {
+    const scene = this.scene();
+    const shell = this.shellEl();
+    if (!shell || !scene.raw || !scene.dat || !scene.list) return;
+    openRecipeFilterSheet(shell, scene.list, this.which, (which) => {
+      this.which = which;
+      this.build();
+    });
   }
 
   exitFineTune(): void {
     if (!this.fineTune) return;
     this.fineTune = false;
-    const scene = this.scene();
-    this.syncSubView(scene);
+    this.syncSubView(this.scene());
   }
 
   syncLutDot(): void {
@@ -302,12 +311,23 @@ export class RecipeView {
     void this.renderCards(scene, token);
   }
 
+  private handleStatusAction(scene: Scene, action: 'jpg-info' | 'ask-dat' | 'status-sheet'): void {
+    if (action === 'jpg-info') {
+      const shell = this.shellEl();
+      if (shell) openJpgInfoSheet(shell, Boolean(this.photo.diptych));
+    } else if (action === 'ask-dat') {
+      this.ask();
+    } else {
+      this.openStatusSheet(scene);
+    }
+  }
+
   private syncSubView(scene: Scene): void {
     const target = this.target(scene);
     const canFine = Boolean(scene.raw && scene.dat && scene.state.state === 'ready' && target && target.controls.length);
     if (this.fineTune && !canFine) this.fineTune = false;
-    this.stripWrap.hidden = this.fineTune;
-    this.fineBox.hidden = !this.fineTune;
+    if (!this.ipadMode) this.stripWrap.hidden = this.fineTune;
+    this.fineBox.hidden = !this.ipadMode && !this.fineTune;
     const datError = this.api.book().datError;
     if (datError && scene.raw) {
       this.datErrBar.hidden = false;
@@ -323,35 +343,16 @@ export class RecipeView {
 
   private syncFilterPin(scene: Scene): void {
     this.filterPin.replaceChildren();
+    if (this.ipadMode) {
+      this.filterPin.hidden = true;
+      return;
+    }
     if (scene.raw && scene.dat && scene.list) {
-      const list = scene.list;
-      this.filterPin.append(
-        makeRecipeFilterTile(this.which, shelfCount(list, this.which), () => {
-          const shell = this.shellEl();
-          if (!shell) return;
-          openRecipeFilterSheet(shell, list, this.which, (which) => {
-            this.which = which;
-            const next = this.scene();
-            this.buildStrip(next);
-            this.syncSubView(next);
-          });
-        }),
-      );
+      this.filterPin.append(makeRecipeFilterTile(this.which, shelfCount(scene.list, this.which), () => this.openFilter()));
     }
     const statusSpec = recipeStatusSpec(scene, Boolean(this.photo.diptych), Boolean(this.api.book().datError));
     if (statusSpec) {
-      this.filterPin.append(
-        makeRecipeStatusTile(statusSpec, () => {
-          if (statusSpec.action === 'jpg-info') {
-            const shell = this.shellEl();
-            if (shell) openJpgInfoSheet(shell, Boolean(this.photo.diptych));
-          } else if (statusSpec.action === 'ask-dat') {
-            this.ask();
-          } else {
-            this.openStatusSheet(scene);
-          }
-        }),
-      );
+      this.filterPin.append(makeRecipeStatusTile(statusSpec, () => this.handleStatusAction(scene, statusSpec.action)));
     }
     this.filterPin.hidden = this.filterPin.childElementCount === 0;
   }
@@ -377,7 +378,12 @@ export class RecipeView {
           : 'uncalibrated';
     const isEmpty = Boolean(scene.list && this.which === 'mine' && !cards.length);
     if (isEmpty) {
-      this.strip.replaceChildren(this.makeModeSwitch());
+      if (this.ipadMode) {
+        this.modeSwitchEl = null;
+        this.strip.replaceChildren();
+      } else {
+        this.strip.replaceChildren(this.makeModeSwitch());
+      }
       this.slots = [];
       this.stripKeys = ['__empty__'];
       this.lastScrolledCardId = null;
@@ -408,7 +414,12 @@ export class RecipeView {
       return;
     }
 
-    this.strip.replaceChildren(this.makeModeSwitch());
+    if (this.ipadMode) {
+      this.modeSwitchEl = null;
+      this.strip.replaceChildren();
+    } else {
+      this.strip.replaceChildren(this.makeModeSwitch());
+    }
     this.slots = [];
     this.stripKeys = nextKeys;
     this.lastScrolledCardId = null;
@@ -535,34 +546,32 @@ export class RecipeView {
   private buildFineBox(scene: Scene): void {
     this.fineBox.replaceChildren();
     const target = this.target(scene);
+    if (this.ipadMode) {
+      this.fineBox.append(buildIpadRecipeMeta(scene, target?.name ?? '', target ? cardTag(target) : '', Boolean(this.photo.diptych), this.api.book().datError, (a) => this.handleStatusAction(scene, a)));
+    }
     if (!scene.raw || !scene.dat || scene.state.state !== 'ready' || !target || !target.controls.length) return;
     const controls = this.orderedControls(target);
-    if (!controls.some((c) => c.name === this.activeKnob)) {
-      this.activeKnob = controls[0].name;
+    if (!controls.some((c) => c.name === this.activeKnob)) this.activeKnob = controls[0].name;
+    const knobsBox = this.knobs(scene, target, controls);
+    if (this.ipadMode) {
+      this.fineBox.append(knobsBox);
+      return;
     }
-
     const topRow = el('div', 'fine-top');
     const back = button('chip fine-back', '‹ 配方');
     back.dataset.act = 'recipe-back';
     back.addEventListener('click', () => this.exitFineTune());
-
     const knobChips = el('div', 'chips knob-chips');
-    const knobsBox = this.knobs(scene, target, controls);
     for (const control of controls) {
       const chip = button(control.name === this.activeKnob ? 'chip on' : 'chip', KNOB_NAMES[control.name] ?? control.label);
       chip.dataset.knobChip = control.name;
       chip.addEventListener('click', () => {
         this.activeKnob = control.name;
-        for (const item of knobChips.querySelectorAll('.chip')) {
-          item.classList.toggle('on', item === chip);
-        }
-        for (const row of knobsBox.querySelectorAll<HTMLElement>('.krow')) {
-          row.hidden = row.dataset.knob !== this.activeKnob;
-        }
+        for (const item of knobChips.querySelectorAll('.chip')) item.classList.toggle('on', item === chip);
+        for (const row of knobsBox.querySelectorAll<HTMLElement>('.krow')) row.hidden = row.dataset.knob !== this.activeKnob;
       });
       knobChips.append(chip);
     }
-
     topRow.append(back, knobChips);
     this.fineBox.append(topRow, knobsBox);
   }
@@ -579,7 +588,7 @@ export class RecipeView {
         (level) => this.setLevel(card, control.name, level),
         (text) => this.hooks.onScrub?.(text),
       );
-      row.hidden = control.name !== this.activeKnob;
+      row.hidden = !this.ipadMode && control.name !== this.activeKnob;
       box.append(row);
     }
     return box;
@@ -634,7 +643,7 @@ export class RecipeView {
       card,
     );
     if (switched.same) {
-      if (scene.state.state === 'ready' && card.controls.length > 0) {
+      if (!this.ipadMode && scene.state.state === 'ready' && card.controls.length > 0) {
         this.fineTune = true;
         this.activeKnob = this.orderedControls(card)[0]?.name ?? '';
         this.syncSubView(scene);

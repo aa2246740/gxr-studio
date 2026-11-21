@@ -91,8 +91,8 @@ export function fitGpuCanvas(
   size: { w: number; h: number } | null,
 ): boolean {
   if (!stage || !pv || !gpu || pv.dataset.decor === '1') return false;
-  const sw = stage.clientWidth;
-  const sh = stage.clientHeight;
+  const sw = pv.clientWidth || stage.clientWidth;
+  const sh = pv.clientHeight || stage.clientHeight;
   if (sw <= 0 || sh <= 0 || !size || size.w <= 0 || size.h <= 0) {
     const had = Boolean(gpu.style.width || gpu.style.height);
     gpu.style.removeProperty('width');

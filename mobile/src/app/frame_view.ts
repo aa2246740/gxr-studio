@@ -44,6 +44,7 @@ export interface FrameHost {
   onChange: () => void;
   isAlive?: () => boolean;
   onOptionsChange?: (open: boolean) => void;
+  onBack?: () => void;
 }
 
 export class FrameView {
@@ -53,6 +54,8 @@ export class FrameView {
   private readonly head: HTMLElement;
   private readonly headTitle: HTMLElement;
   private readonly optsBtn: HTMLButtonElement;
+  private readonly ipadTitle: HTMLElement;
+  private readonly ipadOptsBtn: HTMLButtonElement;
   private readonly root: HTMLElement;
   private readonly strip: HTMLElement;
   private readonly controls: HTMLElement;
@@ -82,6 +85,18 @@ export class FrameView {
       if (this.photo.border.style !== 'none') this.setOptionsOpen(true);
     });
     this.head.append(this.headTitle, this.optsBtn);
+
+    const subHd = el('div', 'ipad-sub-hd');
+    const subBack = button('ipad-sub-back', '‹ 更多');
+    subBack.dataset.act = 'more-back';
+    subBack.addEventListener('click', () => this.host.onBack?.());
+    this.ipadTitle = el('b', 'ipad-sub-title', FRAME_NAMES[photo.border.style] || '无');
+    this.ipadOptsBtn = button('ipad-sub-act', '设置');
+    this.ipadOptsBtn.dataset.act = 'frame-opts-ipad';
+    this.ipadOptsBtn.addEventListener('click', () => {
+      if (this.photo.border.style !== 'none') this.setOptionsOpen(true);
+    });
+    subHd.append(subBack, this.ipadTitle, this.ipadOptsBtn);
 
     this.root = el('div', 'panel frame');
     this.root.dataset.panel = 'frame';
@@ -127,7 +142,7 @@ export class FrameView {
       });
     });
 
-    this.root.append(this.strip, this.controls);
+    this.root.append(subHd, this.strip, this.controls);
     this.syncSelection();
     this.syncSubView();
   }
@@ -224,8 +239,12 @@ export class FrameView {
       this.optionsOpen = false;
       this.host.onOptionsChange?.(false);
     }
-    this.headTitle.textContent = FRAME_NAMES[style] || '无';
-    this.optsBtn.hidden = style === 'none' || this.optionsOpen;
+    const name = FRAME_NAMES[style] || '无';
+    this.headTitle.textContent = name;
+    this.ipadTitle.textContent = name;
+    const hideOpts = style === 'none' || this.optionsOpen;
+    this.optsBtn.hidden = hideOpts;
+    this.ipadOptsBtn.hidden = hideOpts;
     this.strip.hidden = this.optionsOpen;
     this.controls.hidden = !this.optionsOpen;
     this.renderControls();

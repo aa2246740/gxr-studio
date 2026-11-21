@@ -75,6 +75,12 @@ export class LutView {
   private readonly spaceBtn = button('rc filter-tile lut-space-tile', '');
   private readonly spaceTxt = el('span', 'lut-space-txt', '色彩空间');
   private readonly addBtn = button('rc filter-tile lut-import-tile', '');
+  private readonly ipadMeta = el('div', 'ipad-lut-meta');
+  private readonly ipadName = el('b', 'rname', '不用 LUT');
+  private readonly ipadSpaceBtn = button('lrow ipad-lut-row', '');
+  private readonly ipadSpaceVal = el('span', 'dim small', '色彩空间');
+  private readonly ipadAddBtn = button('lrow ipad-lut-row', '');
+  private ipadMode = false;
   private modeSwitchEl: HTMLElement | null = null;
   private stripKeys: string[] = [];
   private slots: Slot[] = [];
@@ -114,15 +120,26 @@ export class LutView {
     const spaceTh = el('div', 'th filter-th');
     spaceTh.append(this.spaceTxt);
     this.spaceBtn.append(spaceTh);
-    this.spaceBtn.addEventListener('click', () => {
+    const openSelectedSpace = () => {
       const rec = this.photo.lut ? this.api.lutBook().get(this.photo.lut) : undefined;
       if (rec) this.openSpaceFor(rec, false);
-    });
+    };
+    this.spaceBtn.addEventListener('click', openSelectedSpace);
+
+    const metaHd = el('div', 'rmeta');
+    metaHd.append(this.ipadName);
+    this.ipadSpaceBtn.dataset.act = 'lut-space-panel';
+    this.ipadSpaceBtn.append(el('span', 'grow', '输入色彩空间'), this.ipadSpaceVal);
+    this.ipadSpaceBtn.addEventListener('click', openSelectedSpace);
+    this.ipadAddBtn.dataset.act = 'lut-import-panel';
+    this.ipadAddBtn.append(icon(PLUS), el('span', 'grow', '导入 LUT'));
+    this.ipadAddBtn.addEventListener('click', () => this.api.pickLut());
+    this.ipadMeta.append(metaHd, this.ipadSpaceBtn, this.ipadAddBtn);
 
     this.head.append(this.headTitle);
     this.pin.append(this.addBtn, this.spaceBtn);
     this.stripWrap.append(this.pin, this.strip);
-    this.panel.append(this.stripWrap, this.statusEl);
+    this.panel.append(this.stripWrap, this.ipadMeta, this.statusEl);
 
     this.seenNotice = api.lutBook().lastNotice().seq;
     this.off = api.lutBook().onChange(() => {
@@ -140,8 +157,19 @@ export class LutView {
     return this.head;
   }
 
+  stripWrapEl(): HTMLElement {
+    return this.stripWrap;
+  }
+
   panelEl(): HTMLElement {
     return this.panel;
+  }
+
+  setIpadMode(on: boolean): void {
+    if (this.ipadMode === on) return;
+    this.ipadMode = on;
+    this.stripKeys = [];
+    this.build();
   }
 
   destroy(): void {
@@ -244,7 +272,12 @@ export class LutView {
       }
     } else {
       const scrollLeft = this.strip.scrollLeft;
-      this.strip.replaceChildren(this.makeModeSwitch());
+      if (this.ipadMode) {
+        this.modeSwitchEl = null;
+        this.strip.replaceChildren();
+      } else {
+        this.strip.replaceChildren(this.makeModeSwitch());
+      }
       this.slots = [];
       this.stripKeys = nextKeys;
 
@@ -296,18 +329,31 @@ export class LutView {
         this.strip.append(card);
         this.slots.push({ record, node: card, thumb, nameEl, sub });
       }
-      if (!list.length && !deleted) {
+      if (this.ipadMode) {
+        const addCard = button('rc addlut', '');
+        addCard.dataset.act = 'lut-import';
+        const addThumb = el('div', 'th addlut-th');
+        addThumb.append(icon(PLUS));
+        addCard.append(addThumb, el('span', 'nm', '导入 LUT'));
+        addCard.addEventListener('click', () => this.api.pickLut());
+        this.strip.append(addCard);
+      } else if (!list.length && !deleted) {
         this.strip.append(el('p', 'lut-foot', 'LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。'));
       }
       if (scrollLeft > 0) this.strip.scrollLeft = scrollLeft;
     }
 
+    this.pin.hidden = this.ipadMode;
     const sp = this.spaceButtonLabel(selectedRec);
     this.spaceTxt.textContent = sp.text;
     this.spaceBtn.classList.toggle('warn', sp.warn);
     this.spaceBtn.disabled = !selectedRec;
     this.spaceBtn.setAttribute('aria-label', selectedRec ? `色彩空间：${sp.text}` : '色彩空间');
     this.headTitle.textContent = selectedRec ? selectedRec.name : deleted ? 'LUT 已删除' : 'LUT';
+    this.ipadName.textContent = selectedRec ? selectedRec.name : deleted ? 'LUT 已删除' : '不用 LUT';
+    this.ipadSpaceVal.textContent = sp.text;
+    this.ipadSpaceBtn.classList.toggle('warn', sp.warn);
+    this.ipadSpaceBtn.disabled = !selectedRec;
 
     const statusText = this.statusMsg || (deleted ? LUT_ERRORS.cube_not_found : '');
     this.statusEl.textContent = statusText;

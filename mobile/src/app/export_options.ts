@@ -101,13 +101,16 @@ export function mountExportSheet(
   const n = photos.length;
   let active = true;
 
+  const isIpadPopover = Boolean(host.shell.dataset.layout?.startsWith('ipad') && opts.title === '导出选项');
   const scrim = el('div', 'scrim');
   scrim.addEventListener('click', () => host.onClose());
-  const sheet = el('div', 'ms export');
+  const sheet = el('div', isIpadPopover ? 'ms export popover' : 'ms export');
   sheet.dataset.state = 'export-sheet';
+  if (isIpadPopover) sheet.dataset.popover = '1';
 
   const head = el('div', 'row');
-  const cancel = button('nb', '取消');
+  const cancel = button('nb', isIpadPopover ? '好' : '取消');
+  if (isIpadPopover) cancel.dataset.act = 'close';
   cancel.addEventListener('click', () => host.onClose());
   head.append(el('h2', '', opts.title ?? `导出 ${n} 张`), cancel);
 
@@ -235,7 +238,11 @@ export function mountExportSheet(
     host.onStart(photos, { size, quality, hdr: hdrOn, halfframe: hasDiptych ? halfframe : 'diptych' });
   });
   const foot = el('p', 'foot', '「存到相册」每次都按这里的设置做。做好后点「存进相册」，在系统面板里点「存储图像」。');
-  sheet.append(el('div', 'grab'), head, el('p', 'lead', timeRange(photos)), form, go, foot);
+  if (isIpadPopover) {
+    sheet.append(el('i', 'arrow up'), head, el('p', 'lead', '「存到相册」每次都按这里的设置做。'), form, go);
+  } else {
+    sheet.append(el('div', 'grab'), head, el('p', 'lead', timeRange(photos)), form, go, foot);
+  }
   host.shell.append(scrim, sheet);
 
   if (n === 1) {

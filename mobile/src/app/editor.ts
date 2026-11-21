@@ -12,12 +12,14 @@ import { el } from './dom';
 import { EditorBand, positionFloatHist } from './editor_band';
 import { EditorBar, type BandTool, type BarTool } from './editor_bar';
 import { createHistWidget, drawHistCanvas, editedFlagsOf, fitGpuCanvas, type HistWidget } from './editor_hist';
+import { createEditorIpadBridge, type EditorIpadBridge } from './editor_ipad_bridge';
 import { EditorMedia, type MediaMode } from './editor_media';
 import { openExportOptions, startQuickExport, syncExportDock } from './export_ui';
 import { releaseFinishDrawResources } from './finish_draw';
 import { photoExportSize } from './frame_state';
 import { FrameView } from './frame_view';
 import { createHdrPreview } from './hdr_hookup';
+import { isIpadLayout, loadIpadHist, saveIpadHist, type LayoutMode } from './layout';
 import { lookCache } from './looks';
 import { LutView } from './lut_view';
 import { zeroKnobs, type AppApi, type Photo } from './model';
@@ -32,6 +34,7 @@ import { StageZoom } from './stage_zoom';
 import { StampBandView } from './stamp_band';
 import { showToast } from './toast';
 import './frame.css';
+import './ipad.css';
 
 const HIST_FAST_MISSES = 300;
 const HIST_SLOW_MS = 250;
@@ -74,6 +77,8 @@ export class EditorView {
   private cropStage: CropStage | null = null;
   private frames: FrameView | null = null;
   private stampBand: StampBandView | null = null;
+  private ipad: EditorIpadBridge | null = null;
+  private layoutMode: LayoutMode = 'phone-portrait';
   private pvObserver: ResizeObserver | null = null;
   private decor: StageDecorController | null = null;
   /** 舞台上套的烘焙表（中性转换或某个配方）。 */
@@ -186,43 +191,28 @@ export class EditorView {
     this.offPaste = null;
     this.navCtrl?.destroy();
     this.navCtrl = null;
-    this.dragging = false;
-    this.holding = false;
-    this.histOpen = false;
+    this.dragging = this.holding = this.histOpen = this.histAgain = false;
     this.stageZoom?.destroy();
-    this.stageZoom = null;
     this.cropStage?.destroy();
-    this.cropStage = null;
-    this.media.reset();
-    this.histAgain = false;
-    this.cancelHistRetry();
     this.pvObserver?.disconnect();
-    this.pvObserver = null;
+    this.sharp?.close();
+    this.recipes?.destroy();
+    this.adjust?.destroy();
+    this.curves?.destroy();
+    this.frames?.destroy();
+    this.ipad?.destroy();
+    this.scrubPill?.destroy();
+    this.decor?.destroy();
+    this.luts?.destroy();
+    this.stageZoom = this.cropStage = this.pvObserver = this.sharp = null;
+    this.recipes = this.adjust = this.curves = this.frames = this.stampBand = null;
+    this.ipad = this.band = this.bar = this.screen = this.stage = this.pv = null;
+    this.scrubPill = this.decor = this.luts = null;
+    this.media.reset();
+    this.cancelHistRetry();
     this.shell.dataset.drag = '0';
     this.shell.dataset.settled = '0';
-    this.sharp?.close();
-    this.sharp = null;
-    this.recipes?.destroy();
-    this.recipes = null;
-    this.adjust?.destroy();
-    this.adjust = null;
-    this.curves?.destroy();
-    this.curves = null;
-    this.frames?.destroy();
-    this.frames = null;
-    this.stampBand = null;
-    this.band = null;
-    this.bar = null;
-    this.screen = null;
-    this.stage = null;
-    this.pv = null;
-    this.scrubPill?.destroy();
-    this.scrubPill = null;
-    this.decor?.destroy();
-    this.decor = null;
     releaseFinishDrawResources();
-    this.luts?.destroy();
-    this.luts = null;
     this.hdr.close();
     for (const cv of [this.histWidget?.canvas ?? null, this.still, this.gpuCanvas]) {
       if (cv) cv.width = cv.height = 0;
@@ -357,7 +347,7 @@ export class EditorView {
       mode: () => this.mode,
       look: (key, label) => this.useLook(key, label),
       dragging: () => this.dragging,
-      recipeTab: () => this.activeTool === 'recipe' && this.recipeSub === 'recipe',
+      recipeTab: () => (this.activeTool === 'recipe' || isIpadLayout(this.layoutMode)) && this.recipeSub === 'recipe',
       geometry: cropGeo,
       openLut: () => this.setRecipeSub('lut'),
       lutActive: () => this.photo?.lut !== null,
@@ -369,9 +359,10 @@ export class EditorView {
       recipeGpuKey: () => this.recipeKey,
       stageLut: (token, label) => this.useLut(token, label),
       dragging: () => this.dragging,
-      lutTab: () => this.activeTool === 'recipe' && this.recipeSub === 'lut',
+      lutTab: () => (this.activeTool === 'recipe' || isIpadLayout(this.layoutMode)) && this.recipeSub === 'lut',
       lutChanged: () => {
         this.recipes?.syncLutDot();
+        this.ipad?.syncSub(this.recipeSub, this.photo?.lut !== null);
         this.updateEditedDots();
       },
       openRecipe: () => this.setRecipeSub('recipe'),
@@ -395,21 +386,13 @@ export class EditorView {
 
     this.decor?.destroy();
     this.decor = new StageDecorController({
-      pv,
-      stage,
-      photo,
-      engine: this.engine,
-      gpuCanvas: this.gpuCanvas,
-      still: this.still,
+      pv, stage, photo, engine: this.engine, gpuCanvas: this.gpuCanvas, still: this.still,
       mode: () => this.mode,
       frameTab: () => this.activeTool === 'frame' || this.activeTool === 'stamp',
       cropTab: () => this.activeTool === 'crop' || this.holding,
       geometry: cropGeo,
       isAlive: viewAlive,
-      onMeta: () => {
-        this.frames?.refresh();
-        this.stampBand?.refresh();
-      },
+      onMeta: () => { this.frames?.refresh(); this.stampBand?.refresh(); },
       onBackdrop: () => this.frames?.backdropUpdated(),
       onDecorClear: () => this.fitStageCanvas(true),
       onToast: (msg) => showToast(this.shell, msg),
@@ -421,30 +404,19 @@ export class EditorView {
       backdrop: () => this.decor?.backdropCanvas() ?? null,
       backdropKey: () => this.decor?.backdrop()?.key ?? '',
       isAlive: viewAlive,
-      onChange: () => {
-        void this.decor?.sync();
-        this.hdr.invalidate();
-        this.stampBand?.refresh();
-        this.updateEditedDots();
-      },
+      onBack: () => this.selectBandTool('more', true),
+      onChange: () => { void this.decor?.sync(); this.hdr.invalidate(); this.stampBand?.refresh(); this.updateEditedDots(); },
     });
 
     this.stampBand = new StampBandView(this.shell, photo, {
       isAlive: viewAlive,
-      onChange: () => {
-        void this.decor?.sync();
-        this.hdr.invalidate();
-        this.frames?.refresh();
-        this.updateEditedDots();
-      },
+      onBack: () => this.selectBandTool('more', true),
+      onChange: () => { void this.decor?.sync(); this.hdr.invalidate(); this.frames?.refresh(); this.updateEditedDots(); },
     });
 
     this.curves = mountCurves(this.curves, {
       photo: () => this.photo,
-      push: () => {
-        this.push();
-        this.updateEditedDots();
-      },
+      push: () => { this.push(); this.updateEditedDots(); },
       enterDrag: () => this.enterDrag(false),
       leaveDrag: () => this.leaveDrag(),
       dragging: () => this.dragging,
@@ -454,6 +426,14 @@ export class EditorView {
     const band = new EditorBand();
     this.band = band;
     this.stageLabel = band.labelEl();
+    this.ipad?.destroy();
+    this.ipad = createEditorIpadBridge({
+      shell: this.shell, api: this.api, photo, moreHooks: this.moreHooksOf(photo),
+      onLayoutChange: (mode) => this.applyLayout(mode),
+      onToggleHist: () => { this.toggleHist(); },
+      onSubChange: (sub) => this.setRecipeSub(sub),
+      onRecipeFilter: () => this.recipes?.openFilter(),
+    });
 
     const recipeSlot = el('div', 'band-slot');
     this.luts.panelEl().hidden = true;
@@ -467,12 +447,11 @@ export class EditorView {
     band.register('crop', cropPanelEl, cropHeadEl ?? undefined);
     band.register('frame', this.frames.panelEl(), this.frames.headEl());
     band.register('stamp', this.stampBand.panelEl(), el('b', 'stamp-hd-title', '时间戳'));
+    band.register('more', this.ipad.morePanelEl(), el('b', 'more-hd-title', '更多'));
 
     const bar = new EditorBar({
       onTool: (tool) => this.onBarTool(tool),
-      onExport: () => {
-        if (!startQuickExport(this.shell, [photo.id])) this.api.exportPhotos([photo.id]);
-      },
+      onExport: () => { if (!startQuickExport(this.shell, [photo.id])) this.api.exportPhotos([photo.id]); },
     });
     this.bar = bar;
     const cropBtn = bar.toolButton('crop');
@@ -480,10 +459,12 @@ export class EditorView {
 
     band.setTool('recipe');
     bar.setActive('recipe', band.isCollapsed());
+    screen.dataset.collapsed = band.isCollapsed() ? '1' : '0';
     this.updateEditedDots();
 
     screen.append(nav, stage, band.el(), bar.el());
     this.host.append(screen);
+    this.applyLayout(this.ipad.mode(), true);
     syncExportDock(this.shell);
     if (this.engine && this.gpuCanvas) this.engine.attach(this.gpuCanvas);
     this.cropStage.paintTabDot();
@@ -491,72 +472,78 @@ export class EditorView {
     void this.decor.sync();
   }
 
+  private moreHooksOf(photo: Photo) {
+    return {
+      onFrame: () => this.selectBandTool('frame', true),
+      onStamp: () => this.selectBandTool('stamp', true),
+      onCurves: () => this.openCurves(),
+      onExport: () => { if (!openExportOptions(this.shell, [photo.id])) this.api.exportPhotos([photo.id]); },
+      onCalib: () => showCalibSheet(this.shell, this.api),
+    };
+  }
+
+  private applyLayout(mode: LayoutMode, initial = false): void {
+    const wasIpad = isIpadLayout(this.layoutMode);
+    const nowIpad = isIpadLayout(mode);
+    this.layoutMode = mode;
+    if (initial || wasIpad !== nowIpad) {
+      this.histOpen = nowIpad ? loadIpadHist() : false;
+      if (!nowIpad && this.activeTool === 'more') this.selectBandTool('recipe', false);
+    }
+    this.syncIpad(mode, this.recipeSub);
+    this.adjust?.syncHistBtn();
+    if (this.histOpen) this.requestHist();
+    else { this.histAgain = false; this.cancelHistRetry(); }
+    if (initial) return; // 打开照片时版式已经在挂进 DOM 前定好，舞台照常由 mount 和 ResizeObserver 摆
+    const body = this.band?.el().querySelector('.band-body');
+    if (body) body.scrollTop = 0;
+    this.refitStage();
+  }
+
   private onBarTool(tool: BarTool): void {
     const photo = this.photo;
     if (!photo) return;
     if (tool === 'more') {
-      openMoreSheet(this.shell, photo, {
-        onFrame: () => this.selectBandTool('frame', true),
-        onStamp: () => this.selectBandTool('stamp', true),
-        onCurves: () => this.openCurves(),
-        onExport: () => {
-          if (!openExportOptions(this.shell, [photo.id])) this.api.exportPhotos([photo.id]);
-        },
-        onCalib: () => showCalibSheet(this.shell, this.api),
-      });
+      if (this.ipad?.isIpad()) {
+        this.ipad.refreshMore(photo);
+        this.selectBandTool('more', true);
+      } else {
+        openMoreSheet(this.shell, photo, this.moreHooksOf(photo));
+      }
       return;
     }
     if (this.band?.isCollapsed()) {
-      this.band.setCollapsed(false);
-      syncExportDock(this.shell);
+      this.expandBand();
     } else if (tool === 'recipe' && this.activeTool === 'recipe') {
-      if (this.recipeSub === 'lut') {
-        this.setRecipeSub('recipe');
-        return;
-      }
-      if (this.recipes?.isFineTuning()) {
-        this.recipes.exitFineTune();
-        return;
-      }
+      if (this.recipeSub === 'lut') { this.setRecipeSub('recipe'); return; }
+      if (this.recipes?.isFineTuning()) { this.recipes.exitFineTune(); return; }
     }
     this.selectBandTool(tool, false);
   }
 
+  private expandBand(): void {
+    if (!this.band?.isCollapsed()) return;
+    this.band.setCollapsed(false);
+    if (this.screen) this.screen.dataset.collapsed = '0';
+    syncExportDock(this.shell);
+    this.refitStage();
+  }
+
   private selectBandTool(tool: BandTool, expand: boolean): void {
     const prev = this.activeTool;
-    if (expand && this.band?.isCollapsed()) {
-      this.band.setCollapsed(false);
-      syncExportDock(this.shell);
-    }
+    if (expand) this.expandBand();
     this.activeTool = tool;
-    if (tool === 'crop') {
-      this.stageZoom?.reset();
-      this.stageZoom?.cancel();
-    }
-    if (tool === 'recipe' && this.recipeSub === 'recipe') {
-      this.recipes?.tabOpened();
-    } else if (tool === 'recipe' && this.recipeSub === 'lut') {
-      this.luts?.tabOpened();
-    }
-    if (tool === 'frame') {
-      this.frames?.tabOpened();
-      this.decor?.onFrameTabOpened();
-    } else if (prev === 'frame') {
-      this.frames?.tabClosed();
-    }
-    if (tool === 'stamp') {
-      this.stampBand?.refresh();
-      this.decor?.onFrameTabOpened();
-    }
-    if (tool === 'adjust') {
-      this.adjust?.refresh();
-    }
+    if (tool === 'crop') { this.stageZoom?.reset(); this.stageZoom?.cancel(); }
+    if (tool === 'recipe' && this.recipeSub === 'recipe') this.recipes?.tabOpened();
+    else if (tool === 'recipe' && this.recipeSub === 'lut') this.luts?.tabOpened();
+    if (tool === 'frame') { this.frames?.tabOpened(); this.decor?.onFrameTabOpened(); }
+    else if (prev === 'frame') this.frames?.tabClosed();
+    if (tool === 'stamp') { this.stampBand?.refresh(); this.decor?.onFrameTabOpened(); }
+    if (tool === 'adjust') this.adjust?.refresh();
+    if (tool === 'more' && this.photo) this.ipad?.refreshMore(this.photo);
     this.band?.setTool(tool);
     this.bar?.setActive(tool, Boolean(this.band?.isCollapsed()));
-    if (prev === 'crop' || tool === 'crop') {
-      void this.decor?.sync();
-      this.cropStage?.syncTabMode();
-    }
+    if (prev === 'crop' || tool === 'crop') { void this.decor?.sync(); this.cropStage?.syncTabMode(); }
     this.syncFloatHistPos();
   }
 
@@ -572,13 +559,26 @@ export class EditorView {
       this.luts.headEl().hidden = sub !== 'lut';
       if (sub === 'lut') this.luts.tabOpened();
     }
+    this.syncIpad(this.layoutMode, sub);
+  }
+
+  private syncIpad(mode: LayoutMode, recipeSub: 'recipe' | 'lut'): void {
+    this.ipad?.apply({
+      mode, histOpen: this.histOpen, recipeSub, lutActive: this.photo?.lut !== null, band: this.band?.el() ?? null,
+      stage: this.stage, histWidget: this.histWidget, recipes: this.recipes, luts: this.luts,
+    });
   }
 
   private toggleBandCollapsed(): void {
     if (!this.band) return;
     const collapsed = this.band.toggleCollapsed();
+    if (this.screen) this.screen.dataset.collapsed = collapsed ? '1' : '0';
     this.bar?.setActive(this.activeTool, collapsed);
     syncExportDock(this.shell);
+    this.refitStage();
+  }
+
+  private refitStage(): void {
     this.fitStageCanvas();
     this.syncFloatHistPos();
     const token = this.token;
@@ -607,6 +607,10 @@ export class EditorView {
 
   private toggleHist(): boolean {
     this.histOpen = !this.histOpen;
+    if (isIpadLayout(this.layoutMode)) {
+      saveIpadHist(this.histOpen);
+      this.ipad?.syncHistUi(this.histOpen);
+    }
     if (this.histWidget) this.histWidget.root.hidden = !this.histOpen;
     this.adjust?.syncHistBtn();
     if (this.histOpen) {
@@ -620,7 +624,7 @@ export class EditorView {
   }
 
   private syncFloatHistPos(): void {
-    if (!this.histOpen || !this.stage || !this.pv || !this.histWidget) return;
+    if (isIpadLayout(this.layoutMode) || !this.histOpen || !this.stage || !this.pv || !this.histWidget) return;
     const photo = this.photo;
     const dims = photo ? photoExportSize(photo, this.engine) : null;
     positionFloatHist(this.stage, this.pv, this.histWidget.root, dims ? { w: dims[0], h: dims[1] } : null);
@@ -636,6 +640,7 @@ export class EditorView {
 
   private updateEditedDots(): void {
     if (this.photo && this.bar) this.bar.setEdited(editedFlagsOf(this.photo));
+    if (this.photo) this.ipad?.refreshMore(this.photo);
   }
 
   /** 配方那边定下了舞台该用哪张烘焙表。 */

@@ -1,0 +1,293 @@
+/* 响应式版式（iPad 方案 A + 手机横屏）：只在 .app[data-layout=...] 下生效，手机竖屏 0 影响。
+   尺寸照 round-6/ipad-design-r2/mockups/alt-a-desktop.html（主屏幕打开：iPad 顶上 24 状态栏、底下 20 横条；
+   手机横屏左右各让出 safe-area，底下 21 横条）。 */
+
+/* 只在 iPad / 横屏用到的节点，默认隐藏（加 .app 提高优先级，不被 shell.css 里同级的规则盖掉），手机竖屏像素不变。 */
+.app .ipad-dock, .app .ipad-hist-area, .app .adj-l1, .app .adj-hint, .app .crop-inline-hd, .app .ipad-sub-hd, .app .ipad-lut-meta { display: none; }
+
+/* 左右安全区只有横屏才用到。 */
+:root { --safe-left: env(safe-area-inset-left, 0px); --safe-right: env(safe-area-inset-right, 0px); }
+
+/* ---------- iPad 公共：右边面板（带子放大） ---------- */
+.app[data-layout^="ipad"] .screen.editor { background: var(--surface-app); }
+.app[data-layout^="ipad"] .screen.editor .stage { background: #000; }
+.app[data-layout^="ipad"] .screen.editor .pv { inset: 8px; }
+.app[data-layout^="ipad"] .screen.editor .band { height: auto; min-height: 0; background: var(--surface-panel); box-shadow: none; }
+.app[data-layout^="ipad"] .screen.editor .band-top { height: 0; overflow: hidden; order: 99; }
+.app[data-layout^="ipad"] .screen.editor .band[data-export-slot="1"] .band-top { height: 44px; border-top: 1px solid var(--line-subtle); }
+.app[data-layout^="ipad"] .screen.editor .band-hd { display: none; }
+.app[data-layout^="ipad"] .screen.editor .band-body { flex: 1; height: auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.app[data-layout^="ipad"] .screen.editor .band .panel { justify-content: flex-start; overflow: visible; }
+
+/* 面板里的底栏：4 个工具 + 存到相册（样稿 52 高）。 */
+.app[data-layout^="ipad"] .screen.editor > .toolbar .tbtn { height: 52px; min-height: 52px; gap: 3px; border-radius: 12px; }
+.app[data-layout^="ipad"] .screen.editor > .toolbar .tbtn .ico { width: 22px; height: 22px; }
+.app[data-layout^="ipad"] .screen.editor > .toolbar .tbtn .tlab { font-size: 12px; }
+.app[data-layout^="ipad"] .screen.editor > .toolbar .save-btn { min-height: 52px; padding: 0 16px; border-radius: 16px; font-size: 16px; }
+
+/* 顶栏 HDR：胶囊照旧 28 高，命中区向上下各扩 8，凑满 44（iPad 和手机横屏；手机竖屏不动） */
+.app[data-layout^="ipad"] .screen.editor .hdr-toggle,
+.app[data-layout="phone-landscape"] .screen.editor .hdr-toggle { position: relative; }
+.app[data-layout^="ipad"] .screen.editor .hdr-toggle::before,
+.app[data-layout="phone-landscape"] .screen.editor .hdr-toggle::before { content: ""; position: absolute; inset: -8px 0; }
+
+/* 直方图槽（默认打开） */
+.app[data-layout^="ipad"] .ipad-hist-area { display: flex; flex-direction: column; flex: none; padding: 4px 16px 12px; border-bottom: 1px solid var(--line-subtle); gap: 4px; }
+.app[data-layout^="ipad"] .ipad-hist-area .phead { display: flex; align-items: center; justify-content: flex-end; min-height: 44px; margin: 0 -8px -4px 0; }
+.app[data-layout^="ipad"] .ipad-hist-area .histbtn { min-width: 44px; min-height: 44px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-2); }
+.app[data-layout^="ipad"] .ipad-hist-area .histbtn .ico { width: 19px; height: 19px; }
+.app[data-layout^="ipad"] .ipad-hist-area .histbtn.on { color: var(--accent-text); background: var(--accent-weak); }
+.app[data-layout^="ipad"] .ipad-hist-slot[hidden] { display: none; }
+.app[data-layout^="ipad"] .ipad-hist-slot .hist { width: 100%; height: 200px; border-radius: 8px; background: var(--gray-950); box-shadow: inset 0 0 0 1px var(--line-subtle); }
+.app[data-layout^="ipad"] .panel.adjust .hist-toggle { display: none; }
+
+/* 配方：选中配方的说明和微调直接摆出来（一行：名称 · 滑块 · 数值） */
+.app[data-layout^="ipad"] .panel.recipe .recipe-fine { height: auto; padding: 12px 16px 14px; gap: 10px; }
+.app[data-layout^="ipad"] .ipad-recipe-meta { display: flex; flex-direction: column; gap: 8px; }
+.app[data-layout^="ipad"] .rmeta { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.app[data-layout^="ipad"] .rmeta .rname { font: 600 16px/22px var(--font-ui); color: var(--text-1); }
+.app[data-layout^="ipad"] .ipad-status-btn { min-height: 44px; padding: 0 12px; border-radius: 10px; display: inline-flex; align-items: center; gap: 6px; font: 500 13px/1 var(--font-ui); background: var(--surface-control); color: var(--text-2); align-self: flex-start; }
+.app[data-layout^="ipad"] .ipad-status-btn.warn { background: var(--warn-bg); color: var(--warn-text); box-shadow: inset 0 0 0 1px var(--warn-line); }
+.app[data-layout^="ipad"] .ipad-status-btn .ico { width: 16px; height: 16px; }
+.app[data-layout^="ipad"] .panel.recipe .knobs { margin-top: 0; padding: 0; height: auto; display: flex; flex-direction: column; align-items: stretch; gap: 2px; }
+.app[data-layout^="ipad"] .panel.recipe .krow { flex: none; height: 44px; min-height: 44px; display: grid; grid-template-columns: 56px minmax(0, 1fr) 40px; align-items: center; gap: 0 10px; }
+.app[data-layout^="ipad"] .panel.recipe .krow .lab { width: auto; font-size: 14px; color: var(--text-2); }
+.app[data-layout^="ipad"] .panel.recipe .krow .val { width: auto; font-size: 14px; color: var(--text-1); text-align: right; }
+
+/* LUT：右边面板里放名称、输入色彩空间、导入 LUT */
+.app[data-layout^="ipad"] .ipad-lut-meta { display: flex; flex-direction: column; padding: 12px 16px 14px; gap: 6px; }
+.app[data-layout^="ipad"] .ipad-lut-row { min-height: 48px; padding: 0 4px; font-size: 14px; }
+.app[data-layout^="ipad"] .ipad-lut-row.warn .dim { color: var(--warn-text); }
+.app[data-layout^="ipad"] .ipad-lut-row:disabled { opacity: 0.45; }
+.app[data-layout^="ipad"] .ipad-lut-row .ico { width: 18px; height: 18px; color: var(--accent-text); }
+.app[data-layout^="ipad"] .panel.lut .lut-err,
+.app[data-layout^="ipad"] .panel.recipe .dat-err { position: static; margin: 8px 16px 10px; white-space: normal; }
+
+/* 调整：十个参数名 +「曲线 ›」全部排开（按字宽换行，不左右滑），下面一根大滑块 */
+.app[data-layout^="ipad"] .panel.adjust { padding: 12px 16px 14px; gap: 10px; }
+.app[data-layout^="ipad"] .panel.adjust .adjust-row { height: auto; padding: 0; display: block; }
+.app[data-layout^="ipad"] .panel.adjust .adjust-row .chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; overflow: visible; }
+.app[data-layout^="ipad"] .panel.adjust .adjust-row .chip { flex: none; min-width: 44px; min-height: 44px; height: 44px; padding: 0 14px; border-radius: 22px; font-size: 14px; }
+.app[data-layout^="ipad"] .panel.adjust .adjust-row .chip.reset-chip { display: none; }
+.app[data-layout^="ipad"] .panel.adjust .adjust-row .chip.deeper { color: var(--accent-text); }
+.app[data-layout^="ipad"] .adj-l1 { display: flex; align-items: baseline; justify-content: space-between; padding: 4px 2px 0; }
+.app[data-layout^="ipad"] .adj-l1 b { font: 600 15px/20px var(--font-ui); color: var(--text-1); }
+.app[data-layout^="ipad"] .adj-l1 .val { font: 600 15px/20px var(--font-num); color: var(--accent-text); }
+.app[data-layout^="ipad"] .panel.adjust .big { padding: 0; margin-top: 0; height: auto; gap: 4px; }
+.app[data-layout^="ipad"] .adj-hint { display: flex; align-items: center; justify-content: space-between; padding-top: 2px; min-height: 44px; font-size: 12px; }
+.app[data-layout^="ipad"] .adj-hint .fbtn { min-width: 44px; min-height: 44px; padding: 0 4px; color: var(--accent-text); font: 500 14px/1 var(--font-ui); }
+
+/* 裁剪 */
+.app[data-layout^="ipad"] .panel.crop-panel { padding: 12px 16px 14px; gap: 10px; }
+.app[data-layout^="ipad"] .panel.crop-panel .crop-top-row { height: auto; padding: 0; flex-direction: column; align-items: stretch; gap: 8px; }
+.app[data-layout^="ipad"] .panel.crop-panel .crop-top-row .chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; overflow: visible; }
+.app[data-layout^="ipad"] .panel.crop-panel .crop-top-row .chip { height: 44px; border-radius: 22px; padding: 0 14px; font-size: 14px; }
+.app[data-layout^="ipad"] .panel.crop-panel .crop-acts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.app[data-layout^="ipad"] .panel.crop-panel .crop-act { width: 100%; border-radius: 10px; }
+.app[data-layout^="ipad"] .panel.crop-panel .straighten { margin-top: 0; height: auto; padding: 0; gap: 6px; }
+.app[data-layout^="ipad"] .crop-inline-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.app[data-layout^="ipad"] .crop-inline-angle { font: 600 14px/18px var(--font-num); color: var(--text-1); }
+
+/* 更多：面板里直接列出（边框第一），边框 / 时间戳子页顶上一行「‹ 更多」 */
+.app[data-layout^="ipad"] .more-panel { padding: 6px 16px 12px; }
+.app[data-layout^="ipad"] .more-panel .more-row { min-height: 52px; }
+.app[data-layout^="ipad"] .more-panel .more-row:first-child { border-top: 0; }
+.app[data-layout^="ipad"] .ipad-sub-hd { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 10px 4px; border-bottom: 1px solid var(--line-subtle); flex: none; }
+.app[data-layout^="ipad"] .ipad-sub-back,
+.app[data-layout^="ipad"] .ipad-sub-act { min-width: 44px; min-height: 44px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; color: var(--accent-text); font: 500 15px/1 var(--font-ui); }
+.app[data-layout^="ipad"] .ipad-sub-act[hidden] { display: none; }
+.app[data-layout^="ipad"] .ipad-sub-title { flex: 1; font: 600 15px/18px var(--font-ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app[data-layout^="ipad"] .panel.frame .strip { height: auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 8px; padding: 10px 16px 14px; overflow: visible; }
+.app[data-layout^="ipad"] .panel.frame .strip .rc { width: 100%; }
+.app[data-layout^="ipad"] .panel.frame .strip .rc .th { height: 68px; }
+.app[data-layout^="ipad"] .panel.frame .fcontrols { padding: 10px 16px; gap: 10px; }
+.app[data-layout^="ipad"] .panel.frame .fctl-row,
+.app[data-layout^="ipad"] .panel.frame .fcontrols .chips { flex-wrap: wrap; height: auto; padding: 0; gap: 6px; }
+.app[data-layout^="ipad"] .stamp-band { height: auto; padding-bottom: 12px; }
+.app[data-layout^="ipad"] .stamp-band .band-row { height: auto; min-height: 48px; padding: 4px 16px; }
+.app[data-layout^="ipad"] .stamp-band .stamp-quick { height: auto; margin-top: 4px; padding: 0 16px; flex-wrap: wrap; gap: 6px; }
+
+/* ---------- iPad 照片下面：配方卡一条 + 胶片条（所有工具下都在） ---------- */
+.app[data-layout^="ipad"] .ipad-dock { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface-titlebar); overflow: hidden; z-index: 5; }
+.app[data-layout^="ipad"] .ipad-recipe-strip { flex: none; height: 150px; display: flex; align-items: stretch; gap: 10px; padding: 10px 14px; background: var(--surface-app); border-top: 1px solid var(--line-subtle); min-width: 0; }
+.app[data-layout^="ipad"] .ipad-recipe-strip .vseg { flex: none; width: 84px; display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+.app[data-layout^="ipad"] .ipad-recipe-strip .vseg-btn { position: relative; flex: 1; min-width: 44px; min-height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; gap: 2px; background: var(--surface-control); box-shadow: inset 0 0 0 1px var(--line-subtle); color: var(--text-2); font: 500 15px/1 var(--font-ui); }
+.app[data-layout^="ipad"] .ipad-recipe-strip .vseg-btn .ico { width: 14px; height: 14px; }
+.app[data-layout^="ipad"] .ipad-recipe-strip .vseg-btn.on { background: var(--surface-selected); color: var(--text-1); box-shadow: inset 0 0 0 1.5px var(--accent-text); }
+.app[data-layout^="ipad"] .ipad-recipe-strip .vseg-btn.dot::after { content: ""; position: absolute; top: 7px; right: 7px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent-text); }
+.app[data-layout^="ipad"] .ipad-strip-host { flex: 1; min-width: 0; display: flex; align-items: stretch; }
+.app[data-layout^="ipad"] .ipad-strip-host .recipe-strip-wrap,
+.app[data-layout^="ipad"] .ipad-strip-host .lut-strip-wrap { height: 100%; }
+.app[data-layout^="ipad"] .ipad-strip-host .recipe-strip-wrap[hidden],
+.app[data-layout^="ipad"] .ipad-strip-host .lut-strip-wrap[hidden] { display: none; }
+.app[data-layout^="ipad"] .ipad-strip-host .strip { height: 100%; padding: 0 2px; gap: 10px; align-items: flex-start; }
+.app[data-layout^="ipad"] .ipad-strip-host .rc { width: 132px; display: flex; flex-direction: column; align-items: stretch; }
+.app[data-layout^="ipad"] .ipad-strip-host .rc .th { height: 88px; border-radius: 10px; }
+.app[data-layout^="ipad"] .ipad-strip-host .rc .nm { font-size: 12px; line-height: 16px; margin-top: 6px; }
+.app[data-layout^="ipad"] .ipad-strip-host .rc.addlut .addlut-th { background: var(--surface-control); box-shadow: inset 0 0 0 1px var(--line); color: var(--accent-text); }
+.app[data-layout^="ipad"] .ipad-strip-host .rc.addlut .nm { color: var(--accent-text); }
+
+/* 胶片条：网格排成一行，按网格的规矩分组；最底下让出主屏幕横条 */
+.app[data-layout^="ipad"] .ipad-filmstrip { flex: 1; min-height: 0; display: flex; align-items: center; gap: 2px; padding: 10px 12px max(10px, var(--safe-bottom)); background: var(--surface-titlebar); border-top: 1px solid var(--line-subtle); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.app[data-layout^="ipad"] .ipad-filmstrip::-webkit-scrollbar { display: none; }
+.app[data-layout^="ipad"] .ipad-filmstrip .fgh { flex: none; width: 96px; align-self: stretch; display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 0 6px 0 10px; margin-left: 8px; border-left: 1px solid var(--line); font: 500 11px/14px var(--font-ui); color: var(--text-3); white-space: nowrap; }
+.app[data-layout^="ipad"] .ipad-filmstrip .fgh.first { margin-left: 0; border-left: 0; padding-left: 0; }
+.app[data-layout^="ipad"] .ipad-filmstrip .cell { position: relative; flex: none; width: 120px; height: 80px; min-width: 44px; min-height: 44px; border-radius: 3px; overflow: hidden; background: var(--gray-850); }
+.app[data-layout^="ipad"] .ipad-filmstrip .cell.solo-sep { margin-left: 8px; }
+.app[data-layout^="ipad"] .ipad-filmstrip .cell canvas { position: static; width: 100%; height: 100%; object-fit: cover; display: block; }
+.app[data-layout^="ipad"] .ipad-filmstrip .cell .raw { position: absolute; inset: 0; display: grid; place-items: center; font: 500 11px/1 var(--font-ui); color: var(--text-3); }
+.app[data-layout^="ipad"] .ipad-filmstrip .cell.cur { box-shadow: inset 0 0 0 2px var(--accent-text); }
+.app[data-layout^="ipad"] .ipad-filmstrip .cell.cur canvas { outline: 2px solid var(--accent-text); outline-offset: -2px; }
+
+/* ---------- iPad 横屏（13" 1366×1024）：照片 | 面板（392），下面两条横跨整屏 ---------- */
+.app[data-layout="ipad-landscape"] .screen.editor { display: grid; grid-template-columns: minmax(0, 1fr) 392px; grid-template-rows: 44px minmax(0, 1fr) 71px 271px; }
+.app[data-layout="ipad-landscape"] .screen.editor > .nav { grid-column: 1 / 3; grid-row: 1; }
+.app[data-layout="ipad-landscape"] .screen.editor > .stage { grid-column: 1; grid-row: 2 / 4; }
+.app[data-layout="ipad-landscape"] .screen.editor > .band { grid-column: 2; grid-row: 2; border-left: 1px solid var(--line-subtle); }
+.app[data-layout="ipad-landscape"] .screen.editor > .toolbar { grid-column: 2; grid-row: 3; height: auto; padding: 8px 10px 10px; gap: 6px; border-left: 1px solid var(--line-subtle); }
+.app[data-layout="ipad-landscape"] .screen.editor > .ipad-dock { grid-column: 1 / 3; grid-row: 4; }
+
+/* 11" 1180×820：面板 360，直方图 84，配方卡 112，胶片格 96×64 */
+.app[data-layout="ipad-landscape"][data-ipad-size="11"] .screen.editor { grid-template-columns: minmax(0, 1fr) 360px; grid-template-rows: 44px minmax(0, 1fr) 71px 233px; }
+.app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-hist-slot .hist { height: 84px; }
+.app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-recipe-strip { height: 128px; }
+.app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-strip-host .rc { width: 112px; }
+.app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-strip-host .rc .th { height: 72px; }
+.app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip .cell { width: 96px; height: 64px; }
+
+/* ---------- iPad 竖屏（13" 1024×1366）：照片铺满宽，下面配方卡、胶片条、工具带子（左右两半）、底栏 ---------- */
+.app[data-layout="ipad-portrait"] .screen.editor { display: flex; flex-direction: column; }
+.app[data-layout="ipad-portrait"] .screen.editor > .nav { order: 1; }
+.app[data-layout="ipad-portrait"] .screen.editor > .stage { order: 2; flex: 1; min-height: 0; }
+.app[data-layout="ipad-portrait"] .screen.editor > .ipad-dock { order: 3; flex: none; height: 239px; }
+.app[data-layout="ipad-portrait"] .screen.editor > .band { order: 4; flex: none; height: 232px; display: grid; grid-template-columns: minmax(0, 9fr) minmax(0, 11fr); grid-template-rows: minmax(0, 1fr) auto; border-top: 1px solid var(--line-subtle); }
+.app[data-layout="ipad-portrait"] .screen.editor > .toolbar { order: 5; flex: none; height: auto; padding: 8px 16px calc(8px + var(--safe-bottom)); }
+.app[data-layout="ipad-portrait"] .screen.editor > .toolbar .toolbar-tools { flex: none; gap: 0; }
+.app[data-layout="ipad-portrait"] .screen.editor > .toolbar .tbtn { flex: none; width: 96px; }
+.app[data-layout="ipad-portrait"] .screen.editor > .toolbar .save-btn { margin-left: auto; }
+.app[data-layout="ipad-portrait"] .ipad-recipe-strip { height: 146px; }
+.app[data-layout="ipad-portrait"] .ipad-filmstrip { padding-bottom: 10px; }
+.app[data-layout="ipad-portrait"] .ipad-filmstrip .cell { width: 108px; height: 72px; }
+.app[data-layout="ipad-portrait"] .ipad-hist-area { grid-column: 1; grid-row: 1; border-bottom: 0; border-right: 1px solid var(--line-subtle); padding: 8px 20px 8px; flex-direction: column-reverse; justify-content: flex-end; }
+.app[data-layout="ipad-portrait"] .ipad-hist-area .phead { justify-content: flex-start; margin: 0 0 0 -8px; }
+.app[data-layout="ipad-portrait"] .ipad-hist-area { min-height: 0; overflow: hidden; }
+.app[data-layout="ipad-portrait"] .ipad-hist-slot { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: flex-start; }
+.app[data-layout="ipad-portrait"] .ipad-hist-slot .hist { height: 100%; max-height: 150px; }
+.app[data-layout="ipad-portrait"] .screen.editor .band-body { grid-column: 2; grid-row: 1; }
+.app[data-layout="ipad-portrait"] .screen.editor .band-top { grid-column: 1 / 3; grid-row: 2; order: 0; }
+.app[data-layout="ipad-portrait"] .panel.recipe .knobs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 16px; }
+.app[data-layout="ipad-portrait"] .panel.recipe .krow { grid-template-columns: 48px minmax(0, 1fr) 32px; }
+.app[data-layout="ipad-portrait"] .panel.frame .strip { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+
+/* ---------- iPad 点照片收起：面板和下面两条都收起，只留底栏 ---------- */
+.app[data-layout^="ipad"] .screen.editor[data-collapsed="1"] > .band,
+.app[data-layout^="ipad"] .screen.editor[data-collapsed="1"] > .ipad-dock { display: none; }
+.app[data-layout="ipad-landscape"] .screen.editor[data-collapsed="1"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: 44px minmax(0, 1fr) auto; }
+.app[data-layout="ipad-landscape"] .screen.editor[data-collapsed="1"] > .nav { grid-column: 1; grid-row: 1; }
+.app[data-layout="ipad-landscape"] .screen.editor[data-collapsed="1"] > .stage { grid-column: 1; grid-row: 2; }
+.app[data-layout^="ipad"] .screen.editor[data-collapsed="1"] > .toolbar { grid-column: 1; grid-row: 3; height: calc(56px + var(--safe-bottom)); padding: 2px 16px calc(2px + var(--safe-bottom)); border-left: 0; }
+.app[data-layout^="ipad"] .screen.editor[data-collapsed="1"] > .toolbar .toolbar-tools { flex: none; gap: 0; }
+.app[data-layout^="ipad"] .screen.editor[data-collapsed="1"] > .toolbar .tbtn { flex: none; width: 96px; }
+.app[data-layout^="ipad"] .screen.editor[data-collapsed="1"] > .toolbar .save-btn { margin-left: auto; }
+
+/* ---------- iPad 浮层：⋯ 菜单与导出选项从右上角弹出，其余面板居中 ---------- */
+.app[data-layout^="ipad"] .ms:not(.popover) { left: 50%; right: auto; bottom: 24px; transform: translateX(-50%); width: min(460px, calc(100% - 32px)); max-height: calc(100% - 48px); overflow-y: auto; border-radius: 20px; padding-bottom: 18px; }
+.app[data-layout^="ipad"] .ms.popover { left: auto; right: 12px; bottom: auto; top: calc(44px + var(--safe-top) + 8px); width: min(344px, calc(100% - 24px)); max-height: calc(100% - 72px); overflow-y: auto; border-radius: 14px; padding: 14px 16px 16px; }
+.app[data-layout^="ipad"] .ms.popover .arrow.up { position: absolute; top: -6px; right: 18px; width: 12px; height: 12px; background: var(--surface-overlay); transform: rotate(45deg); border-left: 1px solid rgba(255, 255, 255, 0.08); border-top: 1px solid rgba(255, 255, 255, 0.08); pointer-events: none; }
+.app[data-layout^="ipad"] .ms.popover .grab { display: none; }
+
+/* ---------- 手机横屏（844×390 / 956×440）：左边照片铺满高度，右边一列（197 + 右安全区），没有下面两条 ---------- */
+.app[data-layout="phone-landscape"] .screen.editor { display: grid; grid-template-columns: var(--safe-left) minmax(0, 1fr) calc(197px + var(--safe-right)); grid-template-rows: 44px minmax(0, 1fr) auto; padding-top: 0; background: #000; }
+.app[data-layout="phone-landscape"] .screen.editor > .stage { grid-column: 2; grid-row: 1 / 4; background: #000; }
+.app[data-layout="phone-landscape"] .screen.editor .pv { inset: 0 0 calc(2px + var(--safe-bottom)) 0; }
+.app[data-layout="phone-landscape"] .screen.editor > .nav,
+.app[data-layout="phone-landscape"] .screen.editor > .band,
+.app[data-layout="phone-landscape"] .screen.editor > .toolbar { grid-column: 3; border-left: 1px solid var(--line-subtle); }
+.app[data-layout="phone-landscape"] .screen.editor > .nav { grid-row: 1; padding: 0 var(--safe-right) 0 0; gap: 0; }
+.app[data-layout="phone-landscape"] .screen.editor > .nav .nav-back-lab { display: none; }
+.app[data-layout="phone-landscape"] .screen.editor > .nav .nb { padding: 0 4px; }
+.app[data-layout="phone-landscape"] .screen.editor > .nav .t { text-align: left; }
+.app[data-layout="phone-landscape"] .screen.editor > .nav .t b { font-size: 14px; line-height: 17px; }
+.app[data-layout="phone-landscape"] .screen.editor > .nav .t small { font-size: 11px; line-height: 13px; }
+.app[data-layout="phone-landscape"] .screen.editor > .nav .hdr-toggle { padding: 0 6px; }
+.app[data-layout="phone-landscape"] .screen.editor > .band { grid-row: 2; height: auto; min-height: 0; padding-right: var(--safe-right); box-shadow: none; }
+.app[data-layout="phone-landscape"] .screen.editor .band-top { height: 0; overflow: hidden; order: 99; }
+.app[data-layout="phone-landscape"] .screen.editor .band[data-export-slot="1"] .band-top { height: 44px; border-top: 1px solid var(--line-subtle); }
+.app[data-layout="phone-landscape"] .screen.editor .band-hd { display: none; }
+.app[data-layout="phone-landscape"] .screen.editor .band-body { flex: 1; height: auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.app[data-layout="phone-landscape"] .screen.editor .band .panel { justify-content: flex-start; overflow: visible; }
+.app[data-layout="phone-landscape"] .screen.editor > .toolbar { grid-row: 3; height: calc(112px + var(--safe-bottom)); flex-direction: column; align-items: stretch; gap: 4px; padding: 6px calc(6px + var(--safe-right)) calc(10px + var(--safe-bottom)) 6px; }
+.app[data-layout="phone-landscape"] .screen.editor > .toolbar .toolbar-tools { flex: none; }
+.app[data-layout="phone-landscape"] .screen.editor > .toolbar .tbtn { height: 48px; }
+.app[data-layout="phone-landscape"] .screen.editor > .toolbar .save-btn { width: 100%; min-height: 44px; justify-content: center; }
+/* 收起：只收带子，返回、工具和「存到相册」留在右边那一列，照片不动 */
+.app[data-layout="phone-landscape"] .screen.editor[data-collapsed="1"] > .band { display: none; }
+.app[data-layout="phone-landscape"][data-screen="editor"] > .pdock[data-dock-mode="flush"] { left: auto; right: 0; width: calc(197px + var(--safe-right)); bottom: calc(112px + var(--safe-bottom)); }
+
+/* 手机横屏：配方 / LUT 两列竖滚 */
+.app[data-layout="phone-landscape"] .recipe-strip-wrap,
+.app[data-layout="phone-landscape"] .lut-strip-wrap { height: auto; flex-direction: column; align-items: stretch; padding: 6px 8px 8px; gap: 6px; }
+.app[data-layout="phone-landscape"] .recipe-filter-pin,
+.app[data-layout="phone-landscape"] .lut-pin { padding: 0; border-right: 0; flex-wrap: wrap; gap: 6px; }
+.app[data-layout="phone-landscape"] .rc.filter-tile { flex: 1; width: auto; min-width: 72px; min-height: 44px; flex-direction: row; gap: 4px; }
+.app[data-layout="phone-landscape"] .rc.filter-tile .filter-th { width: 100%; height: 44px; flex-direction: row; gap: 4px; padding: 0 8px; }
+.app[data-layout="phone-landscape"] .rc.filter-tile .nm { display: none; }
+.app[data-layout="phone-landscape"] .recipe-strip-wrap .strip,
+.app[data-layout="phone-landscape"] .lut-strip-wrap .strip,
+.app[data-layout="phone-landscape"] .panel.frame .strip { height: auto; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; overflow: visible; }
+.app[data-layout="phone-landscape"] .panel.frame .strip { padding: 8px; }
+.app[data-layout="phone-landscape"] .strip .mode-switch { grid-column: 1 / -1; height: 48px; }
+.app[data-layout="phone-landscape"] .strip .mode-btn { flex: 1; height: 44px; min-height: 44px; }
+.app[data-layout="phone-landscape"] .strip .rc { width: 100%; }
+.app[data-layout="phone-landscape"] .strip .rc .th { height: 56px; }
+.app[data-layout="phone-landscape"] .strip .rc .nm { font-size: 11px; line-height: 14px; }
+.app[data-layout="phone-landscape"] .lut-foot { white-space: normal; grid-column: 1 / -1; }
+.app[data-layout="phone-landscape"] .panel.recipe .recipe-fine { height: auto; padding: 8px; gap: 8px; }
+.app[data-layout="phone-landscape"] .panel.recipe .fine-top { height: auto; flex-wrap: wrap; padding: 0; }
+.app[data-layout="phone-landscape"] .panel.recipe .knob-chips { flex-wrap: wrap; overflow: visible; }
+.app[data-layout="phone-landscape"] .panel.recipe .knobs { margin-top: 0; padding: 0; height: auto; }
+.app[data-layout="phone-landscape"] .panel.adjust { padding: 8px; gap: 6px; }
+/* 一列太窄，参数名要排好几行：滑块放最上面，选完参数不用往下翻就能拖 */
+.app[data-layout="phone-landscape"] .panel.adjust .big { order: -1; }
+.app[data-layout="phone-landscape"] .panel.adjust .adjust-row { height: auto; padding: 0; align-items: flex-start; flex-wrap: wrap; gap: 5px; }
+.app[data-layout="phone-landscape"] .panel.adjust .adjust-row .chips { flex: 1 1 100%; flex-wrap: wrap; padding: 0; gap: 5px; overflow: visible; }
+.app[data-layout="phone-landscape"] .panel.adjust .adjust-row .chip { height: 44px; border-radius: 22px; padding: 0 9px; font-size: 13px; }
+.app[data-layout="phone-landscape"] .panel.adjust .adjust-row .chip.reset-chip { display: none; }
+.app[data-layout="phone-landscape"] .adj-l1 { display: flex; align-items: baseline; justify-content: space-between; }
+.app[data-layout="phone-landscape"] .adj-l1 .val { color: var(--accent-text); }
+.app[data-layout="phone-landscape"] .panel.adjust .big { padding: 0; margin-top: 0; height: auto; }
+.app[data-layout="phone-landscape"] .adj-hint { display: flex; align-items: center; justify-content: space-between; min-height: 44px; font-size: 11px; }
+.app[data-layout="phone-landscape"] .adj-hint .fbtn { min-width: 44px; min-height: 44px; padding: 0 4px; color: var(--accent-text); font: 500 13px/1 var(--font-ui); }
+.app[data-layout="phone-landscape"] .panel.crop-panel { padding: 8px; gap: 8px; }
+.app[data-layout="phone-landscape"] .panel.crop-panel .crop-top-row { height: auto; padding: 0; flex-direction: column; align-items: stretch; gap: 6px; }
+.app[data-layout="phone-landscape"] .panel.crop-panel .crop-top-row .chips { flex-wrap: wrap; padding: 0; gap: 5px; overflow: visible; }
+.app[data-layout="phone-landscape"] .panel.crop-panel .crop-top-row .chip { height: 44px; border-radius: 22px; padding: 0 10px; font-size: 13px; }
+.app[data-layout="phone-landscape"] .panel.crop-panel .crop-acts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.app[data-layout="phone-landscape"] .panel.crop-panel .crop-act { width: 100%; border-radius: 10px; }
+.app[data-layout="phone-landscape"] .panel.crop-panel .straighten { margin-top: 0; height: auto; padding: 0; gap: 4px; }
+.app[data-layout="phone-landscape"] .crop-inline-hd { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 12px; }
+.app[data-layout="phone-landscape"] .panel.frame .ipad-sub-hd { display: flex; align-items: center; justify-content: space-between; min-height: 44px; padding: 0 8px; border-bottom: 1px solid var(--line-subtle); }
+.app[data-layout="phone-landscape"] .panel.frame .ipad-sub-back { display: none; }
+.app[data-layout="phone-landscape"] .panel.frame .ipad-sub-act { min-width: 44px; min-height: 44px; color: var(--accent-text); font: 500 14px/1 var(--font-ui); }
+.app[data-layout="phone-landscape"] .panel.frame .ipad-sub-act[hidden] { display: none; }
+.app[data-layout="phone-landscape"] .panel.frame .fcontrols { padding: 8px; gap: 8px; }
+.app[data-layout="phone-landscape"] .panel.frame .fctl-row,
+.app[data-layout="phone-landscape"] .panel.frame .fcontrols .chips { flex-wrap: wrap; height: auto; padding: 0; gap: 5px; }
+.app[data-layout="phone-landscape"] .stamp-band { height: auto; padding: 4px 0 8px; }
+.app[data-layout="phone-landscape"] .stamp-band .band-row { height: auto; min-height: 44px; padding: 0 8px; flex-wrap: wrap; }
+.app[data-layout="phone-landscape"] .stamp-band .stamp-quick { height: auto; margin-top: 4px; padding: 0 8px; flex-wrap: wrap; gap: 5px; }
+
+/* 手机横屏弹层：限制高度可滚并居中，390 高也都点得到 */
+.app[data-layout="phone-landscape"] .ms { left: 50%; right: auto; width: min(460px, calc(100% - 24px)); transform: translateX(-50%); max-height: calc(100% - 16px); overflow-y: auto; padding-top: 12px; }
+.app[data-layout="phone-landscape"] .ms .lrow { min-height: 46px; }
+.app[data-layout="phone-landscape"] .curves-sheet { padding: 8px 14px 12px; }
+.app[data-layout="phone-landscape"] svg.curve { width: min(220px, 46vh); }
+
+/* 手机横屏：右边一列只有 197 宽，导出条收紧，「第 N 张做好了 · 存进相册」最多分两行，不被省略成「第 1 …」 */
+.app[data-layout="phone-landscape"] .pdock { padding-left: 6px; padding-right: calc(6px + var(--safe-right)); gap: 4px; }
+.app[data-layout="phone-landscape"] .band .pdock { padding-right: 6px; }
+.app[data-layout="phone-landscape"] .pdock .es-pill { padding: 0 8px; gap: 4px; }
+.app[data-layout="phone-landscape"] .pdock .es-main .es-txt { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 12px; line-height: 14px; text-align: left; }
+.app[data-layout="phone-landscape"] .pdock .es-btn.es-run-pill { min-width: 72px; }
+.app[data-layout="phone-landscape"] .pdock .es-btn.es-detail-side { min-width: 48px; }
+.app[data-layout="phone-landscape"] .pdock .es-btn.es-stop-pill { min-width: 48px; }
