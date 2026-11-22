@@ -105,3 +105,38 @@ test('approved copy and inline More order (边框 first)', () => {
   const idxCurves = moreSrc.indexOf("key: 'curves'");
   assert.ok(idxFrame > 0 && idxFrame < idxStamp && idxStamp < idxCurves, '边框 must be first in inline MorePanel');
 });
+
+test('gridColumns keeps phone at 3 and iPad thumbnails in 150-200 pt across widths', async () => {
+  const { gridColumns } = await import('../../mobile/src/app/layout.ts');
+  const { layoutRows } = await import('../../mobile/src/lib/group.ts');
+  for (const w of [390, 440, 844, 956]) {
+    assert.equal(gridColumns(w, false), 3);
+  }
+  assert.equal(gridColumns(820, true), 5);
+  assert.equal(gridColumns(1024, true), 6);
+  assert.equal(gridColumns(1032, true), 6);
+  assert.equal(gridColumns(1180, true), 7);
+  assert.equal(gridColumns(1366, true), 8);
+  assert.equal(gridColumns(1376, true), 8);
+  for (let w = 700; w <= 1440; w += 17) {
+    const cols = gridColumns(w, true);
+    const thumbW = (w - (cols - 1) * 2) / cols;
+    assert.ok(thumbW >= 150 && thumbW <= 200, `width ${w}: cols=${cols} thumbW=${thumbW}`);
+  }
+  const rows = layoutRows([{ dayKey: '2026-11-22', dayLabel: '11月22日', rangeLabel: '10:00', startMs: 0, endMs: 0, ids: ['1', '2', '3', '4', '5', '6', '7'] }], 100, 6);
+  const cellRows = rows.filter((r) => r.kind === 'cells');
+  assert.equal(cellRows.length, 2);
+  assert.equal(cellRows[0].ids.length, 6);
+  assert.equal(cellRows[1].ids.length, 1);
+});
+
+test('cellAriaLabel formats position, kind and state without leaking private names', async () => {
+  const { cellAriaLabel } = await import('../../mobile/src/app/layout.ts');
+  assert.equal(cellAriaLabel(3, { dng: true, jpg: true }, false, false), '第 3 张，RAW+JPG');
+  assert.equal(cellAriaLabel(3, { dng: true, jpg: true }, true, false), '第 3 张，RAW+JPG，已编辑');
+  assert.equal(cellAriaLabel(3, { dng: true, jpg: true }, true, true), '第 3 张，RAW+JPG，已编辑，已选中');
+  assert.equal(cellAriaLabel(1, { dng: true, jpg: false }, false, false), '第 1 张，RAW');
+  assert.equal(cellAriaLabel(2, { dng: false, jpg: true }, false, true), '第 2 张，JPG，已选中');
+  assert.equal(cellAriaLabel(4, { dng: false, jpg: true, diptych: true }, false, false), '第 4 张，半格双联');
+  assert.equal(cellAriaLabel(5, { dng: true, jpg: false, bad: true }, false, false), '第 5 张，RAW，读不了');
+});

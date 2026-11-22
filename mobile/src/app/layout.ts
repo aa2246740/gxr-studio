@@ -34,6 +34,35 @@ export function ipadSizeOf(width: number, height: number): IpadSize {
   return longEdge >= 1240 && shortEdge >= 900 ? '13' : '11';
 }
 
+/** 图库网格列数：手机保持 3 列；iPad 按宽度分列，使单张缩略图落在 150–200 pt（13" 竖 6 / 横 8，11" 竖 5 / 横 7）。 */
+export function gridColumns(width: number, ipad: boolean): number {
+  if (!ipad) return 3;
+  const w = Number.isFinite(width) && width > 0 ? width : 700;
+  return Math.max(4, Math.floor((w + 2) / 160));
+}
+
+export interface CellLabelInfo {
+  dng: boolean;
+  jpg: boolean;
+  diptych?: boolean;
+  bad?: boolean;
+  unread?: boolean;
+}
+
+/** 图库缩略图按钮的无障碍名称（仅含序号、类型与状态，绝不含文件名或拍摄时间）。 */
+export function cellAriaLabel(pos: number | undefined, info: CellLabelInfo, edited: boolean, selected: boolean): string {
+  const parts: string[] = [pos ? `第 ${pos} 张` : '照片'];
+  if (info.diptych) parts.push('半格双联');
+  else if (info.dng && info.jpg) parts.push('RAW+JPG');
+  else if (info.dng) parts.push('RAW');
+  else if (info.jpg) parts.push('JPG');
+  if (info.bad) parts.push('读不了');
+  else if (info.unread) parts.push('未读完');
+  if (edited) parts.push('已编辑');
+  if (selected) parts.push('已选中');
+  return parts.join('，');
+}
+
 /** iPad 直方图默认打开；手动关闭后记住为 '0'。 */
 export function loadIpadHist(): boolean {
   return store()?.getItem(IPAD_HIST_KEY) !== '0';

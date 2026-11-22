@@ -295,3 +295,30 @@
 .app[data-layout="phone-landscape"] .pdock .es-btn.es-run-pill { min-width: 72px; }
 .app[data-layout="phone-landscape"] .pdock .es-btn.es-detail-side { min-width: 48px; }
 .app[data-layout="phone-landscape"] .pdock .es-btn.es-stop-pill { min-width: 48px; }
+
+/* 无 WebGPU 说明（iPad 放直方图位，手机横屏放带子顶部；有 GPU 时不挂节点，0 影响） */
+.app .nogpu-notice { display: none; }
+.app[data-layout^="ipad"] .ipad-hist-area[data-nogpu="1"] { padding: 10px 16px; }
+.app[data-layout="ipad-portrait"] .ipad-hist-area[data-nogpu="1"] { padding: 12px 16px; justify-content: flex-end; }
+.app[data-layout^="ipad"] .ipad-hist-area[data-nogpu="1"] .phead,
+.app[data-layout^="ipad"] .ipad-hist-area[data-nogpu="1"] .ipad-hist-slot { display: none; }
+.app[data-layout^="ipad"] .nogpu-notice,
+.app[data-layout="phone-landscape"] .nogpu-notice {
+  display: flex; align-items: flex-start; gap: 8px; flex: none;
+  padding: 8px 10px; border-radius: 10px;
+  background: var(--warn-bg); box-shadow: inset 0 0 0 1px var(--warn-line);
+}
+.app[data-layout^="ipad"] .nogpu-notice .warn,
+.app[data-layout="phone-landscape"] .nogpu-notice .warn { flex: none; padding-top: 1px; }
+.app[data-layout^="ipad"] .nogpu-notice .warn .ico,
+.app[data-layout="phone-landscape"] .nogpu-notice .warn .ico { width: 16px; height: 16px; }
+.app[data-layout^="ipad"] .nogpu-notice .tx,
+.app[data-layout="phone-landscape"] .nogpu-notice .tx { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.app[data-layout^="ipad"] .nogpu-notice .nogpu-title,
+.app[data-layout="phone-landscape"] .nogpu-notice .nogpu-title { font: 600 13px/17px var(--font-ui); color: var(--warn-text); }
+.app[data-layout^="ipad"] .nogpu-notice .nogpu-detail,
+.app[data-layout="phone-landscape"] .nogpu-notice .nogpu-detail { font: 400 12px/16px var(--font-ui); color: var(--text-2); }
+.app[data-layout="phone-landscape"] .nogpu-notice { margin: 4px 6px 0; padding: 5px 7px; gap: 0; border-radius: 8px; }
+.app[data-layout="phone-landscape"] .nogpu-notice .warn { display: none; }
+.app[data-layout="phone-landscape"] .nogpu-notice .nogpu-title { font-size: 11px; line-height: 14px; }
+.app[data-layout="phone-landscape"] .nogpu-notice .nogpu-detail { font-size: 10px; line-height: 13px; }

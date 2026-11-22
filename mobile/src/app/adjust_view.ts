@@ -94,6 +94,7 @@ export class AdjustView {
 
   setDisabled(disabled: boolean): void {
     if (this.input) this.input.disabled = disabled;
+    if (this.histBtn) this.histBtn.disabled = disabled;
   }
 
   syncHistBtn(): void {

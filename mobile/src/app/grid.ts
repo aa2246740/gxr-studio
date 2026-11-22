@@ -3,6 +3,7 @@ import { UNIT_LABEL } from '../lib/calib';
 import { groupsPresent } from '../lib/paste';
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
 import { button, el, icon } from './dom';
+import { cellAriaLabel, classifyLayout, gridColumns, isIpadLayout, viewportDims } from './layout';
 import { openable, photoMs, unread, type AppApi, type Photo } from './model';
 import { groupsText, pasteState, rangeOf } from './paste_state';
 import { groupBody, openConfirm, pasteBar, pickBody, PASTE_ICON } from './paste_ui';
@@ -36,11 +37,31 @@ export class GridView {
   private readonly soloRows = new Set<string>();
   private pasteBarEl: HTMLElement | null = null;
   private offPaste: (() => void) | null = null;
+  private cols = 3;
+  private lastWidth = 0;
+  private readonly indexById = new Map<string, number>();
+  private ro: ResizeObserver | null = null;
+  private onResize: (() => void) | null = null;
 
   constructor(
     private readonly host: HTMLElement,
     private readonly api: AppApi,
   ) {}
+
+  destroy(): void {
+    this.ro?.disconnect();
+    this.ro = null;
+    if (this.onResize) {
+      window.removeEventListener('resize', this.onResize);
+      this.onResize = null;
+    }
+    if (this.frame) {
+      cancelAnimationFrame(this.frame);
+      this.frame = 0;
+    }
+    this.offPaste?.();
+    this.offPaste = null;
+  }
 
   show(): void {
     pasteState.sync(this.api);
@@ -121,23 +142,61 @@ export class GridView {
     this.bar.hidden = true;
     screen.append(nav, this.datLine, this.scroller, this.bar);
     this.host.append(screen);
+    this.watchSize();
+  }
+
+  private watchSize(): void {
+    this.ro?.disconnect();
+    this.ro = null;
+    if (this.onResize) {
+      window.removeEventListener('resize', this.onResize);
+      this.onResize = null;
+    }
+    const check = () => {
+      if (!this.scroller?.isConnected) {
+        this.destroy();
+        return;
+      }
+      const nextWidth = this.scroller.clientWidth || 390;
+      const nextCols = this.computeCols(nextWidth);
+      if (nextCols !== this.cols || Math.abs(nextWidth - this.lastWidth) >= 2) this.relayout();
+    };
+    this.onResize = check;
+    window.addEventListener('resize', check);
+    if (typeof ResizeObserver === 'function' && this.scroller) {
+      this.ro = new ResizeObserver(check);
+      this.ro.observe(this.scroller);
+    }
+  }
+
+  private computeCols(width: number): number {
+    const shell = this.host.closest<HTMLElement>('.app');
+    const dims = shell ? viewportDims(shell) : { width: window.innerWidth || width, height: window.innerHeight || 844 };
+    return gridColumns(width, isIpadLayout(classifyLayout(dims.width, dims.height)));
   }
 
   private relayout(): void {
     if (!this.scroller || !this.inner) return;
     const photos = this.api.photos();
+    this.indexById.clear();
+    photos.forEach((photo, idx) => this.indexById.set(photo.id, idx + 1));
     const groups = groupByGap(
       photos.map((photo) => ({ id: photo.id, ms: photoMs(photo) })),
       this.api.gap(),
       this.api.order(),
     );
     const width = this.scroller.clientWidth || 390;
-    const cellH = Math.max(48, (width / 3) * (2 / 3) + 2);
+    const cols = this.computeCols(width);
+    this.cols = cols;
+    this.lastWidth = width;
+    this.inner.style.setProperty('--grid-cols', String(cols));
+    const cellW = cols === 3 ? width / 3 : (width - (cols - 1) * 2) / cols;
+    const cellH = Math.max(48, cellW * (2 / 3) + 2);
     // 单张自成一组不另占一行组标题；紧跟在上一组照片后时加分隔间距和细线，避免看起来像上一组。
     const soloIds = new Set(groups.filter((g) => g.ids.length <= 1).map((g) => g.ids[0]));
     const kept: VRow[] = [];
     this.soloRows.clear();
-    for (const row of layoutRows(groups, cellH)) {
+    for (const row of layoutRows(groups, cellH, cols)) {
       if (row.kind === 'group' && row.ids.length <= 1) continue;
       const prev = kept[kept.length - 1];
       if (row.kind === 'cells' && row.ids.length === 1 && soloIds.has(row.ids[0]) && prev?.kind === 'cells') {
@@ -211,7 +270,7 @@ export class GridView {
       480,
     );
     const slice = this.rows.slice(range.start, range.end);
-    const sig = `${range.start}:${slice.map((row) => row.key).join('|')}:${this.selecting ? 's' : ''}:${pasteState.clip ? 'c' : ''}`;
+    const sig = `${range.start}:${this.cols}:${slice.map((row) => row.key).join('|')}:${this.selecting ? 's' : ''}:${pasteState.clip ? 'c' : ''}`;
     const total = this.rows.reduce((sum, row) => sum + row.height, 0);
     this.inner.style.height = `${total}px`;
     if (sig !== this.sig) {
@@ -234,7 +293,14 @@ export class GridView {
       const photo = this.api.photo(id);
       const cell = button('cell', '');
       cell.dataset.id = id;
-      cell.append(el('span', 'ck'), el('span', 'bl'), el('span', 'raw'));
+      cell.setAttribute('aria-label', '照片');
+      const ck = el('span', 'ck');
+      const bl = el('span', 'bl');
+      const raw = el('span', 'raw');
+      ck.setAttribute('aria-hidden', 'true');
+      bl.setAttribute('aria-hidden', 'true');
+      raw.setAttribute('aria-hidden', 'true');
+      cell.append(ck, bl, raw);
       cell.addEventListener('click', () => this.onCell(id));
       if (photo) this.fill(cell, photo);
       cells.append(cell);
@@ -251,10 +317,11 @@ export class GridView {
   }
 
   private fill(cell: HTMLButtonElement, photo: Photo): void {
+    const selected = this.selected.has(photo.id);
     cell.classList.toggle('skel', photo.status === 'pending');
     cell.classList.toggle('err', photo.status === 'bad');
     cell.classList.toggle('gone', unread(photo));
-    cell.classList.toggle('on', this.selected.has(photo.id));
+    cell.classList.toggle('on', selected);
     const raw = cell.querySelector('.raw');
     const bl = cell.querySelector('.bl');
     if (raw) {
@@ -269,9 +336,25 @@ export class GridView {
     const mark = cell.querySelector('.edt');
     if (edited && !mark) {
       const pencil = el('span', 'edt');
+      pencil.setAttribute('aria-hidden', 'true');
       pencil.append(icon(PASTE_ICON.pencil));
       cell.append(pencil);
     } else if (!edited) mark?.remove();
+    cell.setAttribute(
+      'aria-label',
+      cellAriaLabel(
+        this.indexById.get(photo.id),
+        {
+          dng: photo.dng !== null,
+          jpg: photo.jpg !== null,
+          diptych: photo.diptych,
+          bad: photo.status === 'bad',
+          unread: unread(photo),
+        },
+        edited,
+        selected,
+      ),
+    );
     if (!photo.bitmap) return;
     let canvas = cell.querySelector('canvas');
     if (!canvas) {
