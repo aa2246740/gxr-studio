@@ -9,7 +9,6 @@ export const MAX_LUT_LIBRARY_BYTES = 256 << 20;
 export function lutFootnote(env?: DeviceEnv): string {
   return `LUT 只存在这台 ${deviceName(env)} 上，直接套在照片上，不写入相机。`;
 }
-export const LUT_FOOTNOTE = lutFootnote();
 
 export const LUT_ERRORS = {
   cube_too_big: '无法读取 LUT。文件过大。',

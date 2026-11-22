@@ -1,8 +1,9 @@
-"""iPad Safari / WebKit 无 WebGPU 缺陷回归验收测试（D1–D7，browser_serial）。
+"""iPad Safari / WebKit 无 WebGPU 缺陷回归验收测试（D1–D7 + F1，browser_serial）。
 
 在固定 Playwright WebKit（hasTouch=True, isMobile=True）下覆盖 1032×1376、1376×1032、
-820×1180、手机横屏 844×390 与手机竖屏 390×844：
+820×1180、手机横屏 844×390 与手机竖屏 390×844 / 440×956：
 - D1：无 WebGPU 说明在全部版式可见（含「预览只显示相机 JPG，导出仍会套用配方和 LUT」），不遮挡控件，无空白直方图框；
+- F1：手机竖屏（390×844 / 440×956）无 WebGPU 时配方头不被挤扁，配方名不截断、来源胶囊单行且不溢出 44 pt 带头；
 - D2：无 WebGPU 时切换配方卡，编辑器顶栏标题同步更新；
 - D3：无 WebGPU 时清图提锐、导出与横竖旋转前后，照片矩形位移 <= 1 px；
 - D4：iPad 图库缩略图宽度落在 150–200 pt，手机竖屏保持 3 列，日期头/角标/选框正常贴合；

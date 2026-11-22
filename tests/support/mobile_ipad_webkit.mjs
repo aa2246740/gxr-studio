@@ -44,12 +44,13 @@ const EDITOR_VIEWPORTS = [
   { label: '820x1180', width: 820, height: 1180, layout: 'ipad-portrait', ipad: true, safe: IPAD_SAFE, checkExport: false },
   { label: '844x390', width: 844, height: 390, layout: 'phone-landscape', ipad: false, safe: PHONE_LAND_SAFE, checkExport: false },
   { label: '390x844', width: 390, height: 844, layout: 'phone-portrait', ipad: false, safe: PHONE_PORT_SAFE, checkExport: false },
+  { label: '440x956', width: 440, height: 956, layout: 'phone-portrait', ipad: false, safe: PHONE_PORT_SAFE, checkExport: false },
 ];
 
 const STEMS = (manifest.stems ?? []).filter(Boolean);
 const failures = [];
 const pageErrors = [];
-const summary = { grid: {}, editor: {}, d5: {}, d6: {}, d7: {}, rotation: {} };
+const summary = { grid: {}, editor: {}, d5: {}, d6: {}, d7: {}, f1: {}, rotation: {} };
 
 const IPAD_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
 const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1';
@@ -363,6 +364,84 @@ async function auditEditorViewport(page, vp, landscapeId, landscapeStem) {
     await checkVisibleControlNotCovered(page, sel, `D1 ${vp.label} ${name}`);
   }
   await checkVisibleControlNotCovered(page, '[data-recipes="1"] .rc[data-card]', `D1 ${vp.label} first-recipe-card`);
+
+  // F1（手机竖屏 390×844 / 440×956 无 WebGPU）：带头配方名不截断，来源胶囊保持单行且不溢出 44 pt 带头，说明仍可见。
+  if (vp.layout === 'phone-portrait') {
+    const tealCard = page.locator('[data-recipes="1"] .rc[data-card]').filter({ hasText: 'Teal Orange' }).first();
+    if (await tealCard.isVisible().catch(() => false)) {
+      await tealCard.tap();
+      await frame(page, 3);
+    }
+    const hdr = await page.evaluate(() => {
+      const box = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const lineRects = [...range.getClientRects()].filter((lr) => lr.width > 0.5 && lr.height > 0.5);
+        const lineTop = lineRects.length ? Math.min(...lineRects.map((lr) => lr.top)) : r.top;
+        const lineBottom = lineRects.length ? Math.max(...lineRects.map((lr) => lr.bottom)) : r.bottom;
+        return {
+          text: (el.textContent || '').trim(),
+          left: Math.round(r.left * 10) / 10,
+          right: Math.round(r.right * 10) / 10,
+          top: Math.round(r.top * 10) / 10,
+          bottom: Math.round(r.bottom * 10) / 10,
+          w: Math.round(r.width * 10) / 10,
+          h: Math.round(r.height * 10) / 10,
+          scrollW: Math.round(el.scrollWidth * 10) / 10,
+          clientW: Math.round(el.clientWidth * 10) / 10,
+          scrollH: Math.round(el.scrollHeight * 10) / 10,
+          lineCount: lineRects.length,
+          lineTop: Math.round(lineTop * 10) / 10,
+          lineBottom: Math.round(lineBottom * 10) / 10,
+        };
+      };
+      return {
+        hd: box('.editor .band-hd'),
+        lbl: box('.editor .band-hd .lbl.nogpu'),
+        coreTag: box('.editor .band-hd .lbl.nogpu .tag.neutral'),
+        note: box('.editor .band-hd .lbl.nogpu .nogpu-note'),
+        right: box('.editor .band-hd-right'),
+        slot: box('.editor .band-head-slot'),
+        rname: box('.editor .band-recipe-hd .rname'),
+        pill: box('.editor .band-recipe-hd .tag.neutral-tag'),
+      };
+    });
+    summary.f1[vp.label] = hdr;
+    check(Boolean(hdr.hd && hdr.lbl && hdr.coreTag && hdr.note && hdr.rname && hdr.pill && hdr.slot), `F1 ${vp.label}: phone portrait header elements missing`);
+    if (hdr.hd && hdr.coreTag && hdr.note && hdr.rname && hdr.pill && hdr.slot) {
+      check(
+        hdr.rname.scrollW <= hdr.rname.clientW + 1,
+        `F1 ${vp.label}: recipe name 「${hdr.rname.text}」 truncated (scrollW=${hdr.rname.scrollW} > clientW=${hdr.rname.clientW})`,
+      );
+      check(
+        hdr.pill.h <= 22 && hdr.pill.scrollH <= 22 && hdr.pill.lineCount === 1,
+        `F1 ${vp.label}: recipe source pill 「${hdr.pill.text}」 wrapped (h=${hdr.pill.h}, scrollH=${hdr.pill.scrollH}, lines=${hdr.pill.lineCount})`,
+      );
+      check(
+        hdr.pill.scrollW <= hdr.pill.clientW + 1,
+        `F1 ${vp.label}: recipe source pill truncated (scrollW=${hdr.pill.scrollW} > clientW=${hdr.pill.clientW})`,
+      );
+      check(
+        hdr.pill.top >= hdr.hd.top - 1 && hdr.pill.bottom <= hdr.hd.bottom + 1 && hdr.pill.lineTop >= hdr.hd.top - 1 && hdr.pill.lineBottom <= hdr.hd.bottom + 1,
+        `F1 ${vp.label}: recipe source pill overflows 44pt header (pill ${hdr.pill.lineTop}..${hdr.pill.lineBottom} vs hd ${hdr.hd.top}..${hdr.hd.bottom})`,
+      );
+      check(
+        hdr.slot.w >= 130,
+        `F1 ${vp.label}: .band-head-slot squeezed to ${hdr.slot.w} pt (< 130 pt)`,
+      );
+      check(
+        hdr.coreTag.w >= 100 && hdr.coreTag.scrollW <= hdr.coreTag.clientW + 1,
+        `F1 ${vp.label}: no-GPU core notice truncated (w=${hdr.coreTag.w}, scrollW=${hdr.coreTag.scrollW}, clientW=${hdr.coreTag.clientW})`,
+      );
+      check(
+        hdr.note.w >= 120 && hdr.note.h >= 10 && hdr.note.bottom <= hdr.hd.bottom + 1,
+        `F1 ${vp.label}: no-GPU detail line missing or clipped (${JSON.stringify(hdr.note)})`,
+      );
+    }
+  }
 
   // D2：切一张不同的配方卡，顶栏标题必须立刻跟上卡片名称
   const targetCard = page.locator('[data-recipes="1"] .rc[data-card]:not(.on):not(.lockd)').filter({ visible: true }).first();

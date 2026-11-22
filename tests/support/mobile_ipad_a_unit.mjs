@@ -178,4 +178,7 @@ test('deviceName detects iPadOS via maxTouchPoints + Mac/iPad UA and keeps iPhon
   assert.equal(hdrLine(iphoneUa), '在 iPhone 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。');
   assert.equal(lutFootnote(ipadDesktopUa), 'LUT 只存在这台 iPad 上，直接套在照片上，不写入相机。');
   assert.equal(lutFootnote(iphoneUa), 'LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。');
+  const logoSrc = readFileSync(new URL('../../mobile/src/app/logo_sheet.ts', import.meta.url), 'utf8');
+  assert.ok(logoSrc.includes('标志只保存在这台 ${deviceName()} 上'), 'logo_sheet must use deviceName()');
+  assert.ok(!logoSrc.includes('这台手机'), 'logo_sheet must not hardcode 这台手机');
 });

@@ -7,7 +7,6 @@ import { deviceName, type DeviceEnv } from './device.ts';
 export function hdrLine(env?: DeviceEnv): string {
   return `在 ${deviceName(env)} 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。`;
 }
-export const HDR_LINE = hdrLine();
 /** 桌面 HDR_NO_RAW：选中的照片一张 RAW 都没有时，开关停用，写这句。 */
 export const HDR_NO_RAW = 'HDR 需要 RAW 文件';
 /** 05b 的第二行（开了 HDR）。 */

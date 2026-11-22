@@ -20,7 +20,7 @@ registerHooks({
 const {
   MAX_CUBE_BYTES,
   MAX_LUT_LIBRARY_BYTES,
-  LUT_FOOTNOTE,
+  lutFootnote,
   LUT_ERRORS,
   DISPLAY_SPACES,
   ignoredFilesMessage,
@@ -72,7 +72,11 @@ const PASTE_PY = readFileSync(new URL('src/gxr_studio/render/paste.py', ROOT), '
 test('常量、错误文案与 03g 说明和规范/桌面逐字一致', () => {
   assert.equal(MAX_CUBE_BYTES, 64 << 20);
   assert.equal(MAX_LUT_LIBRARY_BYTES, 256 << 20);
-  assert.equal(LUT_FOOTNOTE, 'LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。');
+  assert.equal(lutFootnote(), 'LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。');
+  assert.equal(
+    lutFootnote({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', platform: 'MacIntel', maxTouchPoints: 5 }),
+    'LUT 只存在这台 iPad 上，直接套在照片上，不写入相机。',
+  );
   assert.equal(ignoredFilesMessage(3), '3 个文件不是 .cube，没有导入。');
   assert.equal(LUT_ERRORS.library_full, 'LUT 太多了。删掉几个再导入。');
   assert.equal(LUT_ERRORS.duplicate, '已经导入过');

@@ -292,9 +292,12 @@ h1, h2, p { margin: 0; }
 }
 .band-hd .lbl { display: flex; align-items: center; gap: 4px; flex: none; min-width: 0; }
 .band-hd .lbl .tag.neutral { height: 20px; padding: 0 8px; font-size: 11px; border-radius: 5px; background: var(--surface-raised); color: var(--text-2); }
-.band-hd .lbl.nogpu { flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; flex: 1 1 auto; }
-.band-hd .lbl.nogpu .tag.neutral { height: 18px; padding: 0 6px; line-height: 18px; color: var(--warn-text); background: var(--warn-bg); }
+.band-hd .lbl.nogpu { flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; flex: 1 1 0; min-width: 0; }
+.band-hd .lbl.nogpu .tag.neutral { display: block; height: 18px; padding: 0 6px; line-height: 18px; color: var(--warn-text); background: var(--warn-bg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .band-hd .lbl .nogpu-note { font-size: 10px; line-height: 13px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.band-hd:has(.lbl.nogpu) .band-hd-right { flex: 0 1 auto; max-width: calc(100% - 172px); }
+.band-hd:has(.lbl.nogpu) .band-head-slot,
+.band-hd:has(.lbl.nogpu) .band-recipe-hd { flex: none; max-width: 100%; }
 .band-hd-right { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .band-head-slot,
 .band-recipe-hd,
@@ -320,7 +323,7 @@ h1, h2, p { margin: 0; }
 .band-lut-hd .lut-hd-name,
 .band-frame-hd .frame-hd-name,
 .band-adjust-hd .adj-lab,
-.stamp-hd-title { font: 600 13px/18px var(--font-ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stamp-hd-title { font: 600 13px/18px var(--font-ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .band-recipe-hd .rname.dim { font-weight: 500; color: var(--text-2); }
 .band-adjust-hd .val,
 .band-crop-hd .crop-angle { font: 600 13px/18px var(--font-num); color: var(--text-1); white-space: nowrap; flex: none; }
@@ -725,7 +728,7 @@ svg.curve .curve-point { stroke: #111; stroke-width: 1.5; }
 .rc.lockd .nm { color: var(--text-3); }
 .rc:disabled { opacity: 1; }
 .strip .empty { align-self: center; padding: 0 4px; font-size: 13px; line-height: 18px; white-space: nowrap; }
-.tag.neutral-tag { color: var(--text-2); background: var(--surface-raised); height: 20px; padding: 0 6px; font-size: 11px; }
+.tag.neutral-tag { color: var(--text-2); background: var(--surface-raised); height: 20px; padding: 0 6px; font-size: 11px; white-space: nowrap; flex: none; }
 .hdr-note { display: flex; align-items: flex-start; gap: 8px; margin-top: 6px; font-size: 14px; line-height: 20px; }
 .hdr-note .ok { color: var(--ok-text); }
 .hdr-note .ok .ico { width: 18px; height: 18px; }
