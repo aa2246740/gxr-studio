@@ -140,6 +140,7 @@ export class RecipeView {
     this.panel.dataset.panel = 'recipe';
     this.filterPin.hidden = true;
     this.stripWrap.append(this.filterPin, this.strip);
+    this.panel.append(this.makeModeSwitch());
     this.fineBox.hidden = true;
     this.datErrBar.hidden = true;
     this.datErrBar.addEventListener('click', () => {
@@ -166,6 +167,9 @@ export class RecipeView {
     if (this.ipadMode === on) return;
     this.ipadMode = on;
     if (on) this.fineTune = false;
+    this.modeSwitchEl?.remove();
+    this.modeSwitchEl = on ? null : this.makeModeSwitch();
+    if (this.modeSwitchEl) this.panel.append(this.modeSwitchEl);
     this.stripKeys = [];
     this.build();
   }
@@ -326,7 +330,11 @@ export class RecipeView {
     const target = this.target(scene);
     const canFine = Boolean(scene.raw && scene.dat && scene.state.state === 'ready' && target && target.controls.length);
     if (this.fineTune && !canFine) this.fineTune = false;
-    if (!this.ipadMode) this.stripWrap.hidden = this.fineTune;
+    if (!this.ipadMode) {
+      this.stripWrap.hidden = this.fineTune;
+      // 切换键现在在面板上，不再跟着横条一起藏。微调时藏起来，和 04e8b92 一样不挡住旋钮。
+      if (this.modeSwitchEl) this.modeSwitchEl.hidden = this.fineTune;
+    }
     this.fineBox.hidden = !this.ipadMode && !this.fineTune;
     const datError = this.api.book().datError;
     if (datError && scene.raw) {
@@ -378,12 +386,7 @@ export class RecipeView {
           : 'uncalibrated';
     const isEmpty = Boolean(scene.list && this.which === 'mine' && !cards.length);
     if (isEmpty) {
-      if (this.ipadMode) {
-        this.modeSwitchEl = null;
-        this.strip.replaceChildren();
-      } else {
-        this.strip.replaceChildren(this.makeModeSwitch());
-      }
+      this.strip.replaceChildren();
       this.slots = [];
       this.stripKeys = ['__empty__'];
       this.lastScrolledCardId = null;
@@ -414,12 +417,7 @@ export class RecipeView {
       return;
     }
 
-    if (this.ipadMode) {
-      this.modeSwitchEl = null;
-      this.strip.replaceChildren();
-    } else {
-      this.strip.replaceChildren(this.makeModeSwitch());
-    }
+    this.strip.replaceChildren();
     this.slots = [];
     this.stripKeys = nextKeys;
     this.lastScrolledCardId = null;

@@ -19,6 +19,7 @@ mod cmd_ink;
 mod cmd_inktext;
 mod cmd_jpeg;
 mod cmd_lut;
+mod cmd_off_image;
 mod cmd_raw;
 mod cmd_resample;
 mod cmd_source;
@@ -81,6 +82,9 @@ fn dispatch(command: &str, rest: &[String]) -> Result<Output, Failure> {
     }
     if command.starts_with("export-") {
         return cmd_export::run(command, rest);
+    }
+    if command.starts_with("off-image-") {
+        return cmd_off_image::run(command, rest);
     }
     if command.starts_with("resample-") {
         return cmd_resample::run(command, rest);

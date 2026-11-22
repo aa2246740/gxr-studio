@@ -23,6 +23,8 @@ from .api.gpu_routes import router as gpu_router
 from .api.logo_routes import router as logo_router
 from .api.lut_library_routes import router as lut_library_router
 from .api.lut_routes import router as lut_router
+from .api.off_image_routes import OffImageCache
+from .api.off_image_routes import router as off_image_router
 from .api.ops_routes import router as ops_router
 from .api.paste_routes import router as paste_router
 from .api.prefs_routes import router as prefs_router
@@ -64,6 +66,7 @@ class Context:
     metrics: Metrics = field(default_factory=Metrics)
     alerts: StudioNotifier = field(default_factory=StudioNotifier)
     exports: ExportLedger = field(default_factory=ExportLedger)
+    off_images: OffImageCache = field(default_factory=OffImageCache)
     sessions: SessionRegistry = field(default_factory=SessionRegistry)  # 挂载会话：接口里的 card_id
     paste_undo: PasteUndo = field(default_factory=PasteUndo)  # 最近几批「粘贴调整」粘贴之前的内容，供撤销
 
@@ -182,6 +185,7 @@ def create_app(
     app.include_router(camdata_router)
     app.include_router(lut_router)
     app.include_router(lut_library_router)
+    app.include_router(off_image_router)
     app.include_router(gpu_router)
     web = settings.web_dir
     if web is not None and Path(web, "assets").is_dir():

@@ -224,6 +224,18 @@ export function applyHalfframeFirstNeighbors(
   }
 }
 
+/**
+ * 没手动选配方时采用相机里选的配方，改写 reqPhoto，返回该用的卡片；没有可采用的配方时返回 null。
+ * 普通导出和关机图共用这一份，保证两边渲染同一张成片。
+ */
+export function adoptCameraRecipe(reqPhoto: RequestPhoto, cards: Card[], photo: Photo, dat: Book['dat']): Card[] | null {
+  const adopted = adoptedSelectionOf(photo, dat);
+  if (!adopted) return null;
+  reqPhoto.choice = { ...adopted.choice };
+  reqPhoto.levels = new Map([[adopted.choice.id, { ...adopted.levels }]]);
+  return dat ? shelf(shelves(dat.listing, recipeUnitOf(null, adopted, unitOfLens(reqPhoto.lens))), 'all') : cards;
+}
+
 export function applyAdoptedAndLogos(
   photos: Photo[],
   snapshots: ExportSnapshot[],
@@ -252,11 +264,9 @@ export function applyAdoptedAndLogos(
     }
     const targetItems = byPhoto.get(photo.id) ?? [];
     if (needAdopt && !snap.explicitChoice && !snap.recipeOff) {
-      const adopted = adoptedSelectionOf(photo, dat);
-      if (adopted) {
-        snap.reqPhoto.choice = { ...adopted.choice };
-        snap.reqPhoto.levels = new Map([[adopted.choice.id, { ...adopted.levels }]]);
-        if (dat) snap.cards = shelf(shelves(dat.listing, recipeUnitOf(null, adopted, unitOfLens(snap.reqPhoto.lens))), 'all');
+      const adoptedCards = adoptCameraRecipe(snap.reqPhoto, snap.cards, photo, dat);
+      if (adoptedCards) {
+        snap.cards = adoptedCards;
         changed = true;
       }
       const note = cameraRecipeErrorOf(photo, dat)?.message;

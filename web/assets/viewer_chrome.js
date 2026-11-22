@@ -5,6 +5,7 @@ import { h, button, icon, fmtClock, fmtDate, modKey } from './dom.js';
 import { pairTag } from './gallery.js';
 import { stageLabels, undoChange, redoChange, syncUndo } from './preview.js';
 import { editorCopyPaste } from './paste_edits.js';
+import { mountEditorExportMenu, unmountEditorExportMenu } from './off_image.js';
 import {
   foldPhotos, isPairSecond, isSinglePairView, isUntouchedPairRecipe, partnerOf,
 } from './halfframe.js';
@@ -89,9 +90,11 @@ export function renderTitlebar(v) {
       p.date_source === 'mtime' ? h('span', { class: 'tag warn', title: '没有拍摄时间，使用文件修改日期' }, '使用文件修改日期') : null),
   ].filter(Boolean));
   applyPairReadonly(v);
+  mountEditorExportMenu(v);
 }
 
 export function clearTitlebar() {
+  unmountEditorExportMenu();
   const bar = document.getElementById('titlebar');
   const slot = document.getElementById('tb-edit');
   if (bar && bar.dataset.mode === 'viewer') bar.dataset.mode = 'library';

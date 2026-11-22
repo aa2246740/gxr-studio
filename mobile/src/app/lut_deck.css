@@ -1,0 +1,220 @@
+/* 手机竖屏 LUT 甲板（polish-2）。只挂在 phone-portrait 和还没判定版式的壳上，iPad 与手机横屏不走这里。 */
+
+/* 手机竖屏合并后的单颗 LUT 菜单瓷砖默认隐藏，只在 phone-portrait / 未判定版式里替换双瓷砖。 */
+.rc.lut-menu-tile { display: none; }
+
+/* hidden 属性盖不过 .mode-switch 自己的 display:flex，所以微调时要写明收起。 */
+.panel > .mode-switch[hidden] { display: none; }
+
+/* 手机竖屏把「导入 LUT」和「色彩空间」收进一颗 44×70pt 瓷砖（菜单弹出），给横条腾出完整两张 78pt LUT 卡。 */
+.app[data-layout="phone-portrait"] .lut-pin,
+.app:not([data-layout]) .lut-pin {
+  padding: 0 2px;
+  gap: 0;
+}
+.app[data-layout="phone-portrait"] .lut-pin .lut-import-tile,
+.app[data-layout="phone-portrait"] .lut-pin .lut-space-tile,
+.app:not([data-layout]) .lut-pin .lut-import-tile,
+.app:not([data-layout]) .lut-pin .lut-space-tile {
+  display: none;
+}
+.app[data-layout="phone-portrait"] .lut-pin .lut-menu-tile,
+.app:not([data-layout]) .lut-pin .lut-menu-tile {
+  display: flex;
+  width: 44px;
+  min-width: 44px;
+  min-height: 70px;
+}
+.app[data-layout="phone-portrait"] .lut-pin .lut-menu-tile .filter-th,
+.app:not([data-layout]) .lut-pin .lut-menu-tile .filter-th {
+  width: 44px;
+  height: 52px;
+  padding: 2px;
+  gap: 1px;
+}
+.app[data-layout="phone-portrait"] .lut-pin .lut-menu-tile .nm,
+.app:not([data-layout]) .lut-pin .lut-menu-tile .nm {
+  width: 44px;
+}
+.app[data-layout="phone-portrait"] .lut-pin .lut-menu-tile.has-lut .filter-th,
+.app:not([data-layout]) .lut-pin .lut-menu-tile.has-lut .filter-th {
+  color: var(--accent-text);
+}
+.app[data-layout="phone-portrait"] .lut-pin .lut-menu-tile.warn .filter-th,
+.app:not([data-layout]) .lut-pin .lut-menu-tile.warn .filter-th {
+  color: var(--warn-text);
+  box-shadow: inset 0 0 0 1px rgba(255, 190, 90, 0.35);
+}
+.app[data-layout="phone-portrait"] .lut-pin .lut-menu-tile[aria-expanded="true"] .filter-th,
+.app:not([data-layout]) .lut-pin .lut-menu-tile[aria-expanded="true"] .filter-th {
+  background: var(--surface-selected);
+  box-shadow: inset 0 0 0 1.5px var(--accent-text);
+}
+.lut-menu-tile .lut-menu-badge {
+  font: 600 10px/12px var(--font-ui);
+  text-align: center;
+  white-space: normal;
+  word-break: break-word;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* 合并瓷砖的弹出菜单：原生 popover 浮在顶层，避免被 .band 的 overflow:hidden 裁切，也不挪动照片。 */
+.lut-menu-pop {
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-overlay);
+  color: var(--text-1);
+  box-shadow: var(--shadow-dialog);
+  min-width: 204px;
+  max-width: calc(100vw - 16px);
+  overflow: visible;
+}
+.lut-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lut-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 196px;
+  min-height: 46px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  color: var(--text-1);
+  font: 500 14px/18px var(--font-ui);
+  text-align: left;
+}
+.lut-menu-item:hover:not(:disabled),
+.lut-menu-item:focus-visible {
+  background: var(--surface-selected);
+}
+.lut-menu-item:disabled {
+  color: var(--text-3);
+  opacity: 0.55;
+}
+.lut-menu-item.warn .lut-menu-val {
+  color: var(--warn-text);
+}
+.lut-menu-item .ico {
+  width: 18px;
+  height: 18px;
+  color: var(--accent-text);
+}
+.lut-menu-item .lut-menu-lab {
+  flex: none;
+  white-space: nowrap;
+}
+.lut-menu-item .lut-menu-val {
+  margin-inline-start: auto;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--accent-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 118px;
+}
+.lut-menu-item:disabled .lut-menu-val {
+  color: var(--text-3);
+}
+
+@supports (position-area: block-end) {
+  .lut-menu-pop {
+    position-area: block-start span-inline-end;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+    inset: auto;
+    margin: 0 0 8px 4px;
+  }
+}
+@supports not (position-area: block-end) {
+  .lut-menu-pop {
+    position: fixed;
+    inset: auto;
+    margin: 0;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .lut-menu-pop {
+    opacity: 0;
+    translate: 0 4px;
+    transition: opacity, translate, display, overlay;
+    transition-duration: 0.14s;
+    transition-behavior: allow-discrete;
+  }
+  .lut-menu-pop:popover-open {
+    opacity: 1;
+    translate: 0 0;
+    transition-duration: 0.1s;
+    @starting-style {
+      opacity: 0;
+      translate: 0 4px;
+    }
+  }
+}
+
+/* 切换键钉在滚动条右边、面板内侧。两种模式都在同一处，横滑也不带动它。 */
+.app[data-layout="phone-portrait"] .panel.recipe > .mode-switch,
+.app[data-layout="phone-portrait"] .panel.lut > .mode-switch,
+.app:not([data-layout]) .panel.recipe > .mode-switch,
+.app:not([data-layout]) .panel.lut > .mode-switch {
+  position: absolute;
+  right: 2px;
+  top: 6px;
+  z-index: 2;
+  gap: 0;
+}
+.app[data-layout="phone-portrait"] .panel.recipe > .mode-switch .mode-btn,
+.app[data-layout="phone-portrait"] .panel.lut > .mode-switch .mode-btn,
+.app:not([data-layout]) .panel.recipe > .mode-switch .mode-btn,
+.app:not([data-layout]) .panel.lut > .mode-switch .mode-btn {
+  padding: 0 5px;
+}
+.app[data-layout="phone-portrait"] .recipe-strip-wrap,
+.app[data-layout="phone-portrait"] .lut-strip-wrap,
+.app:not([data-layout]) .recipe-strip-wrap,
+.app:not([data-layout]) .lut-strip-wrap {
+  padding-right: 94px;
+}
+.app[data-layout="phone-portrait"] .lut-strip-wrap .strip,
+.app:not([data-layout]) .lut-strip-wrap .strip {
+  padding: 3px 6px 4px 3px;
+  gap: 4px;
+}
+
+/* LUT 提示贴在缩略图上沿，卡名留在底下 22pt，提示不压到那一行。 */
+.app[data-layout="phone-portrait"] .panel.lut > .lut-err,
+.app:not([data-layout]) .panel.lut > .lut-err {
+  top: 2px;
+  bottom: auto;
+  height: 16px;
+  padding: 0 10px;
+  line-height: 16px;
+  pointer-events: none;
+  color: var(--warn-text);
+  background: #231d15;
+  border-color: rgba(255, 190, 90, 0.42);
+}
+
+/* 空库说明换行写在缩略图上沿，不跟卡片抢 390pt，也不切字、不压卡名。 */
+.app[data-layout="phone-portrait"] .panel.lut > .lut-foot,
+.app:not([data-layout]) .panel.lut > .lut-foot {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: 2px;
+  bottom: auto;
+  flex: none;
+  margin: 0;
+  max-height: 22px;
+  overflow: hidden;
+  pointer-events: none;
+  font-size: 10px;
+  line-height: 11px;
+}

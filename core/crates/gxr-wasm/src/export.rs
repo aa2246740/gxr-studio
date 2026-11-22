@@ -421,3 +421,56 @@ pub fn export_meta_preview(dng: &[u8]) -> Result<String, JsValue> {
     let json = dng_preview_location(dng).map_or(Json::Null, |r| r.to_json());
     Ok(format!("{}\n", json.render()))
 }
+
+// ---- off-image (GXROFF.JPG)
+
+/// 关机图生成结果：文件字节与元数据 JSON。
+#[wasm_bindgen]
+pub struct OffImageMade {
+    file: Vec<u8>,
+    json: String,
+}
+
+#[wasm_bindgen]
+impl OffImageMade {
+    pub fn file(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.file)
+    }
+
+    pub fn json(&self) -> String {
+        self.json.clone()
+    }
+}
+
+fn checked_off_dim(value: f64, name: &str) -> Result<u32, JsValue> {
+    if !value.is_finite() || value.fract() != 0.0 || value < 1.0 || value > f64::from(u32::MAX) {
+        let err = gxr_raw::CoreError::new("bad_image", format!("{name} 参数无效"));
+        return Err(meta_rejected(&err));
+    }
+    Ok(value as u32)
+}
+
+/// 从转正后的 RGB 像素生成 640×480 关机图（铺满居中裁切 + 4:2:2 DRI 40 + 品质搜索 + 校验）。
+#[wasm_bindgen]
+pub fn off_image_make(rgb: &[u8], width: f64, height: f64) -> Result<OffImageMade, JsValue> {
+    let w = checked_off_dim(width, "width")?;
+    let h = checked_off_dim(height, "height")?;
+    let made = gxr_export::off_image::make_off_image(rgb, w, h).map_err(|e| meta_rejected(&e))?;
+    Ok(OffImageMade {
+        json: format!("{}\n", made.meta_json().render()),
+        file: made.data,
+    })
+}
+
+/// 对任意字节执行 DAT 260 关机图严格校验，返回 `{ok, dat_state, errors}` JSON。
+#[wasm_bindgen]
+pub fn off_image_check(bytes: &[u8]) -> String {
+    let chk = gxr_export::off_image::check_off_image(bytes);
+    format!("{}\n", chk.to_json().render())
+}
+
+/// 将标准基线 4:2:2 + DRI 40 JPEG 重封装为相机关机图布局。
+#[wasm_bindgen]
+pub fn off_image_remux(bytes: &[u8]) -> Result<Vec<u8>, JsValue> {
+    gxr_export::off_image::remux_off_image(bytes).map_err(|e| meta_rejected(&e))
+}
