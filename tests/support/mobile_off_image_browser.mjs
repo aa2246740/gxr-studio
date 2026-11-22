@@ -26,6 +26,7 @@ async function installShareCapture(page) {
     Object.defineProperty(navigator, 'share', {
       configurable: true,
       value: async (data) => {
+        if (window.__offShareReject) throw new DOMException('stubbed share failure', window.__offShareReject);
         const active = navigator.userActivation?.isActive ?? true;
         const files = [];
         for (const f of data?.files ?? []) {
@@ -141,6 +142,28 @@ async function run() {
   await page.locator('.ms.off-image-sheet [data-act="off-image-export"]').click();
   await page.waitForFunction(() => window.__offShareCapture.length === 3, null, { timeout: 15_000 });
   out.shared.altRot6 = await page.evaluate(() => window.__offShareCapture[2]);
+
+  // 共享失败：用户取消（AbortError）时留在面板、不出下载链接；别的失败要给出下载链接。
+  const linkState = () =>
+    page.evaluate(() => {
+      const link = document.querySelector('.ms.off-image-sheet .oi-download-link');
+      return link ? { visible: !link.closest('[hidden]'), download: link.getAttribute('download'), text: link.textContent.trim() } : null;
+    });
+  await page.evaluate(() => {
+    window.__offShareReject = 'AbortError';
+  });
+  await page.locator('.ms.off-image-sheet [data-act="off-image-export"]').click();
+  await page.waitForTimeout(800);
+  out.steps.shareAbort = await linkState();
+  await page.evaluate(() => {
+    window.__offShareReject = 'NotAllowedError';
+  });
+  await page.locator('.ms.off-image-sheet [data-act="off-image-export"]').click();
+  await page.waitForSelector('.ms.off-image-sheet .oi-download-link', { timeout: 10_000 });
+  out.steps.shareRefused = await linkState();
+  await page.evaluate(() => {
+    window.__offShareReject = null;
+  });
 
   // 强制触发真实 Rust WASM 校验失败：显示错误且禁用「导出」
   await page.evaluate(() => {

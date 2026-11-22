@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import secrets
 import threading
 from collections import OrderedDict
@@ -17,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from .. import off_image, privacy
 from ..export import ExportError
 from ..finish.serve import render_stage_rgb
+from ..observe import log
 from ..raw.dng import RawDecodeError
 from ..render.params import EditError
 from ..render.service import NoRaw, RenderUnavailable
@@ -60,6 +62,13 @@ class OffImageExportRequest(BaseModel):
     dest_dir: str | None = None
 
 
+def _api_error(exc: ExportError) -> ApiError:
+    """响应只有中文；细节可能带路径，只留在本地日志里。"""
+    if exc.detail:
+        log.event(logging.WARNING, "off_image_refused", code=exc.code, detail=exc.detail)
+    return ApiError(422, exc.code, exc.message)
+
+
 def _render_library_rgb(c: Any, shot_id: str) -> np.ndarray:
     shot = _shot_or_404(c, shot_id)
     want, edit = _export_source(c, shot, ExportRequest(source="auto"))
@@ -83,7 +92,8 @@ def _render_library_rgb(c: Any, shot_id: str) -> np.ndarray:
     except EditError as exc:
         raise ApiError(422, exc.code, exc.message) from exc
     except RawDecodeError as exc:
-        raise ApiError(422, "raw_unreadable", "无法读取 RAW 文件。文件可能已损坏。", {"detail": str(exc)}) from exc
+        log.event(logging.WARNING, "off_image_raw_unreadable", error=type(exc).__name__)
+        raise ApiError(422, "raw_unreadable", "无法读取 RAW 文件。文件可能已损坏。") from exc
     return rgb
 
 
@@ -132,8 +142,7 @@ async def preview_off_image(request: Request, shot_id: str | None = None) -> dic
         try:
             result = await run_in_threadpool(_from_shot)
         except ExportError as exc:
-            extra = {"detail": exc.detail} if exc.detail else None
-            raise ApiError(422, exc.code, exc.message, extra) from exc
+            raise _api_error(exc) from exc
         return _preview_payload(c, result)
 
     chunks: list[bytes] = []
@@ -150,8 +159,7 @@ async def preview_off_image(request: Request, shot_id: str | None = None) -> dic
     try:
         result = await run_in_threadpool(off_image.encode_off_image_bytes, raw)
     except ExportError as exc:
-        extra = {"detail": exc.detail} if exc.detail else None
-        raise ApiError(422, exc.code, exc.message, extra) from exc
+        raise _api_error(exc) from exc
     return _preview_payload(c, result)
 
 
@@ -191,5 +199,4 @@ async def export_off_image(body: OffImageExportRequest, request: Request) -> dic
     try:
         return await run_in_threadpool(_run)
     except ExportError as exc:
-        extra = {"detail": exc.detail} if exc.detail else None
-        raise ApiError(422, exc.code, exc.message, extra) from exc
+        raise _api_error(exc) from exc

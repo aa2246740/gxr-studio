@@ -4,10 +4,8 @@
 import { ExportCore, calibPack } from '../core/export_api';
 import { buildRequest, usedLogoId } from '../lib/export_request';
 import { fontsNeeded } from '../lib/fonts';
-import { adoptedSelectionOf, photoWithAdopted, recipeUnitOf, shelf, shelves } from '../lib/recipes';
-import { unitOfLens } from '../lib/calib';
 import { button, el } from './dom';
-import { cardsFor, requestPhoto } from './export_request_prep';
+import { adoptCameraRecipe, cardsFor, requestPhoto } from './export_request_prep';
 import { ensureFontPack } from './font_loader';
 import { logoStore } from './logo_store';
 import { ensureCameraRecipes, needsCameraRecipe, type AppApi, type Photo } from './model';
@@ -64,17 +62,7 @@ async function renderPhotoSdr(api: AppApi, photo: Photo, cancelled: () => boolea
 
   if (logoId) reqPhoto.logoInfo = logoStore.info(logoId);
   let cards = cardsFor(book, photo);
-  if (!photo.choice && !photo.recipeOff) {
-    const adopted = adoptedSelectionOf(photo, dat);
-    if (adopted) {
-      const withAdopted = photoWithAdopted(photo, dat);
-      reqPhoto.choice = withAdopted.choice ? { ...withAdopted.choice } : null;
-      reqPhoto.levels = new Map([...withAdopted.levels].map(([k, v]) => [k, { ...v }]));
-      if (dat) {
-        cards = shelf(shelves(dat.listing, recipeUnitOf(null, adopted, unitOfLens(reqPhoto.lens))), 'all');
-      }
-    }
-  }
+  if (!photo.choice && !photo.recipeOff) cards = adoptCameraRecipe(reqPhoto, cards, photo, dat) ?? cards;
 
   const req = buildRequest(reqPhoto, cards, { size: 'original', quality: 'high', hdr: false }, __GXR_BUILD__);
   const pack = calibPack(book.pack?.files ?? null);
@@ -483,11 +471,18 @@ export function openOffImageSheet(host: HTMLElement, api: AppApi, photo: Photo):
     const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
     const canShare = typeof nav.share === 'function' && typeof nav.canShare === 'function' && nav.canShare({ files: [file] });
     if (canShare) {
-      void nav.share({ files: [file] }).catch(() => {
-        /* 用户取消共享面板或系统拒绝：留在当前面板，不抛未捕获异常。 */
+      void nav.share({ files: [file] }).catch((err: unknown) => {
+        // 用户自己关掉共享面板（AbortError）就留在面板里；别的失败给一个下载链接，不能什么都不发生。
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        offerDownload(file, false);
       });
       return;
     }
+    offerDownload(file, true);
+  });
+
+  /** 不能共享时退回下载；autoClick 只在还有用户点击手势时用。 */
+  function offerDownload(file: File, autoClick: boolean): void {
     const url = trackUrl(URL.createObjectURL(file));
     const link = document.createElement('a');
     link.href = url;
@@ -497,8 +492,8 @@ export function openOffImageSheet(host: HTMLElement, api: AppApi, photo: Photo):
     link.dataset.act = 'off-image-download';
     fallbackRow.replaceChildren(link);
     fallbackRow.hidden = false;
-    link.click();
-  });
+    if (autoClick) link.click();
+  }
 
   void generateFromCurrentPhoto().catch(() => undefined);
 }

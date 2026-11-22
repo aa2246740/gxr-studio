@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import struct
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -141,3 +142,46 @@ def test_off_image_api_blocks_export_when_checker_fails(tmp_path: Path, monkeypa
         assert r_exp.status_code == 422
         assert r_exp.json()["error"] == "off_image_check_failed"
         assert not (settings.export_dir / "GXROFF.JPG").exists()
+
+
+def _png_header_only(width: int, height: int) -> bytes:
+    """只有文件头的 PNG：声明很大的尺寸，但文件本身只有几十字节。"""
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(b"\x00" * 64)) + chunk(b"IEND", b"")
+
+
+@pytest.mark.parametrize("side", [10_000, 20_000])
+def test_off_image_rejects_huge_images_before_decoding(tmp_path: Path, side: int) -> None:
+    """1 亿像素（Pillow 警告区）和 4 亿像素（炸弹区）都要回中文 422，不能 500，也不能真去解码。"""
+    app, _settings, _card, _shot_id = _setup_app(tmp_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/off-image/preview",
+            headers={**HEADERS, "Content-Type": "application/octet-stream"},
+            content=_png_header_only(side, side),
+        )
+    assert r.status_code == 422, r.text
+    body = r.json()
+    assert body["error"] == "image_too_big"
+    assert "detail" not in body
+
+
+def test_off_image_errors_carry_no_paths(tmp_path: Path) -> None:
+    """拒绝写卡等错误只回中文说明；路径只进本地日志。"""
+    app, _settings, card, shot_id = _setup_app(tmp_path)
+    with TestClient(app) as client:
+        r = client.post("/api/off-image/export", headers=HEADERS, json={"shot_id": shot_id, "dest_dir": str(card)})
+        bad = client.post(
+            "/api/off-image/preview",
+            headers={**HEADERS, "Content-Type": "application/octet-stream"},
+            content=b"not an image",
+        )
+    assert r.status_code == 422 and r.json()["error"] == "bad_destination"
+    assert bad.status_code == 422 and bad.json()["error"] == "unsupported_image"
+    for resp in (r, bad):
+        assert "detail" not in resp.json()
+        assert str(tmp_path) not in resp.text

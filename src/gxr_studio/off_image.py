@@ -519,12 +519,19 @@ def _to_srgb(im: Image.Image) -> Image.Image:
         return im
 
 
+# 先看声明的尺寸再解码：超过 Pillow 的炸弹阈值（约 8,900 万像素）就不解码，免得一张小文件吃掉几 GB 内存。
+MAX_SOURCE_PIXELS = Image.MAX_IMAGE_PIXELS or 89_478_485
+ERR_TOO_MANY_PIXELS = "图片像素太多，请选择 8,900 万像素以内的图片。"
+
+
 def prepare_image_bytes(raw: bytes) -> np.ndarray:
     """解码图片字节：按 EXIF 方向转正、透明底叠纯黑、转换到 sRGB RGB uint8。"""
     if not raw:
         raise ExportError("bad_image", "图片文件为空。")
     try:
         with Image.open(io.BytesIO(raw)) as im0:
+            if im0.width * im0.height > MAX_SOURCE_PIXELS:
+                raise ExportError("image_too_big", ERR_TOO_MANY_PIXELS, f"{im0.width}x{im0.height}")
             im0.load()
             turned = ImageOps.exif_transpose(im0)
             im = turned if turned is not None else im0.copy()
@@ -541,6 +548,8 @@ def prepare_image_bytes(raw: bytes) -> np.ndarray:
                     im.info["icc_profile"] = im0.info["icc_profile"]
             im = _to_srgb(im)
             return np.ascontiguousarray(np.asarray(im, dtype=np.uint8))
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+        raise ExportError("image_too_big", ERR_TOO_MANY_PIXELS, str(exc)) from exc
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise ExportError("unsupported_image", "无法读取这张图片。请选择 JPEG 或 PNG 图片。", str(exc)) from exc
 

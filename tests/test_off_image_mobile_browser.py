@@ -159,6 +159,9 @@ def test_mobile_off_image_browser_end_to_end(tmp_path: Path) -> None:
         b = np.asarray(Image.open(p_desk).convert("RGB"), dtype=np.int16)
         assert int(np.abs(a - b).max()) <= 1
 
+    assert steps["shareAbort"] is None, steps["shareAbort"]
+    assert steps["shareRefused"] == {"visible": True, "download": "GXROFF.JPG", "text": "下载 GXROFF.JPG"}, steps["shareRefused"]
+
     fail = steps["forcedFail"]
     assert fail["ready"] == "0"
     assert fail["exportDisabled"] is True
