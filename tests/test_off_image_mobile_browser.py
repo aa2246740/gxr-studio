@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -15,13 +14,13 @@ import pytest
 from PIL import Image
 
 from gxr_studio import off_image
+from support import samples
 from test_mobile_ui_browser import MODULES, PKG, RUNTIME, _drive, _need
 
 pytestmark = pytest.mark.browser_serial
 
 REPO = Path(__file__).resolve().parents[1]
 DRIVER = REPO / "tests" / "support" / "mobile_off_image_browser.mjs"
-PARENT_ENV = "GXR_STUDIO_TEST_PARENT"
 
 NOTE_CAMERA = "相机会把当天张数叠在关机画面上，下部别放重要内容。"
 NOTE_CARD = "把 GXROFF.JPG 拷到存储卡最外层（和 GXRCE.DAT 放在一起）。"
@@ -29,9 +28,7 @@ NOTE_FILES = "存的时候选「存储到“文件”」，不要存进相册（
 
 
 def _make_off_image_script() -> Path:
-    parent = os.environ.get(PARENT_ENV)
-    base = Path(parent) if parent else REPO.parent
-    return base / "scripts" / "make_off_image.py"
+    return samples.sample_parent() / "scripts" / "make_off_image.py"
 
 
 def _run_ref_check(path: Path) -> str:
