@@ -645,7 +645,8 @@ export function createLutPinMenu(onImport: () => void, onSpace: () => void): Lut
   if (!hasInvokers) {
     trigger.addEventListener('click', (ev) => {
       ev.preventDefault();
-      const wasOpen = openAtPointerDown;
+      // 只有真点击（detail ≠ 0）才看按下时的状态：按下后拖走再由脚本或读屏 click() 时，不能把它当成「再点一次关掉」。
+      const wasOpen = ev.detail !== 0 && openAtPointerDown;
       openAtPointerDown = false;
       if (wasOpen || isOpen()) {
         if (isOpen()) {
