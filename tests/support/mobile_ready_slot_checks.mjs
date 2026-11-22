@@ -69,16 +69,25 @@ export async function auditDeckHitTests(page, tag, check, frame, checkHeights = 
   }
   result.recipe = { filter: recFilter, cards: recCards };
 
-  // 2b) LUT deck homes (P2-1): 导入 LUT + 色彩空间 must be visible, hit-testable, >= 44pt in every active export state
+  // 2b) LUT deck homes (P2-1 / polish-2): compact 44pt menu tile + popover exposing 导入 LUT & 色彩空间 (>= 44pt) in every active export state
   await page.locator('.editor .panel.recipe [data-mode="lut"]').click();
   await frame(page, 2);
-  const lutImport = await probeVisible(page, '.editor .band [data-act="lut-import"]', '.editor .band-body');
-  const lutSpace = await probeVisible(page, '.editor .band [data-act="lut-space"]', '.editor .band-body');
+  const lutMenu = await probeVisible(page, '.editor .band [data-act="lut-menu"]', '.editor .band-body');
+  check(lutMenu.tested === 1 && lutMenu.bad.length === 0, `${tag} lut-menu missing/blocked: ${JSON.stringify(lutMenu)}`);
+  check(lutMenu.minH >= 43.5 && lutMenu.minW >= 43.5, `${tag} lut-menu size < 44pt: ${JSON.stringify(lutMenu)}`);
+  await page.locator('.editor .band [data-act="lut-menu"]').click();
+  await page.waitForSelector('.lut-menu-pop:popover-open', { timeout: 5_000 });
+  await frame(page, 2);
+  const lutImport = await probeVisible(page, '.lut-menu-pop:popover-open [data-act="lut-menu-import"]', '.lut-menu-pop:popover-open');
+  const lutSpace = await probeVisible(page, '.lut-menu-pop:popover-open [data-act="lut-menu-space"]', '.lut-menu-pop:popover-open');
   check(lutImport.tested === 1 && lutImport.bad.length === 0, `${tag} lut-import missing/blocked: ${JSON.stringify(lutImport)}`);
   check(lutSpace.tested === 1 && lutSpace.bad.length === 0, `${tag} lut-space missing/blocked: ${JSON.stringify(lutSpace)}`);
   check(lutImport.minH >= 43.5 && lutImport.minW >= 43.5, `${tag} lut-import size < 44pt: ${JSON.stringify(lutImport)}`);
   check(lutSpace.minH >= 43.5 && lutSpace.minW >= 43.5, `${tag} lut-space size < 44pt: ${JSON.stringify(lutSpace)}`);
-  result.lut = { import: lutImport, space: lutSpace };
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.lut-menu-pop:popover-open'), null, { timeout: 5_000 });
+  await frame(page, 1);
+  result.lut = { menu: lutMenu, import: lutImport, space: lutSpace };
   await page.locator('.editor .panel.lut [data-mode="recipe"]').click();
   await frame(page, 2);
 
@@ -118,8 +127,10 @@ export async function verifyLutDeckActions(page, lutPath, tag, check, frame) {
   await page.locator('.editor .panel.recipe [data-mode="lut"]').click();
   await frame(page, 2);
 
-  // Tap 色彩空间 -> opens lut-space-sheet during active export
-  await page.locator('.editor .panel.lut [data-act="lut-space"]').click();
+  // Open compact LUT menu -> tap 色彩空间 -> opens lut-space-sheet during active export
+  await page.locator('.editor .panel.lut [data-act="lut-menu"]').click();
+  await page.waitForSelector('.lut-menu-pop:popover-open', { timeout: 5_000 });
+  await page.locator('.lut-menu-pop:popover-open [data-act="lut-menu-space"]').click();
   await page.waitForSelector('.lut-space-sheet[data-state="lut-space"]', { timeout: 10_000 });
   await page.locator('.lut-space-sheet .hd .nb').click();
   await page.waitForFunction(() => !document.querySelector('.lut-space-sheet'), null, { timeout: 10_000 });
@@ -139,11 +150,18 @@ export async function verifyLutDeckActions(page, lutPath, tag, check, frame) {
   });
   check(Boolean(statusBox && statusBox.h > 0 && statusBox.pe === 'none'), `${tag} lut-status invisible or blocking: ${JSON.stringify(statusBox)}`);
 
-  // Ensure lut-import & lut-space remain hit-testable even while lut-status banner is shown
-  const impHit = await probeVisible(page, '.editor .band [data-act="lut-import"]', '.editor .band-body');
-  const spcHit = await probeVisible(page, '.editor .band [data-act="lut-space"]', '.editor .band-body');
+  // Ensure compact menu tile & its lut-import / lut-space items remain hit-testable even while lut-status banner is shown
+  const menuHit = await probeVisible(page, '.editor .band [data-act="lut-menu"]', '.editor .band-body');
+  check(menuHit.tested === 1 && menuHit.bad.length === 0, `${tag} lut-menu blocked by status: ${JSON.stringify(menuHit)}`);
+  await page.locator('.editor .band [data-act="lut-menu"]').click();
+  await page.waitForSelector('.lut-menu-pop:popover-open', { timeout: 5_000 });
+  await frame(page, 2);
+  const impHit = await probeVisible(page, '.lut-menu-pop:popover-open [data-act="lut-menu-import"]', '.lut-menu-pop:popover-open');
+  const spcHit = await probeVisible(page, '.lut-menu-pop:popover-open [data-act="lut-menu-space"]', '.lut-menu-pop:popover-open');
   check(impHit.tested === 1 && impHit.bad.length === 0, `${tag} lut-import blocked by status: ${JSON.stringify(impHit)}`);
   check(spcHit.tested === 1 && spcHit.bad.length === 0, `${tag} lut-space blocked by status: ${JSON.stringify(spcHit)}`);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.lut-menu-pop:popover-open'), null, { timeout: 5_000 });
 
   await page.locator('.editor .panel.lut [data-mode="recipe"]').click();
   await frame(page, 2);

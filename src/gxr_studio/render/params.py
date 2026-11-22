@@ -198,6 +198,11 @@ def _parse_points(pts: Any) -> CurvePoints | None:
     return tuple(out)
 
 
+def same_recipe_entries(left_entry_sha256: str, right_entry_sha256: str) -> bool:
+    """两半是否同一配方，只看配方条目本身。空摘要是未知，不是同一份。"""
+    return bool(left_entry_sha256) and left_entry_sha256 == right_entry_sha256
+
+
 def parse_recipe(raw: Any) -> RecipeSel | None:
     if raw is None:
         return None

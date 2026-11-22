@@ -462,7 +462,25 @@ export function centerStripCard(strip: HTMLElement, cardId: string): boolean {
   if (!active || active.dataset.card !== cardId) return false;
   const sr = strip.getBoundingClientRect();
   const cr = active.getBoundingClientRect();
-  const targetLeft = strip.scrollLeft + (cr.left - sr.left) + cr.width / 2 - sr.width / 2;
+  let targetLeft = strip.scrollLeft + (cr.left - sr.left) + cr.width / 2 - sr.width / 2;
+  const usable = (el: Element | null): HTMLElement | null =>
+    el instanceof HTMLElement && el.classList.contains('rc') && !el.classList.contains('lockd') ? el : null;
+  const neighbor = usable(active.nextElementSibling) ?? usable(active.previousElementSibling);
+  if (neighbor) {
+    const nr = neighbor.getBoundingClientRect();
+    const pairLeft = Math.min(cr.left, nr.left);
+    const pairWidth = Math.max(cr.right, nr.right) - pairLeft;
+    const gap = Math.max(0, pairWidth - cr.width - nr.width);
+    // 390pt 竖屏下横条可视宽约 231pt，只把选中卡放正中会把左右邻卡各裁切一截；
+    // 让「选中卡 + 一张邻卡」靠边缘完整落入视口，另一侧邻卡中心也保留在视口内，兼顾完整邻卡点击与三卡中心可达。
+    if (pairWidth <= sr.width && (sr.width - cr.width) / 2 < nr.width + gap) {
+      const edgeInset = Math.max(2, Math.min(6, Math.floor(sr.width - pairWidth - gap - cr.width / 2 - 2)));
+      targetLeft =
+        nr.left >= cr.left
+          ? strip.scrollLeft + (nr.right - sr.right) + edgeInset
+          : strip.scrollLeft + (nr.left - sr.left) - edgeInset;
+    }
+  }
   const maxScroll = Math.max(0, strip.scrollWidth - strip.clientWidth);
   strip.scrollLeft = Math.max(0, Math.min(maxScroll, targetLeft));
   return true;
@@ -504,6 +522,228 @@ export function buildIpadRecipeMeta(
 
 const bitmapIds = new WeakMap<ImageBitmap, number>();
 let nextBitmapId = 1;
+let nextLutMenuSeq = 1;
+
+export interface LutPinMenuHandle {
+  trigger: HTMLButtonElement;
+  popover: HTMLElement;
+  sync(selected: boolean, badgeText: string | null, spaceLabel: string, warn: boolean): void;
+  close(fromPointer?: boolean, restoreFocus?: boolean): void;
+  destroy(): void;
+}
+
+/** 手机竖屏 LUT 左侧合并瓷砖（44×70pt）与原生顶层弹出菜单（导入 LUT + 色彩空间）。 */
+export function createLutPinMenu(onImport: () => void, onSpace: () => void): LutPinMenuHandle {
+  const seq = nextLutMenuSeq++;
+  const triggerId = `lut-pin-trigger-${seq}`;
+  const menuId = `lut-pin-menu-${seq}`;
+
+  const hasInvokers = 'commandForElement' in HTMLButtonElement.prototype;
+  const trigger = button('rc filter-tile lut-menu-tile', '');
+  trigger.id = triggerId;
+  trigger.dataset.act = 'lut-menu';
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'false');
+  if (hasInvokers) {
+    trigger.setAttribute('commandfor', menuId);
+    trigger.setAttribute('command', 'toggle-popover');
+  }
+  const th = el('div', 'th filter-th');
+  const label = el('span', 'nm', '导入');
+  trigger.append(th, label);
+
+  const popover = el('div', 'lut-menu-pop');
+  popover.id = menuId;
+  popover.setAttribute('popover', 'auto');
+  const list = el('div', 'lut-menu-list');
+  list.setAttribute('focusgroup', 'menu nomemory');
+  list.setAttribute('aria-labelledby', triggerId);
+
+  const importBtn = button('lut-menu-item', '');
+  importBtn.dataset.act = 'lut-menu-import';
+  importBtn.append(icon(PLUS), el('span', 'lut-menu-lab', '导入 LUT'));
+
+  const spaceBtn = button('lut-menu-item', '');
+  spaceBtn.dataset.act = 'lut-menu-space';
+  const spaceVal = el('span', 'lut-menu-val', '未选 LUT');
+  spaceBtn.append(el('span', 'lut-menu-lab', '色彩空间'), spaceVal);
+
+  list.append(importBtn, spaceBtn);
+  popover.append(list);
+
+  let enterOnOpen = false;
+  let pointerOpen = false;
+  let openAtPointerDown = false;
+
+  const isOpen = (): boolean => {
+    try {
+      return popover.matches(':popover-open');
+    } catch {
+      return false;
+    }
+  };
+  const enabledItems = (): HTMLButtonElement[] => [importBtn, spaceBtn].filter((btn) => !btn.disabled);
+  const focusItem = (index: number): void => {
+    const target = enabledItems()[index];
+    if (target) target.focus({ preventScroll: true });
+  };
+  const close = (fromPointer = false, restoreFocus = false): void => {
+    if (!isOpen()) return;
+    if (restoreFocus) {
+      if (fromPointer) trigger.focus({ focusVisible: false } as FocusOptions);
+      else trigger.focus();
+    }
+    const pop = popover as HTMLElement & { hidePopover?: () => void };
+    pop.hidePopover?.();
+  };
+  const positionFallback = (): void => {
+    if (typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('position-area', 'block-end')) {
+      return;
+    }
+    const trig = trigger.getBoundingClientRect();
+    const pop = popover.getBoundingClientRect();
+    const gap = 8;
+    const left = Math.max(8, Math.min(window.innerWidth - pop.width - 8, trig.left + 4));
+    const above = trig.top - pop.height - gap;
+    const top = above >= 8 ? above : Math.min(window.innerHeight - pop.height - 8, trig.bottom + gap);
+    popover.style.left = `${Math.round(left)}px`;
+    popover.style.top = `${Math.round(Math.max(8, top))}px`;
+  };
+
+  importBtn.addEventListener('click', (ev) => {
+    close(ev.detail !== 0, true);
+    onImport();
+  });
+  spaceBtn.addEventListener('click', (ev) => {
+    close(ev.detail !== 0, true);
+    onSpace();
+  });
+
+  trigger.addEventListener('pointerdown', (ev) => {
+    if (ev.pointerType === 'mouse') ev.preventDefault();
+    pointerOpen = true;
+    openAtPointerDown = isOpen();
+  });
+  trigger.addEventListener('pointercancel', () => {
+    pointerOpen = false;
+    openAtPointerDown = false;
+  });
+  trigger.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      openAtPointerDown = false;
+      pointerOpen = false;
+      enterOnOpen = true;
+      if (!isOpen()) trigger.click();
+      else focusItem(0);
+    } else if (ev.key === 'Enter' || ev.key === ' ') {
+      openAtPointerDown = false;
+      pointerOpen = false;
+      enterOnOpen = true;
+    }
+  });
+  if (!hasInvokers) {
+    trigger.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      // 只有真点击（detail ≠ 0）才看按下时的状态：按下后拖走再由脚本或读屏 click() 时，不能把它当成「再点一次关掉」。
+      const wasOpen = ev.detail !== 0 && openAtPointerDown;
+      openAtPointerDown = false;
+      if (wasOpen || isOpen()) {
+        if (isOpen()) {
+          close(ev.detail !== 0, true);
+        } else if (ev.detail !== 0) {
+          trigger.focus({ focusVisible: false } as FocusOptions);
+        } else {
+          trigger.focus();
+        }
+      } else {
+        enterOnOpen = ev.detail === 0 && !pointerOpen;
+        const pop = popover as HTMLElement & { showPopover?: (opts?: { source?: HTMLElement }) => void };
+        pop.showPopover?.({ source: trigger });
+      }
+    });
+  }
+
+  popover.addEventListener('toggle', (ev) => {
+    const open = (ev as ToggleEvent).newState === 'open';
+    trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      positionFallback();
+      if (enterOnOpen) {
+        enterOnOpen = false;
+        pointerOpen = false;
+        focusItem(0);
+      } else if (pointerOpen) {
+        pointerOpen = false;
+        trigger.focus({ focusVisible: false } as FocusOptions);
+      }
+    } else {
+      enterOnOpen = false;
+      pointerOpen = false;
+    }
+  });
+
+  const nativeFocusGroup = 'focusGroup' in HTMLElement.prototype;
+  if (!nativeFocusGroup) {
+    list.setAttribute('role', 'menu');
+    importBtn.setAttribute('role', 'menuitem');
+    spaceBtn.setAttribute('role', 'menuitem');
+  }
+  list.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Tab') {
+      close(false, false);
+      return;
+    }
+    const items = enabledItems();
+    if (!items.length) return;
+    if (ev.key === 'Home') {
+      ev.preventDefault();
+      items[0].focus({ preventScroll: true });
+    } else if (ev.key === 'End') {
+      ev.preventDefault();
+      items[items.length - 1].focus({ preventScroll: true });
+    } else if (!nativeFocusGroup && (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')) {
+      ev.preventDefault();
+      const cur = items.indexOf(document.activeElement as HTMLButtonElement);
+      const step = ev.key === 'ArrowUp' ? -1 : 1;
+      items[cur < 0 ? 0 : (cur + step + items.length) % items.length].focus({ preventScroll: true });
+    }
+  });
+
+  const onDocFocusIn = (ev: FocusEvent) => {
+    if (!isOpen()) return;
+    const target = ev.target;
+    if (target instanceof Node && (popover.contains(target) || trigger.contains(target))) return;
+    close(false, false);
+  };
+  document.addEventListener('focusin', onDocFocusIn);
+
+  return {
+    trigger,
+    popover,
+    sync(selected, badgeText, spaceLabel, warn) {
+      trigger.classList.toggle('has-lut', selected);
+      trigger.classList.toggle('warn', selected && warn);
+      if (selected) {
+        th.replaceChildren(el('span', 'lut-menu-badge', badgeText ?? '选空间'));
+        label.textContent = '管理';
+        trigger.setAttribute('aria-label', `LUT 管理：${spaceLabel}`);
+      } else {
+        th.replaceChildren(icon(PLUS));
+        label.textContent = '导入';
+        trigger.setAttribute('aria-label', '导入 LUT 与色彩空间');
+      }
+      spaceBtn.disabled = !selected;
+      spaceBtn.classList.toggle('warn', selected && warn);
+      spaceVal.textContent = selected ? spaceLabel : '未选 LUT';
+    },
+    close,
+    destroy() {
+      close(false, false);
+      document.removeEventListener('focusin', onDocFocusIn);
+    },
+  };
+}
 
 export function bitmapId(bitmap: ImageBitmap): number {
   let id = bitmapIds.get(bitmap);

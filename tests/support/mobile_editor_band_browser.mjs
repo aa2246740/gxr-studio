@@ -481,9 +481,18 @@ async function runReachability(page, session) {
 
   // 2. LUT（从配方带头部开关进入）
   if (await clickVisible(page, '.editor .band .panel.recipe [data-mode="lut"]', 'switch to LUT mode')) {
-    const hasSpace = await page.locator('.editor .band [data-act="lut-space"]').isVisible().catch(() => false);
-    const hasImport = await page.locator('.editor .band [data-act="lut-import"]').isVisible().catch(() => false);
-    check(hasSpace && hasImport, `LUT head controls missing: space=${hasSpace} import=${hasImport}`);
+    const hasMenu = await page.locator('.editor .band [data-act="lut-menu"]').isVisible().catch(() => false);
+    let hasSpace = false;
+    let hasImport = false;
+    if (hasMenu) {
+      await page.locator('.editor .band [data-act="lut-menu"]').click();
+      await page.waitForSelector('.lut-menu-pop:popover-open', { timeout: 5_000 }).catch(() => {});
+      hasSpace = await page.locator('.lut-menu-pop:popover-open [data-act="lut-menu-space"]').isVisible().catch(() => false);
+      hasImport = await page.locator('.lut-menu-pop:popover-open [data-act="lut-menu-import"]').isVisible().catch(() => false);
+      await page.keyboard.press('Escape');
+      await frame(page, 2);
+    }
+    check(hasMenu && hasSpace && hasImport, `LUT menu controls missing: menu=${hasMenu} space=${hasSpace} import=${hasImport}`);
     if (manifest.lut && hasImport) {
       const lutInput = page.locator('input.lutpick');
       await lutInput.setInputFiles(manifest.lut);

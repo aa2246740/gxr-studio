@@ -24,7 +24,15 @@ from ..lut.spaces import DISPLAY
 from ..raw.dng import RawDecodeError
 from ..render import edits as render_edits
 from ..render.camera_recipe import editor_edit
-from ..render.params import EditError, EditState, parse_adjust, parse_curve, parse_lut, parse_recipe
+from ..render.params import (
+    EditError,
+    EditState,
+    parse_adjust,
+    parse_curve,
+    parse_lut,
+    parse_recipe,
+    same_recipe_entries,
+)
 from ..render.service import NoRaw, RenderUnavailable
 from .errors import ApiError
 from .routes import _shot_or_404, ctx
@@ -110,15 +118,7 @@ def _payload(
 
 
 def _same_plan_recipe(p1: Any, p2: Any) -> bool:
-    return bool(
-        p1.unit == p2.unit
-        and p1.slot == p2.slot
-        and p1.defaulted == p2.defaulted
-        and p1.entry_sha256 == p2.entry_sha256
-        and p1.record_sha256 == p2.record_sha256
-        and p1.binding_sha256 == p2.binding_sha256
-        and p1.selection_id == p2.selection_id
-    )
+    return same_recipe_entries(p1.entry_sha256, p2.entry_sha256)
 
 
 def _plan_fields(plan: Any) -> dict[str, Any]:

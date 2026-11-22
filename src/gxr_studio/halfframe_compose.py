@@ -28,7 +28,7 @@ from .raw.demosaic import demosaic_strips
 from .raw.dng import require_finite
 from .render import chain
 from .render.camera_recipe import recorded_recipe
-from .render.params import EditError, EditState
+from .render.params import EditError, EditState, same_recipe_entries
 from .render.tones import channel_gains, display_table
 
 FULL_WIDTH = hf.FULL_WIDTH  # 4288
@@ -318,19 +318,13 @@ def _labels_from_renderer(r: Renderer, *, neutral: bool) -> dict[str, str]:
 _PREDICTION_DESC_PREFIX = "GXR Studio computer prediction (not camera-measured): "
 
 
-def _renderer_recipe_key(r: Renderer) -> tuple[str, str, str, str]:
-    b = r.recipe_binding or {}
-    entry = b.get("entry_sha256") or r.entry_sha256
-    record = b.get("record_sha256") or ""
-    binding = b.get("binding_sha256") or ""
-    sel = b.get("selection_id") or ""
-    if not entry and r.description:
-        return ("", "", "", r.description)
-    return (entry, record, binding, sel)
+def _renderer_entry_sha256(r: Renderer) -> str:
+    binding = r.recipe_binding or {}
+    return binding.get("entry_sha256") or r.entry_sha256
 
 
 def _same_recipe_renderers(r1: Renderer, r2: Renderer) -> bool:
-    return _renderer_recipe_key(r1) == _renderer_recipe_key(r2)
+    return same_recipe_entries(_renderer_entry_sha256(r1), _renderer_entry_sha256(r2))
 
 
 def _mixed_pair_description(

@@ -38,6 +38,7 @@ from gxr_studio.render.chain import ChromaBake, chroma_u8
 from gxr_studio.render.params import EditState, parse_adjust, parse_curve
 from gxr_studio.render.tones import channel_gains, display_table
 from raw_support import bayer_scene, build_dng
+from support.node_ts import PAIR_WGSL_PROBE, node_can_strip_types
 from test_gpu_frontend import FAKE_GPU, _decide, run_node
 from test_halfframe_p1b_gpu_field import PAIR_HARNESS_JS, _seam_slice
 
@@ -367,14 +368,12 @@ def test_pair_shader_recipe_chain2_generated_from_common() -> None:
     assert "__RECIPE_CHAIN_2__" not in bundle and expected in bundle
     for js in sorted((repo / "mobile" / "dist").rglob("*.js")) if (repo / "mobile" / "dist").is_dir() else []:
         assert "__RECIPE_CHAIN_2__" not in js.read_text("utf-8"), f"unexpanded marker in {js}"
-    if shutil.which("node") is not None:
-        js_code = (
-            "import { readFileSync as r } from 'node:fs'; import { expandPairColorWgsl as e } from './frontend/src/pair_wgsl.ts';"
-            "const c = r('frontend/src/shaders/common.wgsl', 'utf8'), p = r('frontend/src/shaders/pair_color.wgsl', 'utf8'), o = e(c, p);"
-            "if (e(c, o) !== o) throw new Error('not idempotent'); process.stdout.write(o);"
-        )
-        proc = subprocess.run(["node", "--input-type=module", "-e", js_code], cwd=repo, capture_output=True, text=True, check=True)
+    if (node := shutil.which("node")) and node_can_strip_types(node):
+        cmd = [node, "--experimental-strip-types", "--input-type=module", "-e", PAIR_WGSL_PROBE]
+        proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, check=True)
         assert expected in proc.stdout and "__RECIPE_CHAIN_2__" not in proc.stdout
+    elif node is not None:
+        pytest.skip("Node < 22.18 导入 .ts 需要类型剥离（Node ≥ 22.18）")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="本机没有 node")
