@@ -251,6 +251,14 @@ pub const PROFILES: &[Profile] = &[
         xdata: true,
         ..Profile::simple(260, 98304, true)
     },
+    Profile {
+        max_engine: 98304,
+        mount_knobs_from_50mm: true,
+        library_generation: Some(178),
+        library_sha256: &["1a4810446475633e55771df28d5080ed28769a8850ef68cbde41be75acbad1d2"],
+        xdata: true,
+        ..Profile::simple(262, 98304, true)
+    },
 ];
 
 pub fn profile(generation: u32) -> Option<&'static Profile> {

@@ -778,17 +778,21 @@ export function parseRecipeTag(value: string | null | undefined): ParsedRecipeTa
 }
 
 /** 照桌面 web/assets/info_panel.js 的 shootingRecipeRows 格式化单格拍摄配方说明。 */
-export function formatShootingRecipeTag(copyright: string | null | undefined): string {
+export function formatShootingRecipeTag(copyright: string | null | undefined, amountLevels?: readonly number[] | null): string {
   const tag = parseRecipeTag(copyright);
   if (!tag) return '未标记';
   const pos = String(tag.position).padStart(2, '0');
   const base = tag.name ? `${tag.name}（${tag.unitLabel} · ${pos}）` : `GXR1 ${tag.catalogIdentity} ${tag.unit} ${pos}`;
   if (tag.levels === null) return `${base} · 微调未知`;
-  const changes: string[] = [];
+  const code = tag.knobCode?.[0] ?? '-';
+  const idx = code === '-' ? -1 : TAG_ALPHABET.indexOf(code);
+  const hits = idx >= 0 && amountLevels ? amountLevels.filter((v) => Math.floor(v / 10) === idx) : [];
+  const amt = hits.length === 1 ? hits[0] : null;
+  const changes: string[] = amt !== null && amt !== 100 ? [`${TAG_KNOB_LABELS.amount} ${amt}%`] : [];
   for (const key of TAG_KNOB_ORDER) {
     const val = tag.levels[key];
-    if (val === null || val === undefined || val === 0) continue;
-    changes.push(`${TAG_KNOB_LABELS[key] ?? key} ${val > 0 ? `+${val}` : String(val)}`);
+    if (val !== null && val !== undefined && val !== 0) changes.push(`${TAG_KNOB_LABELS[key] ?? key} ${val > 0 ? `+${val}` : String(val)}`);
   }
+  if (code !== '-' && amt === null) changes.push('强度未知');
   return changes.length ? `${base} · ${changes.join(' · ')}` : base;
 }

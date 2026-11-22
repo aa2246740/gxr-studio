@@ -252,8 +252,8 @@ def test_panel_api_gives_the_true_reason(client, card, settings, state):
         assert response.status_code == 422
         assert response.json()["message"] == "不支持这个版本的相机配方文件。"
         assert response.json()["detail"] == (
-            "第 157 代。支持第 "
-            "127、129、131、135、137、138、150、152、153、154、155、156、158、176、178、181、182、185、250、253、256、257、258、259、260 代。"
+            "第 157 代。支持第 127、129、131、135、137、138、150、152、153、154、155、156、158、"
+            "176、178、181、182、185、250、253、256、257、258、259、260、262 代。"
         )
         assert "supported_generations" not in response.json()
         camera = client.get("/api/camdata/status").json()["camera_data"]

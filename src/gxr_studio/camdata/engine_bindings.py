@@ -97,4 +97,14 @@ BOUND_ENGINES = {
             "ba83e5b8e2a18795146a0ddfed632d8a295b438039a99393fdb05bf9c057827a",
         ),
     ),
+    262: (
+        EngineDescription(
+            "df8559ecd05777ad24906e1fb0671fbf7013283664e6b4c6b04c13ac47e0d201",
+            81620,
+            9160,
+            ((89188, 67576),),
+            93380,
+            "ba83e5b8e2a18795146a0ddfed632d8a295b438039a99393fdb05bf9c057827a",
+        ),
+    ),
 }

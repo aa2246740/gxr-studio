@@ -385,3 +385,35 @@ export function photoWithAdopted<T extends AdoptablePhoto>(photo: T, dat: object
     levels: new Map([[adopted.choice.id, { ...adopted.levels }]]),
   };
 }
+
+const TAG_CATALOG_LIB_GEN: Record<string, number> = {
+  d25d2f0a68: 176,
+  '6a3a5a3c02': 178,
+  '6adf847602': 178,
+  '0ccc86c19b': 178,
+};
+const TAG_UNIT_ID: Record<string, Unit> = { '50': 'jlaunch', '28': 'qlaunch', MT: 'l08firm' };
+
+/** 照桌面 `camera_recipe.py:_amount_levels`，从当前已加载 DAT 目录查标签对应配方的合法强度档位。 */
+export function tagAmountLevels(
+  tag: { catalogIdentity: string; unit: string; position: number; name: string | null } | null,
+  dat: { generation: number | null; listing: Listing } | null | undefined,
+): number[] | null {
+  if (!tag || !dat || dat.generation === null) return null;
+  const wantLibGen = TAG_CATALOG_LIB_GEN[tag.catalogIdentity];
+  const datLibGen = dat.generation === 176 ? 176 : dat.generation >= 178 ? 178 : null;
+  if (!wantLibGen || wantLibGen !== datLibGen) return null;
+  const unit = TAG_UNIT_ID[tag.unit];
+  if (!unit) return null;
+  const cards = shelf(shelves(dat.listing, unit), 'all');
+  const builtinMax = datLibGen === 178 ? 4 : 8;
+  const card =
+    tag.position <= builtinMax
+      ? cards.find((c) => c.kind === 'builtin' && c.slot === tag.position)
+      : tag.name !== null
+        ? cards.find((c) => c.kind === 'record' && c.name === tag.name)
+        : undefined;
+  const ctrl = card?.controls.find((c) => c.name === 'amount');
+  if (!ctrl) return null;
+  return ctrl.levels.slice(ctrl.cap_lower ? 1 : 0, ctrl.cap_upper ? -1 : undefined);
+}
