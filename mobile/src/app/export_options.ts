@@ -6,7 +6,7 @@ import { buildRequest, type QualityTier, type RequestPhoto, type SizeTier } from
 import { fontsNeeded } from '../lib/fonts';
 import { formatClock, formatDay } from '../lib/group';
 import { HALFFRAME_MODES, PAIR_EXPORT_NOTE, pairExportSizeText } from '../lib/halfframe';
-import { HDR_LINE, HDR_NO_RAW, hdrAvailable, hdrFrameLine, hdrMixLine } from '../lib/hdr_text';
+import { HDR_NO_RAW, hdrAvailable, hdrFrameLine, hdrLine, hdrMixLine } from '../lib/hdr_text';
 import { isDisplaySpace } from '../lib/lut';
 import {
   loadExportHalfframe,
@@ -171,7 +171,7 @@ export function mountExportSheet(
   const hdrRow = el('div', 'frow');
   const hdr = el('div', 'hdrrow');
   const hdrText = el('div', 'tx');
-  hdrText.append(el('b', '', 'HDR'), el('small', '', canHdr ? HDR_LINE : HDR_NO_RAW));
+  hdrText.append(el('b', '', 'HDR'), el('small', '', canHdr ? hdrLine() : HDR_NO_RAW));
   const sw = document.createElement('input');
   sw.type = 'checkbox';
   sw.className = 'switch';

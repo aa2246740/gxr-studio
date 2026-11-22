@@ -1,5 +1,6 @@
 import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type TimeGroup, type VRow } from '../lib/group';
 import { UNIT_LABEL } from '../lib/calib';
+import { deviceName } from '../lib/device';
 import { groupsPresent } from '../lib/paste';
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
 import { button, el, icon } from './dom';
@@ -701,7 +702,7 @@ export class GridView {
     const rows: Array<[string, string, () => void]> = [
       ['添加照片', '再从存储卡里选几张', () => this.api.addPhotos()],
       ['校准数据', calibDetail(this.api), () => this.api.showCalib()],
-      ['怎么把卡插到 iPhone', this.api.hasDat() ? '相机配方文件已选上' : '需要配方时再选 GXRCE.DAT 和 GXRFX.BIN', () => this.api.showHelp()],
+      [`怎么把卡插到 ${deviceName()}`, this.api.hasDat() ? '相机配方文件已选上' : '需要配方时再选 GXRCE.DAT 和 GXRFX.BIN', () => this.api.showHelp()],
     ];
     for (const [title, detail, run] of rows) {
       const line = button('lrow', '');

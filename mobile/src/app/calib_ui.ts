@@ -1,6 +1,7 @@
 // 校准数据那张卡（起始页 01、「更多 → 校准数据」）：导入、哪些镜头和 ISO 校准过、替换、删除。
 
 import { UNIT_LABEL, unitLine } from '../lib/calib';
+import { deviceName } from '../lib/device';
 import type { Book } from './book';
 import { button, el } from './dom';
 import type { AppApi } from './model';
@@ -21,7 +22,7 @@ function paint(card: HTMLElement, api: AppApi, book: Book): void {
     card.append(
       hd,
       el('p', '', '还没导入：配方只显示中性转换，和相机里的颜色不同。'),
-      el('p', 's', '在 Mac 的 GXR Studio 里导出，用隔空投送发到这台 iPhone。'),
+      el('p', 's', `在 Mac 的 GXR Studio 里导出，用隔空投送发到这台 ${deviceName()}。`),
     );
     const choose = button('btn block', book.packBusy ? '正在核对校准数据…' : '选择校准数据文件');
     choose.disabled = book.packBusy;

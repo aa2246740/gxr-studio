@@ -140,3 +140,42 @@ test('cellAriaLabel formats position, kind and state without leaking private nam
   assert.equal(cellAriaLabel(4, { dng: false, jpg: true, diptych: true }, false, false), '第 4 张，半格双联');
   assert.equal(cellAriaLabel(5, { dng: true, jpg: false, bad: true }, false, false), '第 5 张，RAW，读不了');
 });
+
+test('deviceName detects iPadOS via maxTouchPoints + Mac/iPad UA and keeps iPhone on phones/desktop', async () => {
+  const { deviceName, isIpadDevice } = await import('../../mobile/src/lib/device.ts');
+  const { hdrLine } = await import('../../mobile/src/lib/hdr_text.ts');
+  const { lutFootnote } = await import('../../mobile/src/lib/lut.ts');
+  const ipadDesktopUa = {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15',
+    platform: 'MacIntel',
+    maxTouchPoints: 5,
+  };
+  const ipadLegacyUa = {
+    userAgent: 'Mozilla/5.0 (iPad; CPU OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+    platform: 'iPad',
+    maxTouchPoints: 5,
+  };
+  const iphoneUa = {
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1',
+    platform: 'iPhone',
+    maxTouchPoints: 5,
+  };
+  const macDesktop = {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15',
+    platform: 'MacIntel',
+    maxTouchPoints: 0,
+  };
+  assert.equal(isIpadDevice(ipadDesktopUa), true);
+  assert.equal(deviceName(ipadDesktopUa), 'iPad');
+  assert.equal(isIpadDevice(ipadLegacyUa), true);
+  assert.equal(deviceName(ipadLegacyUa), 'iPad');
+  assert.equal(isIpadDevice(iphoneUa), false);
+  assert.equal(deviceName(iphoneUa), 'iPhone');
+  assert.equal(isIpadDevice(macDesktop), false);
+  assert.equal(deviceName(macDesktop), 'iPhone');
+  assert.equal(deviceName({ ...ipadDesktopUa, maxTouchPoints: 1 }), 'iPhone');
+  assert.equal(hdrLine(ipadDesktopUa), '在 iPad 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。');
+  assert.equal(hdrLine(iphoneUa), '在 iPhone 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。');
+  assert.equal(lutFootnote(ipadDesktopUa), 'LUT 只存在这台 iPad 上，直接套在照片上，不写入相机。');
+  assert.equal(lutFootnote(iphoneUa), 'LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。');
+});

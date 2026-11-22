@@ -1,4 +1,4 @@
-"""iPad Safari / WebKit 无 WebGPU 缺陷回归验收测试（D1–D5，browser_serial）。
+"""iPad Safari / WebKit 无 WebGPU 缺陷回归验收测试（D1–D7，browser_serial）。
 
 在固定 Playwright WebKit（hasTouch=True, isMobile=True）下覆盖 1032×1376、1376×1032、
 820×1180、手机横屏 844×390 与手机竖屏 390×844：
@@ -6,7 +6,9 @@
 - D2：无 WebGPU 时切换配方卡，编辑器顶栏标题同步更新；
 - D3：无 WebGPU 时清图提锐、导出与横竖旋转前后，照片矩形位移 <= 1 px；
 - D4：iPad 图库缩略图宽度落在 150–200 pt，手机竖屏保持 3 列，日期头/角标/选框正常贴合；
-- D5：图库每张缩略图按钮都有非空无障碍名称（含序号、类型及「已编辑」「已选中」状态），绝不含文件名或拍摄时间。
+- D5：图库每张缩略图按钮都有非空无障碍名称（含序号、类型及「已编辑」「已选中」状态），绝不含文件名或拍摄时间；
+- D6：iPadOS（Macintosh UA + maxTouchPoints=5）全站文案为「iPad」且无「iPhone」；iPhone UA（含横屏）保持「iPhone」；
+- D7：iPad 横屏与竖屏首屏内容限宽 <= 720 pt 且居中，手机首屏不变。
 
 本机未安装 Playwright WebKit 时以清晰原因跳过。stdout 仅输出脱敏结构化 JSON。
 """

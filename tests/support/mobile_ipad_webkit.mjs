@@ -49,7 +49,10 @@ const EDITOR_VIEWPORTS = [
 const STEMS = (manifest.stems ?? []).filter(Boolean);
 const failures = [];
 const pageErrors = [];
-const summary = { grid: {}, editor: {}, d5: {}, rotation: {} };
+const summary = { grid: {}, editor: {}, d5: {}, d6: {}, d7: {}, rotation: {} };
+
+const IPAD_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
+const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1';
 
 function redact(text) {
   let out = String(text).replace(/\/(?:Volumes|Users|private|var\/folders|tmp)\/\S+/g, '[path]');
@@ -411,14 +414,120 @@ async function auditEditorViewport(page, vp, landscapeId, landscapeStem) {
   return settledRect;
 }
 
+async function auditVisibleDeviceCopy(page, label, expectDev, mustInclude = []) {
+  const other = expectDev === 'iPad' ? 'iPhone' : 'iPad';
+  const info = await page.evaluate(() => {
+    const isVis = (n) => {
+      if (n.closest('[hidden]')) return false;
+      const cs = getComputedStyle(n);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return false;
+      const r = n.getBoundingClientRect();
+      return r.width > 1 && r.height > 1;
+    };
+    const texts = [];
+    const root = document.querySelector('.app');
+    if (root) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        const txt = (node.nodeValue || '').trim();
+        if (!txt || !node.parentElement || !isVis(node.parentElement)) continue;
+        texts.push(txt);
+      }
+    }
+    return {
+      text: texts.join('\n'),
+      touchPoints: navigator.maxTouchPoints,
+      platform: navigator.platform,
+    };
+  });
+  const missing = mustInclude.filter((s) => !info.text.includes(s));
+  const hasExpect = info.text.includes(expectDev);
+  const hasOther = info.text.includes(other);
+  const otherHits = info.text
+    .split('\n')
+    .filter((line) => line.includes(other))
+    .slice(0, 6);
+  summary.d6[label] = {
+    expectDev,
+    touchPoints: info.touchPoints,
+    platform: info.platform,
+    hasExpect,
+    hasOther,
+    missingCount: missing.length,
+    otherHitCount: otherHits.length,
+  };
+  check(hasExpect, `D6 ${label}: visible text missing 「${expectDev}」`);
+  check(!hasOther, `D6 ${label}: visible text still contains 「${other}」 (${otherHits.join(' | ')})`);
+  for (const phrase of missing) {
+    check(false, `D6 ${label}: visible text missing expected phrase 「${phrase}」`);
+  }
+}
+
+async function auditStartLayout(page, label, vp) {
+  await page.setViewportSize({ width: vp.width, height: vp.height });
+  await setSafeArea(page, vp.safe);
+  await page.waitForFunction(
+    (want) => document.querySelector('.app')?.getAttribute('data-layout') === want,
+    vp.layout,
+    { timeout: 10_000 },
+  );
+  await frame(page, 3);
+  const info = await page.evaluate(() => {
+    const pickRect = (sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return {
+        left: Math.round(r.left * 10) / 10,
+        right: Math.round(r.right * 10) / 10,
+        w: Math.round(r.width * 10) / 10,
+        h: Math.round(r.height * 10) / 10,
+      };
+    };
+    return {
+      vw: window.innerWidth,
+      layout: document.querySelector('.app')?.getAttribute('data-layout') ?? null,
+      start: pickRect('.start'),
+      calib: pickRect('.start .calib'),
+      ctaBtn: pickRect('.start .cta .btn'),
+      hscroll: document.documentElement.scrollWidth > window.innerWidth + 1,
+    };
+  });
+  summary.d7[label] = info;
+  check(!info.hscroll, `D7 ${label}: horizontal page scroll detected on first screen`);
+  check(Boolean(info.start && info.calib && info.ctaBtn), `D7 ${label}: start screen elements missing`);
+  if (!info.start || !info.calib || !info.ctaBtn) return;
+  if (vp.ipad) {
+    check(info.start.w <= 720 && info.start.w >= 500, `D7 ${label}: .start width ${info.start.w} pt outside 500..720 pt`);
+    check(info.calib.w <= 720, `D7 ${label}: .calib width ${info.calib.w} pt exceeds 720 pt`);
+    check(info.ctaBtn.w <= 720, `D7 ${label}: primary CTA width ${info.ctaBtn.w} pt exceeds 720 pt`);
+    const centerOff = Math.abs((info.start.left + info.start.right) / 2 - info.vw / 2);
+    check(centerOff <= 2.0, `D7 ${label}: .start not centred (offset ${centerOff.toFixed(1)} pt)`);
+  } else {
+    check(info.start.w >= info.vw - 2, `D7 ${label}: phone .start width ${info.start.w} pt narrowed unexpectedly (vw=${info.vw})`);
+    check(info.ctaBtn.w >= info.vw - 40, `D7 ${label}: phone primary CTA width ${info.ctaBtn.w} pt narrowed unexpectedly`);
+  }
+}
+
 const browser = await webkit.launch({ headless: true, executablePath });
 const ctx = await browser.newContext({
-  viewport: { width: 1032, height: 1376 },
+  viewport: { width: 1376, height: 1032 },
   deviceScaleFactor: 2,
   hasTouch: true,
   isMobile: true,
+  userAgent: IPAD_UA,
 });
 await ctx.addInitScript(() => {
+  const defineNav = (prop, value) => {
+    try {
+      Object.defineProperty(Navigator.prototype, prop, { configurable: true, get: () => value });
+    } catch {
+      Object.defineProperty(navigator, prop, { configurable: true, get: () => value });
+    }
+  };
+  defineNav('maxTouchPoints', 5);
+  defineNav('platform', 'MacIntel');
   window.__shareLog = [];
   Object.defineProperty(navigator, 'canShare', { configurable: true, value: (d) => Boolean(d && Array.isArray(d.files) && d.files.length > 0) });
   Object.defineProperty(navigator, 'share', {
@@ -433,7 +542,26 @@ page.on('pageerror', (err) => pageErrors.push(redact(err.message)));
 try {
   await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.app[data-core="1"]', { timeout: 60_000 });
-  await setSafeArea(page, IPAD_SAFE);
+  await page.waitForSelector('.start .calib', { timeout: 30_000 });
+
+  // D7：iPad 横屏与竖屏首屏内容限宽 <= 720 pt 且居中
+  await auditStartLayout(page, 'ipad-landscape-1376x1032', { width: 1376, height: 1032, layout: 'ipad-landscape', ipad: true, safe: IPAD_SAFE });
+  await auditStartLayout(page, 'ipad-portrait-1032x1376', { width: 1032, height: 1376, layout: 'ipad-portrait', ipad: true, safe: IPAD_SAFE });
+
+  // D6（iPad 首屏 + 帮助表）：无「iPhone」，全部显示「iPad」
+  await auditVisibleDeviceCopy(page, 'ipad-start', 'iPad', [
+    '用读卡器把存储卡插到 iPad',
+    '也不会离开这台 iPad',
+    '用隔空投送发到这台 iPad',
+    '怎么把卡插到 iPad',
+  ]);
+  await page.locator('.start .help .lnk').tap();
+  await page.waitForSelector('.ms', { timeout: 10_000 });
+  await frame(page, 2);
+  await auditVisibleDeviceCopy(page, 'ipad-help', 'iPad', ['怎么把卡插到 iPad', '把读卡器插到 iPad 底部']);
+  await page.locator('.ms .hd .nb').tap();
+  await page.waitForFunction(() => !document.querySelector('.ms'), null, { timeout: 10_000 });
+  await frame(page, 2);
 
   await page.locator('input.calibpick').setInputFiles(manifest.pack);
   await page.waitForSelector('.calib[data-calib="ready"]', { timeout: 60_000 });
@@ -448,6 +576,15 @@ try {
     { timeout: 120_000 },
   );
   await frame(page, 3);
+
+  // D6（iPad 图库 ⋯ 菜单）
+  await page.locator('.nav button[aria-label="更多"]').tap();
+  await page.waitForSelector('.ms', { timeout: 10_000 });
+  await frame(page, 2);
+  await auditVisibleDeviceCopy(page, 'ipad-grid-menu', 'iPad', ['怎么把卡插到 iPad']);
+  await page.locator('.ms .hd .nb').tap();
+  await page.waitForFunction(() => !document.querySelector('.ms'), null, { timeout: 10_000 });
+  await frame(page, 2);
 
   // D4：iPad 三个尺寸 150–200 pt + 手机竖屏 3 列
   for (const vp of [
@@ -488,6 +625,21 @@ try {
     { timeout: 60_000 },
   );
   await frame(page, 3);
+
+  // D6（iPad 编辑器 LUT 脚注文本 + 导出选项 HDR 说明）
+  const lutFootText = await page.evaluate(() => (document.querySelector('.panel.lut .lut-foot')?.textContent || '').trim());
+  summary.d6['ipad-lut-foot'] = { expectDev: 'iPad', hasExpect: lutFootText.includes('iPad'), hasOther: lutFootText.includes('iPhone') };
+  check(lutFootText.includes('LUT 只存在这台 iPad 上') && !lutFootText.includes('iPhone'), `D6 ipad-lut-foot: unexpected text 「${lutFootText}」`);
+  await page.locator('.editor .nav [data-act="editor-more"]').tap();
+  await page.waitForSelector('[data-act="more-export-options"]', { timeout: 10_000 });
+  await page.locator('[data-act="more-export-options"]').tap();
+  await page.waitForSelector('[data-state="export-sheet"]', { timeout: 10_000 });
+  await frame(page, 2);
+  await auditVisibleDeviceCopy(page, 'ipad-export-options', 'iPad', ['在 iPad 上看']);
+  await page.locator('[data-state="export-sheet"] [data-act="close"]').tap();
+  await page.waitForFunction(() => !document.querySelector('[data-state="export-sheet"]'), null, { timeout: 10_000 });
+  await frame(page, 2);
+
   const p1 = await measureStillPhoto(page);
   await page.setViewportSize({ width: 1376, height: 1032 });
   await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'ipad-landscape', null, { timeout: 10_000 });
@@ -506,6 +658,53 @@ try {
   // D5：回到网格验证已编辑照片带有「已编辑」无障碍名称
   await toGrid(page);
   await auditD5Labels(page, 'after-edit', { expectEdited: true });
+
+  // D6 + D7（iPhone UA 竖屏与横屏）：文案保持「iPhone」，首屏手机版式不变
+  const phoneCtx = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+    hasTouch: true,
+    isMobile: true,
+    userAgent: IPHONE_UA,
+  });
+  await phoneCtx.addInitScript(() => {
+    const defineNav = (prop, value) => {
+      try {
+        Object.defineProperty(Navigator.prototype, prop, { configurable: true, get: () => value });
+      } catch {
+        Object.defineProperty(navigator, prop, { configurable: true, get: () => value });
+      }
+    };
+    defineNav('maxTouchPoints', 5);
+    defineNav('platform', 'iPhone');
+  });
+  const phonePage = await phoneCtx.newPage();
+  phonePage.on('pageerror', (err) => pageErrors.push(redact(err.message)));
+  try {
+    await phonePage.goto(`${base}/`, { waitUntil: 'domcontentloaded' });
+    await phonePage.waitForSelector('.app[data-core="1"]', { timeout: 60_000 });
+    await phonePage.waitForSelector('.start .calib', { timeout: 30_000 });
+    await auditStartLayout(phonePage, 'phone-portrait-390x844', { width: 390, height: 844, layout: 'phone-portrait', ipad: false, safe: PHONE_PORT_SAFE });
+    await auditVisibleDeviceCopy(phonePage, 'iphone-start', 'iPhone', [
+      '用读卡器把存储卡插到 iPhone',
+      '也不会离开这台 iPhone',
+      '用隔空投送发到这台 iPhone',
+      '怎么把卡插到 iPhone',
+    ]);
+    await phonePage.locator('.start .help .lnk').tap();
+    await phonePage.waitForSelector('.ms', { timeout: 10_000 });
+    await frame(phonePage, 2);
+    await auditVisibleDeviceCopy(phonePage, 'iphone-help', 'iPhone', ['怎么把卡插到 iPhone', '把读卡器插到 iPhone 底部']);
+    await phonePage.locator('.ms .hd .nb').tap();
+    await phonePage.waitForFunction(() => !document.querySelector('.ms'), null, { timeout: 10_000 });
+    await phonePage.setViewportSize({ width: 844, height: 390 });
+    await setSafeArea(phonePage, PHONE_LAND_SAFE);
+    await phonePage.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'phone-landscape', null, { timeout: 10_000 });
+    await frame(phonePage, 3);
+    await auditVisibleDeviceCopy(phonePage, 'iphone-landscape-start', 'iPhone', ['用读卡器把存储卡插到 iPhone']);
+  } finally {
+    await phoneCtx.close();
+  }
 } catch (err) {
   failures.push(redact(err?.stack || err?.message || String(err)));
 } finally {

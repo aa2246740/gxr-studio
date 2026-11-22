@@ -322,3 +322,10 @@
 .app[data-layout="phone-landscape"] .nogpu-notice .warn { display: none; }
 .app[data-layout="phone-landscape"] .nogpu-notice .nogpu-title { font-size: 11px; line-height: 14px; }
 .app[data-layout="phone-landscape"] .nogpu-notice .nogpu-detail { font-size: 10px; line-height: 13px; }
+
+/* 首屏在 iPad 版式限宽居中（手机保持不变） */
+.app[data-layout^="ipad"] .start {
+  width: min(100%, 680px);
+  margin: 0 auto;
+  padding: 24px 24px 28px;
+}
