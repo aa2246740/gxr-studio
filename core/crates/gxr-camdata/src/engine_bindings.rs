@@ -160,6 +160,15 @@ const G260_ENGINES: &[EngineDescription<'static>] = &[EngineDescription {
     xdata_sha256: Some("ba83e5b8e2a18795146a0ddfed632d8a295b438039a99393fdb05bf9c057827a"),
 }];
 
+const G262_ENGINES: &[EngineDescription<'static>] = &[EngineDescription {
+    engine_sha256: "df8559ecd05777ad24906e1fb0671fbf7013283664e6b4c6b04c13ac47e0d201",
+    entry: 81620,
+    bss_bytes: 9160,
+    relocations: &[(89188, 67576)],
+    linked_data_end: 93380,
+    xdata_sha256: Some("ba83e5b8e2a18795146a0ddfed632d8a295b438039a99393fdb05bf9c057827a"),
+}];
+
 const ALL_BOUND: &[&[EngineDescription<'static>]] = &[
     G156_ENGINES,
     G158_ENGINES,
@@ -175,6 +184,7 @@ const ALL_BOUND: &[&[EngineDescription<'static>]] = &[
     G258_ENGINES,
     G259_ENGINES,
     G260_ENGINES,
+    G262_ENGINES,
 ];
 
 fn bound_engines(generation: u32) -> Option<&'static [EngineDescription<'static>]> {
@@ -193,6 +203,7 @@ fn bound_engines(generation: u32) -> Option<&'static [EngineDescription<'static>
         258 => Some(G258_ENGINES),
         259 => Some(G259_ENGINES),
         260 => Some(G260_ENGINES),
+        262 => Some(G262_ENGINES),
         _ => None,
     }
 }

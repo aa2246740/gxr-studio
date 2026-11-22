@@ -6,10 +6,10 @@ import { copyrightFromJpeg, mergeCopyright, mergeMeta } from '../lib/exif';
 import { formatClock, formatDay, groupByGap } from '../lib/group';
 import { presetLabel, rectFromArray } from '../lib/crop';
 import { FRAME_NAMES } from '../lib/frame_spec';
-import { findFirstHalfNeighbor, formatShootingRecipeTag } from '../lib/halfframe';
+import { findFirstHalfNeighbor, formatShootingRecipeTag, parseRecipeTag } from '../lib/halfframe';
 import { HDR_NO_RAW } from '../lib/hdr_text';
 import { loadExportHdr, saveExportHdr, watchExportHdr } from '../lib/prefs';
-import { adoptedSelectionOf, DEFAULT_CARD, namesOnly, photoWithAdopted, recipeUnitOf, shelf, shelves } from '../lib/recipes';
+import { adoptedSelectionOf, DEFAULT_CARD, namesOnly, photoWithAdopted, recipeUnitOf, shelf, shelves, tagAmountLevels } from '../lib/recipes';
 import { NOT_SET, NOTHING_COPIED, ONLY_SOURCE, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
 import { curveSummary, groupsPresent } from '../lib/paste';
 import { button, el, icon, ICON } from './dom';
@@ -443,8 +443,9 @@ export function openPhotoInfoSheet(host: HTMLElement, api: AppApi, photo: Photo)
     const line = el('div', 'lrow');
     line.dataset.role = 'halfframe-recipes';
     const text = el('div');
+    const fmtTag = (raw: string | null | undefined) => formatShootingRecipeTag(raw, tagAmountLevels(parseRecipeTag(raw), api.book().dat));
     const secondKnown = mergeCopyright(photo.jpgMeta?.copyright, photo.dngMeta?.copyright);
-    const secondEl = el('small', 'num', `第 2 格：${formatShootingRecipeTag(secondKnown)}`);
+    const secondEl = el('small', 'num', `第 2 格：${fmtTag(secondKnown)}`);
     secondEl.dataset.half = 'second';
     text.append(el('b', '', '拍摄配方'), secondEl);
     line.append(text);
@@ -454,7 +455,7 @@ export function openPhotoInfoSheet(host: HTMLElement, api: AppApi, photo: Photo)
     void (async () => {
       if (secondKnown === null && photo.jpg) {
         const secondTag = await photoCopyright(photo);
-        if (sheet.isConnected) secondEl.textContent = `第 2 格：${formatShootingRecipeTag(secondTag)}`;
+        if (sheet.isConnected) secondEl.textContent = `第 2 格：${fmtTag(secondTag)}`;
       }
       const prev = await findFirstHalfNeighbor(photo, library);
       if (!sheet.isConnected) return;
@@ -464,7 +465,7 @@ export function openPhotoInfoSheet(host: HTMLElement, api: AppApi, photo: Photo)
       }
       const firstTag = await photoCopyright(prev);
       if (!sheet.isConnected) return;
-      const firstEl = el('small', 'num', `第 1 格：${formatShootingRecipeTag(firstTag)}`);
+      const firstEl = el('small', 'num', `第 1 格：${fmtTag(firstTag)}`);
       firstEl.dataset.half = 'first';
       text.insertBefore(firstEl, secondEl);
       line.dataset.firstChecked = 'ready';
