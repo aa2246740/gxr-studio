@@ -538,13 +538,16 @@ export function createLutPinMenu(onImport: () => void, onSpace: () => void): Lut
   const triggerId = `lut-pin-trigger-${seq}`;
   const menuId = `lut-pin-menu-${seq}`;
 
+  const hasInvokers = 'commandForElement' in HTMLButtonElement.prototype;
   const trigger = button('rc filter-tile lut-menu-tile', '');
   trigger.id = triggerId;
   trigger.dataset.act = 'lut-menu';
   trigger.setAttribute('aria-haspopup', 'menu');
   trigger.setAttribute('aria-expanded', 'false');
-  trigger.setAttribute('commandfor', menuId);
-  trigger.setAttribute('command', 'toggle-popover');
+  if (hasInvokers) {
+    trigger.setAttribute('commandfor', menuId);
+    trigger.setAttribute('command', 'toggle-popover');
+  }
   const th = el('div', 'th filter-th');
   const label = el('span', 'nm', '导入');
   trigger.append(th, label);
@@ -570,6 +573,7 @@ export function createLutPinMenu(onImport: () => void, onSpace: () => void): Lut
 
   let enterOnOpen = false;
   let pointerOpen = false;
+  let openAtPointerDown = false;
 
   const isOpen = (): boolean => {
     try {
@@ -616,26 +620,43 @@ export function createLutPinMenu(onImport: () => void, onSpace: () => void): Lut
   });
 
   trigger.addEventListener('pointerdown', (ev) => {
-    ev.preventDefault();
+    if (ev.pointerType === 'mouse') ev.preventDefault();
     pointerOpen = true;
+    openAtPointerDown = isOpen();
+  });
+  trigger.addEventListener('pointercancel', () => {
+    pointerOpen = false;
+    openAtPointerDown = false;
   });
   trigger.addEventListener('keydown', (ev) => {
     if (ev.key === 'ArrowDown') {
       ev.preventDefault();
+      openAtPointerDown = false;
+      pointerOpen = false;
       enterOnOpen = true;
       if (!isOpen()) trigger.click();
       else focusItem(0);
     } else if (ev.key === 'Enter' || ev.key === ' ') {
+      openAtPointerDown = false;
+      pointerOpen = false;
       enterOnOpen = true;
     }
   });
-  if (!('commandForElement' in HTMLButtonElement.prototype)) {
+  if (!hasInvokers) {
     trigger.addEventListener('click', (ev) => {
       ev.preventDefault();
-      if (isOpen()) {
-        close(ev.detail !== 0, true);
+      const wasOpen = openAtPointerDown;
+      openAtPointerDown = false;
+      if (wasOpen || isOpen()) {
+        if (isOpen()) {
+          close(ev.detail !== 0, true);
+        } else if (ev.detail !== 0) {
+          trigger.focus({ focusVisible: false } as FocusOptions);
+        } else {
+          trigger.focus();
+        }
       } else {
-        enterOnOpen = ev.detail === 0;
+        enterOnOpen = ev.detail === 0 && !pointerOpen;
         const pop = popover as HTMLElement & { showPopover?: (opts?: { source?: HTMLElement }) => void };
         pop.showPopover?.({ source: trigger });
       }
