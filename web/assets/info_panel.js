@@ -41,8 +41,9 @@ export function recipeName(view, r) {
 function recipeText(view) {
   const r = view.ed && view.ed.recipe;
   if (!r) return null;
-  const knobs = Object.entries(r.levels || {}).filter(([, v]) => Number(v) !== 0 && v !== 100)
-    .map(([k, v]) => `${KNOB_NAMES[k] || k} ${fmtSigned(Number(v))}`);
+  const knobs = Object.entries(r.levels || {})
+    .filter(([k, v]) => (k === 'amount' ? Number(v) !== 100 : Number(v) !== 0))
+    .map(([k, v]) => `${KNOB_NAMES[k] || k} ${k === 'amount' ? `${Number(v)}%` : fmtSigned(Number(v))}`);
   return [recipeName(view, r), ...knobs].join(' · ');
 }
 
