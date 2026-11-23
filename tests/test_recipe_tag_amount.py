@@ -3,18 +3,25 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from gxr_studio.camdata import store
+from gxr_studio.camdata import catalog_names, datcodec, store
 from gxr_studio.camdata.recipe_tags import KNOB_ORDER, decoded_levels, parse_recipe_tag, recipe_payload
-from gxr_studio.render.camera_recipe import recipe_tag_payload, recorded_recipe
+from gxr_studio.render.camera_recipe import _amount_levels, _catalog_recipe, recipe_tag_payload, recorded_recipe
 from gxr_studio.render.params import EditError
 from gxr_studio.render.recipes import CameraData, Menu
 from test_recipe_tag_render import SyntheticCamera
 from test_recipe_tags import sample
+
+REPO = Path(__file__).resolve().parents[1]
+SWEEP_DRIVER = REPO / "tests" / "support" / "recipe_tag_amount_sweep.mjs"
 
 
 def quarter_amounts(camera, unit="qlaunch"):
@@ -157,3 +164,222 @@ def test_quarter_amount_levels_in_the_real_catalog_resolve_to_the_recorded_perce
                 assert recorded_recipe(tag, camera).levels_dict()["amount"] == amount
                 checked += 1
     assert checked > 0
+
+
+def _amount_control(levels: list[int]) -> dict[str, Any]:
+    return {
+        "name": "amount",
+        "label": "强度",
+        "min": levels[0],
+        "max": levels[-1],
+        "default": 100,
+        "cap_lower": False,
+        "cap_upper": False,
+        "amount_step": None,
+        "levels": levels,
+    }
+
+
+class _SyntheticListingCamera(CameraData):
+    """按给定代数与单元配方表构造合成 CameraData，不依赖本机 DAT。"""
+
+    def __init__(self, generation: int, units: list[dict[str, Any]]) -> None:
+        Menu.__init__(self)
+        self.manifest = {"generation": generation}
+        self.manifest_sha256 = f"synthetic-gen-{generation}"
+        self._listing_units = units
+
+    def listing(self) -> list[dict[str, Any]]:
+        return self._listing_units
+
+
+def _synthetic_lib176_camera() -> _SyntheticListingCamera:
+    # 基底 1..8 与 G176 记录各自给可区分的强度档位；Acros 无强度旋钮，ARRI 709 与槽位 8（Gold）的 120/125 档位不同。
+    slot_levels: dict[int, list[int] | None] = {
+        1: [0, 25, 50, 75, 100, 125, 150],
+        2: [0, 25, 50, 75, 100, 125, 150],
+        3: None,
+        4: None,
+        5: [0, 50, 100, 150],
+        6: [0, 20, 60, 100, 140],
+        7: [0, 40, 80, 100],
+        8: [0, 25, 50, 75, 100, 125, 150],
+    }
+    units: list[dict[str, Any]] = []
+    for unit_idx, unit_id in enumerate(("jlaunch", "qlaunch", "l08firm")):
+        unit_bit = 1 << unit_idx
+        recipes: list[dict[str, Any]] = []
+        for slot in range(1, 9):
+            lv = slot_levels[slot]
+            recipes.append(
+                {
+                    "kind": "builtin",
+                    "slot": slot,
+                    "number": f"{slot:02d}",
+                    "controls": [_amount_control(lv)] if lv is not None else [],
+                }
+            )
+        seen: set[str] = set()
+        for name, mask in catalog_names.CATALOG_DESCRIPTORS["d25d2f0a68"]:
+            if not (mask & unit_bit) or name in seen:
+                continue
+            seen.add(name)
+            no_amount = name in ("Acros", "Tri-X 400")
+            lv = None if no_amount else ([0, 20, 40, 60, 80, 100, 120, 140] if name == "ARRI 709" else [0, 10, 50, 100, 150])
+            recipes.append(
+                {
+                    "kind": "record",
+                    "id": f"rec-{unit_id}-{name}",
+                    "name": name,
+                    "slot": 6,
+                    "number": f"{len(recipes) + 1:02d}",
+                    "controls": [_amount_control(lv)] if lv is not None else [],
+                }
+            )
+        units.append({"id": unit_id, "recipes": recipes})
+    return _SyntheticListingCamera(176, units)
+
+
+def _synthetic_lib178_camera(generation: int = 262) -> _SyntheticListingCamera:
+    # lib-178 目录只含 1..4 基底槽，以及全部 KUBIK 记录（含 K64、K25 等与旧基底槽 5/7 同名的 Look）。
+    units: list[dict[str, Any]] = []
+    for unit_idx, unit_id in enumerate(("jlaunch", "qlaunch", "l08firm")):
+        unit_bit = 1 << unit_idx
+        recipes: list[dict[str, Any]] = []
+        for slot in range(1, 5):
+            lv = [0, 25, 50, 75, 100, 125, 150] if slot in (1, 2) else None
+            recipes.append(
+                {
+                    "kind": "builtin",
+                    "slot": slot,
+                    "number": f"{slot:02d}",
+                    "controls": [_amount_control(lv)] if lv is not None else [],
+                }
+            )
+        seen: set[str] = set()
+        for name, mask in catalog_names.CATALOG_DESCRIPTORS["0ccc86c19b"]:
+            if not (mask & unit_bit) or name in seen:
+                continue
+            seen.add(name)
+            no_amount = name in ("Acros", "Tri-X 400")
+            lv = None if no_amount else list(range(0, 151, 10))
+            recipes.append(
+                {
+                    "kind": "record",
+                    "id": f"rec-{unit_id}-{name}",
+                    "name": name,
+                    "slot": 6,
+                    "number": f"{len(recipes) + 1:02d}",
+                    "controls": [_amount_control(lv)] if lv is not None else [],
+                }
+            )
+        units.append({"id": unit_id, "recipes": recipes})
+    return _SyntheticListingCamera(generation, units)
+
+
+def _sweep_phone_vs_desktop(tmp_path: Path, camera: CameraData, mobile_src: Path | None = None) -> list[tuple[str, str, int, Any, Any]]:
+    catalogs = list(catalog_names.CATALOG_DESCRIPTORS.keys())
+    units = ["50", "28", "MT"]
+    max_pos = 99
+    payload_path = tmp_path / f"sweep-{camera.manifest['generation']}.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "generation": camera.manifest["generation"],
+                "listing": camera.listing(),
+                "catalogs": catalogs,
+                "units": units,
+                "maxPos": max_pos,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["node", "--experimental-strip-types", str(SWEEP_DRIVER), "sweep", str(mobile_src or (REPO / "mobile" / "src")), str(payload_path)],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    phone_map: dict[str, list[int] | None] = json.loads(proc.stdout)
+
+    mismatches: list[tuple[str, str, int, Any, Any]] = []
+    for cid in catalogs:
+        for unit in units:
+            for pos in range(1, max_pos + 1):
+                tag = parse_recipe_tag(f"GXR1 {cid} {unit} {pos:02d} A99999999-")
+                try:
+                    hit = _catalog_recipe(tag, camera)
+                except EditError:
+                    hit = None
+                desktop_levels = _amount_levels(hit[1]) if hit else None
+                phone_levels = phone_map[f"{cid}|{unit}|{pos}"]
+                if phone_levels != desktop_levels:
+                    mismatches.append((cid, unit, pos, desktop_levels, phone_levels))
+    return mismatches
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="没有 node")
+def test_phone_tag_amount_levels_match_desktop_across_all_positions_synthetic(tmp_path: Path) -> None:
+    """无 DAT 扫全量 4 目录 × 3 单元 × 99 位置（lib-176 与 lib-178），手机 tagAmountLevels 必须与桌面逐项一致。"""
+    mismatches_176 = _sweep_phone_vs_desktop(tmp_path, _synthetic_lib176_camera())
+    mismatches_178 = _sweep_phone_vs_desktop(tmp_path, _synthetic_lib178_camera())
+    assert mismatches_176 == [], f"lib-176 mismatches ({len(mismatches_176)}): {mismatches_176[:6]}"
+    assert mismatches_178 == [], f"lib-178 mismatches ({len(mismatches_178)}): {mismatches_178[:6]}"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="没有 node")
+def test_phone_tag_amount_levels_match_desktop_across_all_positions_real_dats(tmp_path: Path) -> None:
+    """本机存在 g176 与 g262 DAT 时，全量扫 2,376 个位置对拍真实目录。"""
+    from g178_support import need_bundle
+    from support import g262_cases as g262
+
+    raw176, lib176 = need_bundle(176)
+    raw262, lib262, _, _ = g262.need_g262()
+    home176, home262 = tmp_path / "home-176", tmp_path / "home-262"
+    store.import_from_dat(raw176, home176, library=lib176)
+    store.import_from_dat(raw262, home262, library=lib262)
+
+    mismatches_176 = _sweep_phone_vs_desktop(tmp_path, CameraData(home176))
+    mismatches_262 = _sweep_phone_vs_desktop(tmp_path, CameraData(home262))
+    assert mismatches_176 == [], f"real g176 mismatches ({len(mismatches_176)}): {mismatches_176[:6]}"
+    assert mismatches_262 == [], f"real g262 mismatches ({len(mismatches_262)}): {mismatches_262[:6]}"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="没有 node")
+def test_phone_generation_maps_match_python_profiles_and_catalogs(tmp_path: Path) -> None:
+    """手机端代数与封存目录表必须与 Python PROFILES / CATALOG_GENERATIONS / CATALOG_DESCRIPTORS 逐项一致。"""
+    cam178 = _synthetic_lib178_camera()
+    payload_path = tmp_path / "maps-probe.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "listing": cam178.listing(),
+                "probeTag": "GXR1 0ccc86c19b 50 68 899999999-",
+                "unregisteredGenerations": [261, 999],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["node", "--experimental-strip-types", str(SWEEP_DRIVER), "maps", str(REPO / "mobile" / "src"), str(payload_path)],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    data = json.loads(proc.stdout)
+
+    assert data["hasRecipeTagsModule"] is True
+    assert data["tagCatalogGenerations"] == catalog_names.CATALOG_GENERATIONS
+    expected_profiles = {str(gen): prof.library_generation for gen, prof in datcodec.PROFILES.items()}
+    assert data["datLibraryGenerations"] == expected_profiles
+    expected_descriptors = {cid: [[name, mask] for name, mask in items] for cid, items in catalog_names.CATALOG_DESCRIPTORS.items()}
+    assert data["catalogDescriptors"] == expected_descriptors
+    assert data["unregistered"] == {"261": None, "999": None}

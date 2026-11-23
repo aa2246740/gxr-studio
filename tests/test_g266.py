@@ -147,25 +147,6 @@ def _forge_g262_with_two_relocs(raw262: bytes) -> bytes:
     return reseal(bytes(out))
 
 
-def _tag_cases() -> list[tuple[str, str, str, str, dict[str, int]]]:
-    max_amt = {**g262.KINO_ZERO, "amount": 150, "split": -9}
-    acros_zero = {"contrast": 0, "highlight": 0, "shadow": 0, "fade": 0, "filter": 0}
-    trix_pos = {"contrast": 5, "highlight": -4, "shadow": -3, "fade": 2, "filter": 6}
-    std_ft = {"contrast": 3, "highlight": -2, "shadow": 2, "fade": 1, "saturation": -3, "warmth": 4, "tint": -1, "split": 2}
-    return [
-        ("kino_finetune_50", g262.encode_tag("50", 68, g262.KINO_FINETUNE), "record", "K-KINO", g262.KINO_FINETUNE),
-        ("kino_zero_amount_28", g262.encode_tag("28", 69, g262.KINO_ZERO_AMOUNT), "record", "K-KINO", g262.KINO_ZERO_AMOUNT),
-        ("kino_max_amount_mt", g262.encode_tag("MT", 70, max_amt), "record", "K-KINO", max_amt),
-        ("pacific_zero_50", g262.encode_tag("50", 65, g262.KINO_ZERO), "record", "K-PACIFIC", g262.KINO_ZERO),
-        ("acros_finetune_50", g262.encode_tag("50", 56, g262.ACROS_FINETUNE), "record", "Acros", g262.ACROS_FINETUNE),
-        ("acros_zero_28", g262.encode_tag("28", 57, acros_zero), "record", "Acros", acros_zero),
-        ("trix_pos_filter_mt", g262.encode_tag("MT", 61, trix_pos), "record", "Tri-X 400", trix_pos),
-        ("grpos_finetune_50", g262.encode_tag("50", 1, g262.GRPOS_FINETUNE), "builtin", "GRPos", g262.GRPOS_FINETUNE),
-        ("hcbw_finetune_28", g262.encode_tag("28", 3, g262.HCBW_FINETUNE), "builtin", "HC BW", g262.HCBW_FINETUNE),
-        ("std_finetune_mt", g262.encode_tag("MT", 4, std_ft), "builtin", "Std", std_ft),
-    ]
-
-
 # --------------------------------------------------------------------------- 1. g266 DAT 解码、往返与导入
 
 
@@ -256,6 +237,7 @@ def test_g266_rejects_wrong_library_and_envelope_tamper(tmp_path: Path) -> None:
     bad_sec3 = bytearray(raw)
     struct.pack_into(">II", bad_sec3, 128 + 12 * 3 + 4, len(raw), 4)
     bad_sec3 += b"\x00\x00\x00\x00"
+    struct.pack_into(">I", bad_sec3, 16, len(bad_sec3))
     for idx in range(4, 7):
         struct.pack_into(">II", bad_sec3, 128 + 12 * idx + 4, len(bad_sec3), 0)
     bad_sec3_bytes = reseal(bytes(bad_sec3))
@@ -274,10 +256,17 @@ def test_g266_rejects_wrong_library_and_envelope_tamper(tmp_path: Path) -> None:
     bad_reloc2[reloc_at + 15] ^= 0x01
     bad_reloc2_bytes = reseal(bytes(bad_reloc2))
 
-    for tampered in (bad_xdata_bytes, bad_sec3_bytes, bad_ram_bytes, bad_engine_bytes, bad_reloc2_bytes):
+    for label, tampered, expected_msg in (
+        ("bad_xdata", bad_xdata_bytes, "266 引擎或链接布局未登记"),
+        ("bad_sec3", bad_sec3_bytes, "r5 执行外壳尺寸不合格"),
+        ("bad_ram", bad_ram_bytes, "r5 BSS 或重定位不合格"),
+        ("bad_engine", bad_engine_bytes, "266 引擎或链接布局未登记"),
+        ("bad_reloc2", bad_reloc2_bytes, "r5 重定位与引擎不匹配"),
+    ):
         with pytest.raises(dc.DatError) as exc:
             dc.parse(tampered, kubik_lib)
-        assert not isinstance(exc.value, dc.UnsupportedGeneration)
+        assert not isinstance(exc.value, dc.UnsupportedGeneration), label
+        assert str(exc.value) == expected_msg, label
 
     require_cli()
     _, fx_kubik_copy = _stage_bundle(tmp_path, "neg-266", raw, kubik_lib)
@@ -400,7 +389,7 @@ def test_g266_recipe_tags_ui_and_export_match_g262(tmp_path: Path, volumes: Path
     cam266 = g262.install_g262_calibrated_home(tmp_path / "home-266", raw266, library)
     cam262 = g262.install_g262_calibrated_home(tmp_path / "home-262", raw262, library)
 
-    cases = _tag_cases()
+    cases = g262.TAG_CASES
     wasm_outputs = _run_wasm_cases(tmp_path, [{"tag": t, "dat": str(dat266_path), "library": str(fx_path)} for _, t, _, _, _ in cases])
     for (label, tag_text, want_kind, want_name, want_levels), wasm_raw in zip(cases, wasm_outputs, strict=True):
         parsed = parse_recipe_tag(tag_text)

@@ -237,22 +237,7 @@ def test_look_and_base_recipe_tags_decode_all_knobs_and_cli_wasm_parity(tmp_path
     store.import_from_dat(raw, home, library=library)
     cam = CameraData(home)
 
-    max_amt = {**g262.KINO_ZERO, "amount": 150, "split": -9}
-    acros_zero = {"contrast": 0, "highlight": 0, "shadow": 0, "fade": 0, "filter": 0}
-    trix_pos = {"contrast": 5, "highlight": -4, "shadow": -3, "fade": 2, "filter": 6}
-    std_ft = {"contrast": 3, "highlight": -2, "shadow": 2, "fade": 1, "saturation": -3, "warmth": 4, "tint": -1, "split": 2}
-    cases: list[tuple[str, str, str, str, dict[str, int]]] = [
-        ("kino_finetune_50", g262.encode_tag("50", 68, g262.KINO_FINETUNE), "record", "K-KINO", g262.KINO_FINETUNE),
-        ("kino_zero_amount_28", g262.encode_tag("28", 69, g262.KINO_ZERO_AMOUNT), "record", "K-KINO", g262.KINO_ZERO_AMOUNT),
-        ("kino_max_amount_mt", g262.encode_tag("MT", 70, max_amt), "record", "K-KINO", max_amt),
-        ("pacific_zero_50", g262.encode_tag("50", 65, g262.KINO_ZERO), "record", "K-PACIFIC", g262.KINO_ZERO),
-        ("acros_finetune_50", g262.encode_tag("50", 56, g262.ACROS_FINETUNE), "record", "Acros", g262.ACROS_FINETUNE),
-        ("acros_zero_28", g262.encode_tag("28", 57, acros_zero), "record", "Acros", acros_zero),
-        ("trix_pos_filter_mt", g262.encode_tag("MT", 61, trix_pos), "record", "Tri-X 400", trix_pos),
-        ("grpos_finetune_50", g262.encode_tag("50", 1, g262.GRPOS_FINETUNE), "builtin", "GRPos", g262.GRPOS_FINETUNE),
-        ("hcbw_finetune_28", g262.encode_tag("28", 3, g262.HCBW_FINETUNE), "builtin", "HC BW", g262.HCBW_FINETUNE),
-        ("std_finetune_mt", g262.encode_tag("MT", 4, std_ft), "builtin", "Std", std_ft),
-    ]
+    cases = g262.TAG_CASES
     wasm_outputs = _run_wasm_cases(tmp_path, [{"tag": t, "dat": str(dat_path), "library": str(fx_path)} for _, t, _, _, _ in cases])
 
     for (label, tag_text, want_kind, want_name, want_levels), wasm_raw in zip(cases, wasm_outputs, strict=True):

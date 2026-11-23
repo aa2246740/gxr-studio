@@ -1,5 +1,5 @@
 // 手机端「导出关机图」底部工作表：把当前带编辑的照片（SDR）或本机另选的任意图片做成 640×480 的 GXROFF.JPG，
-// 展示最终字节的 640×480 预览与文件大小/品质；只有 Rust WASM 校验通过后才启用「导出」，并通过系统共享（存储到“文件”）或下载交出。
+// 展示最终字节的 640×480 预览与文件大小/品质；只有 Rust WASM 校验通过后才启用「导出」，并通过系统共享（保存到“文件” / 存储到“文件”）或下载交出。
 
 import { ExportCore, calibPack } from '../core/export_api';
 import { buildRequest, usedLogoId } from '../lib/export_request';
@@ -16,7 +16,7 @@ declare const __GXR_BUILD__: string;
 
 const NOTE_CAMERA = '相机会把当天张数叠在关机画面上，下部别放重要内容。';
 const NOTE_CARD = '把 GXROFF.JPG 拷到存储卡最外层（和 GXRCE.DAT 放在一起）。';
-const NOTE_FILES = '存的时候选「存储到“文件”」，不要存进相册（相册会改动文件，相机就不认了）。';
+const NOTE_FILES = '存的时候选「保存到“文件”」（有的系统叫「存储到“文件”」），不要存进相册（相册会改动文件，相机就不认了）。';
 
 interface DevOffImageHook {
   corruptTail?: boolean;

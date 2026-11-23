@@ -3,6 +3,7 @@
 // `color_resolve`，旋钮在那一步套上。纯函数，不碰界面和 WASM。
 
 import type { Unit } from './calib';
+import { DAT_LIBRARY_GENERATIONS, resolveCatalogPosition, TAG_CATALOG_GENERATIONS } from './recipe_tags.ts';
 
 export const UNIT_ORDER: Unit[] = ['jlaunch', 'qlaunch', 'l08firm'];
 
@@ -386,33 +387,26 @@ export function photoWithAdopted<T extends AdoptablePhoto>(photo: T, dat: object
   };
 }
 
-const TAG_CATALOG_LIB_GEN: Record<string, number> = {
-  d25d2f0a68: 176,
-  '6a3a5a3c02': 178,
-  '6adf847602': 178,
-  '0ccc86c19b': 178,
-};
 const TAG_UNIT_ID: Record<string, Unit> = { '50': 'jlaunch', '28': 'qlaunch', MT: 'l08firm' };
 
-/** 照桌面 `camera_recipe.py:_amount_levels`，从当前已加载 DAT 目录查标签对应配方的合法强度档位。 */
+/** 照桌面 `camera_recipe.py:_catalog_recipe` 与 `_amount_levels`，从当前已加载 DAT 目录查标签对应配方的合法强度档位。 */
 export function tagAmountLevels(
-  tag: { catalogIdentity: string; unit: string; position: number; name: string | null } | null,
+  tag: { catalogIdentity: string; unit: string; position: number; name?: string | null } | null,
   dat: { generation: number | null; listing: Listing } | null | undefined,
 ): number[] | null {
   if (!tag || !dat || dat.generation === null) return null;
-  const wantLibGen = TAG_CATALOG_LIB_GEN[tag.catalogIdentity];
-  const datLibGen = dat.generation === 176 ? 176 : dat.generation >= 178 ? 178 : null;
+  const target = resolveCatalogPosition(tag.catalogIdentity, tag.unit, tag.position);
+  if (!target) return null;
+  const wantLibGen = TAG_CATALOG_GENERATIONS[tag.catalogIdentity];
+  const datLibGen = DAT_LIBRARY_GENERATIONS[dat.generation] ?? null;
   if (!wantLibGen || wantLibGen !== datLibGen) return null;
   const unit = TAG_UNIT_ID[tag.unit];
   if (!unit) return null;
-  const cards = shelf(shelves(dat.listing, unit), 'all');
-  const builtinMax = datLibGen === 178 ? 4 : 8;
+  const cards = shelves(dat.listing, unit).builtin;
   const card =
-    tag.position <= builtinMax
-      ? cards.find((c) => c.kind === 'builtin' && c.slot === tag.position)
-      : tag.name !== null
-        ? cards.find((c) => c.kind === 'record' && c.name === tag.name)
-        : undefined;
+    target.kind === 'builtin'
+      ? cards.find((c) => c.kind === 'builtin' && c.slot === target.slot)
+      : cards.find((c) => c.kind === 'record' && c.name === target.name);
   const ctrl = card?.controls.find((c) => c.name === 'amount');
   if (!ctrl) return null;
   return ctrl.levels.slice(ctrl.cap_lower ? 1 : 0, ctrl.cap_upper ? -1 : undefined);

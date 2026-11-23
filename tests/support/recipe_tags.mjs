@@ -8,14 +8,16 @@ const { infoPanel } = await import(pathToFileURL(`${process.argv[2]}/info_panel.
 const photos = JSON.parse(readFileSync(process.argv[3], 'utf8'));
 const results = [];
 for (const photo of photos) {
-  const panel = infoPanel({ photo, ed: { adj: {} } });
+  const panel = infoPanel({ photo, ed: photo._ed ?? { adj: {} } });
   document.body.append(panel);
   const recipe = () => panel.querySelectorAll('section')[0].querySelector('.section-body').textContent;
+  const edit = () => panel.querySelectorAll('section')[1].querySelector('.section-body').textContent;
   const before = recipe();
   await tick();
   panel.sync();
   results.push({
     recipe: recipe(),
+    edit: edit(),
     shot: panel.querySelectorAll('section')[2].textContent,
     stable: recipe() === before,
     htmlElements: panel.querySelectorAll('b').length,
