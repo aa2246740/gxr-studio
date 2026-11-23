@@ -6,7 +6,7 @@
 // 每一步都有超时，总时限在环境变量 VIEWER_DEADLINE_MS；卡住时也输出 JSON，step 是卡住的那一步。进度逐行写到 stderr。
 import { spawn } from 'node:child_process';
 import { closeSync, openSync, readFileSync } from 'node:fs';
-import { readDebugPort } from './debug_port.mjs';
+import { closeChrome, readDebugPort } from './debug_port.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -36,10 +36,8 @@ async function finish(code) {
   finished = true;
   if (code !== 0) out.chromeLog = chromeTail();
   console.log(JSON.stringify(out));
+  await closeChrome(chrome, () => ws);
   try { ws.close(); } catch { /* 已经关了 */ }
-  chrome.kill('SIGTERM');
-  await sleep(1200);
-  chrome.kill('SIGKILL');
   try { closeSync(chromeLog); } catch { /* 已经关了 */ }
   process.exit(code);
 }

@@ -6,7 +6,7 @@
 // 里面的 step 是卡住的那一步，chromeLog 是 Chrome 自己的输出末尾。进度逐行写到 stderr。
 import { spawn } from 'node:child_process';
 import { closeSync, openSync, readFileSync } from 'node:fs';
-import { readDebugPort } from './debug_port.mjs';
+import { closeChrome, readDebugPort } from './debug_port.mjs';
 import { walkRounds } from './frame_nav_walk.mjs';
 import { chromeLogReader, diagnosticsExpression } from './gpu_diag.mjs';
 import { walkLibrary, walkLibraryRefresh } from './library_walk.mjs';
@@ -46,10 +46,8 @@ async function finish(code) {
   finished = true;
   if (code !== 0) out.chromeLog = gpuLog.tail();
   console.log(JSON.stringify(out));
+  await closeChrome(chrome, () => ws);
   try { ws.close(); } catch { /* 已经关了 */ }
-  chrome.kill('SIGTERM');
-  await sleep(1200);
-  chrome.kill('SIGKILL');
   try { closeSync(chromeLog); } catch { /* 已经关了 */ }
   process.exit(code);
 }

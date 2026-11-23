@@ -32,7 +32,7 @@ Windows 的 NumPy 固定为 2.5.4，其他平台保持 2.4.3。Windows 的 2.4.3
 
 传递依赖（`pnpm licenses list`）：rolldown、@rolldown/*、@oxc-project/types、postcss、nanoid、picomatch、tinyglobby、fdir、fsevents 为 MIT；picocolors 为 ISC；source-map-js 为 BSD-3-Clause；detect-libc 为 Apache-2.0；lightningcss 为 MPL-2.0（Vite 自带的 CSS 工具，只在构建机上运行，不进入产物，不改它的源码，所以 MPL 的文件级义务不涉及本仓库）。以上许可都允许在 PolyForm Noncommercial 1.0.0 的项目里使用。
 
-一致性测试（`tests/test_gpu_parity.py`）用本机已装的 Google Chrome 的 SwiftShader 软件适配器，不新增 Python 依赖。
+一致性测试（`tests/test_gpu_parity.py`）用固定版本 Playwright Chromium（`GXR_CHROME`，或 `GXR_PLAYWRIGHT_RUNTIME` 运行时里的那份）的 SwiftShader 软件适配器，不新增 Python 依赖。macOS 上不再退回本机装的 Google Chrome：它每次启动都把应用复制到内置盘的系统临时目录，被强杀时副本留下。
 
 ## Rust 核心（`core/`）
 
