@@ -1,6 +1,29 @@
-// 手机竖屏（390×844 / 440×956）无 WebGPU 带头回归检查（F1 防挤压 + N2 说明折两行不截断、单带高度保持 128 pt）。
+// 手机竖屏（390×844 / 440×956，加窄屏 375×667 / 320×568）无 WebGPU 带头回归检查（F1 防挤压 + N2 说明折两行不截断、单带高度保持 128 pt，
+// 「配方和 LUT」不拆开、「LUT」不单独占一行）。
 
 const LONG_RECIPE_NAME = 'Kodachrome 64 Night Street Cool Shadows';
+
+// N5：配方槽宽度规则。F1 的 130 pt 下限是在 390 / 440 宽时定的（那里配方槽自然宽 148.6 pt）。320 宽（SE 放大显示）时带头
+// 只有 300 pt 内容宽：不截断的「这个浏览器现在用不了显卡预览」要 165.1 pt，加间距 6 pt，配方槽最多剩 128 pt，而完整配方槽
+// 要 148.6 pt（Teal Orange）到 159 pt（GR 高对比黑白），合计 339.7 pt 以上，放不下。规则改为：提示不截断优先，配方槽拿剩下的
+// 128 pt，配方名可以用省略号收尾但至少露出 48 pt；来源胶囊仍单行、在 44 pt 带头里。340 宽以上不变（槽 ≥ 130、名不截断）。
+function slotRule(vp) {
+  return vp.width < 340 ? { slotMin: 128, nameMinW: 48 } : { slotMin: 130, nameMinW: null };
+}
+
+function assertRecipeName(check, prefix, rname, rule) {
+  if (rule.nameMinW === null) {
+    check(
+      rname.scrollW <= rname.clientW + 1,
+      `${prefix}: recipe name 「${rname.text}」 truncated (scrollW=${rname.scrollW} > clientW=${rname.clientW})`,
+    );
+    return;
+  }
+  check(
+    rname.scrollW <= rname.clientW + 1 || (rname.clientW >= rule.nameMinW && rname.textOverflow === 'ellipsis'),
+    `${prefix}: recipe name 「${rname.text}」 squeezed to ${rname.clientW} pt (< ${rule.nameMinW}) or cut without an ellipsis (${rname.textOverflow})`,
+  );
+}
 
 async function measureHeader(page) {
   return page.evaluate(() => {
@@ -29,13 +52,39 @@ async function measureHeader(page) {
         clientW: Math.round(el.clientWidth * 10) / 10,
         scrollH: Math.round(el.scrollHeight * 10) / 10,
         clientH: Math.round(el.clientHeight * 10) / 10,
+        textOverflow: getComputedStyle(el).textOverflow,
         lineCount: lineRects.length,
         visualLines: visualLineTops.length,
         lineTop: Math.round(lineTop * 10) / 10,
         lineBottom: Math.round(lineBottom * 10) / 10,
       };
     };
+    // 说明行逐字取所在行，按行拼回文字（看「LUT」有没有单独占一行）。
+    const lines = (sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const rows = [];
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.textContent || '';
+        for (let i = 0; i < text.length; i += 1) {
+          const range = document.createRange();
+          range.setStart(node, i);
+          range.setEnd(node, i + 1);
+          const rect = [...range.getClientRects()].find((cr) => cr.height > 0.5);
+          if (!rect) continue;
+          let row = rows.find((r) => Math.abs(r.top - rect.top) <= 4);
+          if (!row) {
+            row = { top: rect.top, text: '' };
+            rows.push(row);
+          }
+          row.text += text[i];
+        }
+      }
+      return rows.sort((a, b) => a.top - b.top).map((r) => r.text);
+    };
     return {
+      noteLines: lines('.editor .band-hd .lbl.nogpu .nogpu-note'),
       band: box('.editor .band'),
       hd: box('.editor .band-hd'),
       lbl: box('.editor .band-hd .lbl.nogpu'),
@@ -75,6 +124,12 @@ function assertNoteAndBand(check, prefix, hdr, { requireWrap = false } = {}) {
     hdr.note.visualLines >= (requireWrap ? 2 : 1) && hdr.note.visualLines <= 2,
     `${prefix}: no-GPU detail line visualLines=${hdr.note.visualLines}, want ${requireWrap ? '2' : '1..2'}`,
   );
+  // N2：折行时「配方和 LUT」整组在同一行，「LUT」不会单独落在第二行。
+  const norm = (hdr.noteLines ?? []).map((t) => t.replace(/[\s\u00a0\u2060]/g, ''));
+  check(
+    norm.length > 0 && !norm.includes('LUT') && norm.some((t) => t.includes('配方和LUT')),
+    `${prefix}: no-GPU detail line splits 「配方和 LUT」 (lines ${JSON.stringify(hdr.noteLines)})`,
+  );
 }
 
 function assertPill(check, prefix, hdr) {
@@ -103,14 +158,12 @@ export async function auditPhonePortraitNoGpuHeader(page, vp, { check, frame, su
   summary.f1[vp.label] = hdr;
   check(Boolean(hdr.hd && hdr.lbl && hdr.coreTag && hdr.note && hdr.rname && hdr.pill && hdr.slot), `F1 ${vp.label}: phone portrait header elements missing`);
   if (hdr.hd && hdr.coreTag && hdr.note && hdr.rname && hdr.pill && hdr.slot) {
-    check(
-      hdr.rname.scrollW <= hdr.rname.clientW + 1,
-      `F1 ${vp.label}: recipe name 「${hdr.rname.text}」 truncated (scrollW=${hdr.rname.scrollW} > clientW=${hdr.rname.clientW})`,
-    );
+    const rule = slotRule(vp);
+    assertRecipeName(check, `F1 ${vp.label}`, hdr.rname, rule);
     assertPill(check, `F1 ${vp.label}`, hdr);
     check(
-      hdr.slot.w >= 130,
-      `F1 ${vp.label}: .band-head-slot squeezed to ${hdr.slot.w} pt (< 130 pt)`,
+      hdr.slot.w >= rule.slotMin,
+      `F1 ${vp.label}: .band-head-slot squeezed to ${hdr.slot.w} pt (< ${rule.slotMin} pt)`,
     );
     assertNoteAndBand(check, `F1 ${vp.label}`, hdr);
   }
@@ -123,10 +176,7 @@ export async function auditPhonePortraitNoGpuHeader(page, vp, { check, frame, su
     const hcbwHdr = await measureHeader(page);
     summary.f1[`${vp.label}-hcbw`] = hcbwHdr;
     if (hcbwHdr.hd && hcbwHdr.coreTag && hcbwHdr.note && hcbwHdr.rname && hcbwHdr.pill) {
-      check(
-        hcbwHdr.rname.scrollW <= hcbwHdr.rname.clientW + 1,
-        `N2 ${vp.label} hcbw: recipe name 「${hcbwHdr.rname.text}」 truncated (scrollW=${hcbwHdr.rname.scrollW} > clientW=${hcbwHdr.rname.clientW})`,
-      );
+      assertRecipeName(check, `N2 ${vp.label} hcbw`, hcbwHdr.rname, slotRule(vp));
       assertPill(check, `N2 ${vp.label} hcbw`, hcbwHdr);
       assertNoteAndBand(check, `N2 ${vp.label} hcbw`, hcbwHdr);
     }

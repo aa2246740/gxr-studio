@@ -197,9 +197,12 @@
 .app[data-layout^="ipad"] .ms.popover .grab { display: none; }
 
 /* ---------- 手机横屏（844×390 / 956×440）：左边照片铺满高度，右边一列（197 + 右安全区），没有下面两条 ---------- */
-.app[data-layout="phone-landscape"] .screen.editor { display: grid; grid-template-columns: var(--safe-left) minmax(0, 1fr) calc(197px + var(--safe-right)); grid-template-rows: 44px minmax(0, 1fr) auto; padding-top: 0; background: #000; }
+/* 右边一列从上往下：顶栏、4 个工具和「存到相册」、配方面板（占剩下的高度，自己滚）。Safari 26 起页面照常排到底部
+   浮动工具栏下面，底下一截会被盖住（真机 r4b），所以「存到相册」放在上面，不贴底。 */
+.app[data-layout="phone-landscape"] .screen.editor { display: grid; grid-template-columns: var(--safe-left) minmax(0, 1fr) calc(197px + var(--safe-right)); grid-template-rows: 44px auto minmax(0, 1fr); padding-top: 0; background: #000; }
 .app[data-layout="phone-landscape"] .screen.editor > .stage { grid-column: 2; grid-row: 1 / 4; background: #000; }
-.app[data-layout="phone-landscape"] .screen.editor .pv { inset: 0 0 calc(2px + var(--safe-bottom)) 0; }
+/* 舞台比照片宽（矮视口）时，照片按舞台大小居中，不按「宽 ÷ 比例」撑高网格行、被推到舞台下面。 */
+.app[data-layout="phone-landscape"] .screen.editor .pv { inset: 0 0 calc(2px + var(--safe-bottom)) 0; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 .app[data-layout="phone-landscape"] .screen.editor > .nav,
 .app[data-layout="phone-landscape"] .screen.editor > .band,
 .app[data-layout="phone-landscape"] .screen.editor > .toolbar { grid-column: 3; border-left: 1px solid var(--line-subtle); }
@@ -210,19 +213,20 @@
 .app[data-layout="phone-landscape"] .screen.editor > .nav .t b { font-size: 14px; line-height: 17px; }
 .app[data-layout="phone-landscape"] .screen.editor > .nav .t small { font-size: 11px; line-height: 13px; }
 .app[data-layout="phone-landscape"] .screen.editor > .nav .hdr-toggle { padding: 0 6px; }
-.app[data-layout="phone-landscape"] .screen.editor > .band { grid-row: 2; height: auto; min-height: 0; padding-right: var(--safe-right); box-shadow: none; }
-.app[data-layout="phone-landscape"] .screen.editor .band-top { height: 0; overflow: hidden; order: 99; }
-.app[data-layout="phone-landscape"] .screen.editor .band[data-export-slot="1"] .band-top { height: 44px; border-top: 1px solid var(--line-subtle); }
+.app[data-layout="phone-landscape"] .screen.editor > .band { grid-row: 3; height: auto; min-height: 0; padding-right: var(--safe-right); padding-bottom: var(--safe-bottom); box-shadow: none; }
+/* 导出条的槽放在面板最上面，紧挨「存到相册」，同样不贴底。 */
+.app[data-layout="phone-landscape"] .screen.editor .band-top { height: 0; overflow: hidden; order: -1; }
+.app[data-layout="phone-landscape"] .screen.editor .band[data-export-slot="1"] .band-top { height: 44px; border-bottom: 1px solid var(--line-subtle); }
 .app[data-layout="phone-landscape"] .screen.editor .band-hd { display: none; }
 .app[data-layout="phone-landscape"] .screen.editor .band-body { flex: 1; height: auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .app[data-layout="phone-landscape"] .screen.editor .band .panel { justify-content: flex-start; overflow: visible; }
-.app[data-layout="phone-landscape"] .screen.editor > .toolbar { grid-row: 3; height: calc(112px + var(--safe-bottom)); flex-direction: column; align-items: stretch; gap: 4px; padding: 6px calc(6px + var(--safe-right)) calc(10px + var(--safe-bottom)) 6px; }
+.app[data-layout="phone-landscape"] .screen.editor > .toolbar { grid-row: 2; height: 110px; flex-direction: column; align-items: stretch; gap: 4px; padding: 6px calc(6px + var(--safe-right)) 8px 6px; border-bottom: 1px solid var(--line-subtle); }
 .app[data-layout="phone-landscape"] .screen.editor > .toolbar .toolbar-tools { flex: none; }
 .app[data-layout="phone-landscape"] .screen.editor > .toolbar .tbtn { height: 48px; }
 .app[data-layout="phone-landscape"] .screen.editor > .toolbar .save-btn { width: 100%; min-height: 44px; justify-content: center; }
 /* 收起：只收带子，返回、工具和「存到相册」留在右边那一列，照片不动 */
 .app[data-layout="phone-landscape"] .screen.editor[data-collapsed="1"] > .band { display: none; }
-.app[data-layout="phone-landscape"][data-screen="editor"] > .pdock[data-dock-mode="flush"] { left: auto; right: 0; width: calc(197px + var(--safe-right)); bottom: calc(112px + var(--safe-bottom)); }
+.app[data-layout="phone-landscape"][data-screen="editor"] > .pdock[data-dock-mode="flush"] { left: auto; right: 0; width: calc(197px + var(--safe-right)); top: calc(44px + 110px); bottom: auto; }
 
 /* 手机横屏：配方 / LUT 两列竖滚 */
 .app[data-layout="phone-landscape"] .recipe-strip-wrap,

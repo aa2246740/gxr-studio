@@ -145,6 +145,7 @@ def test_g262_rejects_wrong_library_and_envelope_tamper(tmp_path: Path) -> None:
     bad_sec3 = bytearray(raw)
     struct.pack_into(">II", bad_sec3, 128 + 12 * 3 + 4, len(raw), 4)
     bad_sec3 += b"\x00\x00\x00\x00"
+    struct.pack_into(">I", bad_sec3, 16, len(bad_sec3))
     for idx in range(4, 7):
         struct.pack_into(">II", bad_sec3, 128 + 12 * idx + 4, len(bad_sec3), 0)
     bad_sec3_bytes = reseal(bytes(bad_sec3))
@@ -157,10 +158,16 @@ def test_g262_rejects_wrong_library_and_envelope_tamper(tmp_path: Path) -> None:
     bad_engine[300] ^= 0x01
     bad_engine_bytes = reseal(bytes(bad_engine))
 
-    for tampered in (bad_xdata_bytes, bad_sec3_bytes, bad_ram_bytes, bad_engine_bytes):
+    for label, tampered, expected_msg in (
+        ("bad_xdata", bad_xdata_bytes, "262 引擎或链接布局未登记"),
+        ("bad_sec3", bad_sec3_bytes, "r5 执行外壳尺寸不合格"),
+        ("bad_ram", bad_ram_bytes, "r5 BSS 或重定位不合格"),
+        ("bad_engine", bad_engine_bytes, "262 引擎或链接布局未登记"),
+    ):
         with pytest.raises(dc.DatError) as exc:
             dc.parse(tampered, kubik_lib)
-        assert not isinstance(exc.value, dc.UnsupportedGeneration)
+        assert not isinstance(exc.value, dc.UnsupportedGeneration), label
+        assert str(exc.value) == expected_msg, label
 
     require_cli()
     _, fx_kubik_copy = _stage_bundle(tmp_path, "neg-262", raw, kubik_lib)
