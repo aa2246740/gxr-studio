@@ -49,10 +49,17 @@ def pinned_runtime() -> Path:
 
 @functools.cache
 def _pinned_executable(runtime: str) -> str | None:
-    """问运行时它固定的 Chromium 在哪（pinnedRuntime.executablePath）；没有运行时或 Node 就是 None。"""
+    """问运行时它固定的 Chromium 在哪（pinnedRuntime.executablePath）；没有运行时或 Node 就是 None。
+
+    runtime.mjs 按 os.homedir() 拼路径，而测试里 HOME 已换成临时目录，所以子进程用真的 HOME。
+    运行时用 file:// 地址导入：它只在 argv[1] 等于自己的地址时才跑命令行入口，这样不会混进输出。
+    """
     node = shutil.which("node")
     if node is None or not Path(runtime).is_file():
         return None
+    env = {**os.environ, "HOME": str(_REAL_HOME)}
+    if sys.platform == "win32":
+        env["USERPROFILE"] = str(_REAL_HOME)
     try:
         result = subprocess.run(  # noqa: S603
             [node, "--input-type=module", "-e", _PINNED_PATH_SCRIPT, Path(runtime).as_uri()],
@@ -60,6 +67,7 @@ def _pinned_executable(runtime: str) -> str | None:
             text=True,
             timeout=30,
             check=False,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

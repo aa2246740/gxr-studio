@@ -95,3 +95,28 @@ def test_the_pinned_runtime_browser_is_used_without_gxr_chrome(tmp_path, monkeyp
         assert gpu_support.find_chrome() is None
     finally:
         gpu_support._pinned_executable.cache_clear()
+
+
+def test_the_pinned_runtime_is_asked_with_the_real_home(tmp_path, monkeypatch):
+    # 真的 runtime.mjs 用 os.homedir() 拼浏览器路径；测试里 HOME 是临时目录（conftest），查询时要用导入时的 HOME。
+    if gpu_support.shutil.which("node") is None:
+        pytest.skip("没有 Node.js")
+    node_dir = Path(gpu_support.shutil.which("node")).parent
+    _no_pin(tmp_path, monkeypatch)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{node_dir}")
+    monkeypatch.setattr(gpu_support, "_IS_MAC", True)
+    real_home = tmp_path / "real-home"
+    monkeypatch.setattr(gpu_support, "_REAL_HOME", real_home)
+    monkeypatch.setenv("HOME", str(tmp_path / "pytest-home"))
+    (real_home / "pinned-chromium").parent.mkdir(parents=True)
+    (real_home / "pinned-chromium").write_text("#!/bin/sh\n")
+    runtime = real_home / ".codex" / "playwright-runtime" / "runtime.mjs"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text(
+        'import { homedir } from "node:os";\nimport path from "node:path";\n'
+        'export const pinnedRuntime = Object.freeze({ executablePath: path.join(homedir(), "pinned-chromium") });\n'
+    )
+    try:
+        assert gpu_support.find_chrome() == str(real_home / "pinned-chromium")
+    finally:
+        gpu_support._pinned_executable.cache_clear()
