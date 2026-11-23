@@ -333,6 +333,38 @@ fn modules(
     Ok(out)
 }
 
+/// Port of gxr_studio/camdata/r5.py _parse_relocations.
+fn parse_relocations(
+    raw: &[u8],
+    reloc_at: usize,
+    nreloc: usize,
+    engine_size: usize,
+    ram_u64: u64,
+) -> Result<Vec<(u32, u32)>, CoreError> {
+    let mut relocations = try_vec_with_capacity(nreloc, "r5 执行外壳尺寸不合格")?;
+    let mut previous = 0u32;
+    for i in 0..nreloc {
+        let off = reloc_at + 8 * i;
+        let patch = u32_be(raw, off);
+        let target = u32_be(raw, off + 4);
+        let p_u64 = u64::from(patch);
+        let t_u64 = u64::from(target);
+        if patch <= previous
+            || p_u64 < 256
+            || p_u64 > 256 + (engine_size as u64) - 4
+            || !patch.is_multiple_of(4)
+            || t_u64 < 256
+            || t_u64 >= ram_u64
+            || u32_be(raw, fit_count(p_u64, "r5 重定位与引擎不匹配")?) != target
+        {
+            return Err(dat_error("r5 重定位与引擎不匹配"));
+        }
+        relocations.push((patch, target));
+        previous = patch;
+    }
+    Ok(relocations)
+}
+
 /// Port of gxr_studio/camdata/r5.py:121 parse.
 pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
     check_envelope(raw, b"GXRCE001", 0)?;
@@ -344,21 +376,36 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
     let (engine_at, engine_size) = secs[0];
     let (reloc_at, reloc_size) = secs[1];
     let (xdata_at, xdata_size) = secs[2];
+    let nreloc_u64 = u64::from(u16_be(raw, 120));
+    let reloc_bytes = mul_u64(8, nreloc_u64, "r5 执行外壳尺寸不合格")?;
     let trailing = if prof.xdata { &secs[3..] } else { &secs[2..] };
     if raw.len() > prof.max_file
         || !(16..=prof.max_engine).contains(&engine_size)
-        || reloc_size != 8
+        || !(1..=256).contains(&nreloc_u64)
+        || (reloc_size as u64) != reloc_bytes
         || trailing.iter().any(|&(_, n)| n != 0)
     {
         return Err(dat_error("r5 执行外壳尺寸不合格"));
     }
+    let entry = u32_be(raw, 112);
+    let bss = u32_be(raw, 116);
+    let ram_u64 = add_u64(raw.len() as u64, u64::from(bss), "r5 BSS 或重定位不合格")?;
+    let entry_u64 = u64::from(entry);
+    if ram_u64 > MAX_RAM as u64
+        || entry_u64 < 256
+        || entry_u64 > 256 + (engine_size as u64) - 4
+        || !entry.is_multiple_of(4)
+    {
+        return Err(dat_error("r5 BSS 或重定位不合格"));
+    }
+    let nreloc = fit_count(nreloc_u64, "r5 执行外壳尺寸不合格")?;
+    let relocations = parse_relocations(raw, reloc_at, nreloc, engine_size, ram_u64)?;
     let xdata = if prof.xdata {
         raw[xdata_at..xdata_at + xdata_size].to_vec()
     } else {
         Vec::new()
     };
 
-    let relocations = vec![(u32_be(raw, reloc_at), u32_be(raw, reloc_at + 4))];
     let mut resident_id = [0u8; 32];
     resident_id.copy_from_slice(&raw[80..112]);
     let mut abi_id = [0u8; 16];
@@ -367,8 +414,8 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
     let mut dat = Dat {
         generation,
         flags: 0,
-        entry: u32_be(raw, 112),
-        bss: u32_be(raw, 116),
+        entry,
+        bss,
         resident_id,
         abi_id,
         engine: raw[engine_at..engine_at + engine_size].to_vec(),
@@ -395,33 +442,6 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
         raw.len(),
         &dat.xdata,
     )?;
-    let ram_u64 = add_u64(
-        raw.len() as u64,
-        u64::from(dat.bss),
-        "r5 BSS 或重定位不合格",
-    )?;
-    let entry_u64 = u64::from(dat.entry);
-    if ram_u64 > MAX_RAM as u64
-        || u16_be(raw, 120) != 1
-        || entry_u64 < 256
-        || entry_u64 > 256 + (engine_size as u64) - 4
-        || !dat.entry.is_multiple_of(4)
-    {
-        return Err(dat_error("r5 BSS 或重定位不合格"));
-    }
-    for &(patch, target) in &dat.relocations {
-        let p_u64 = u64::from(patch);
-        let t_u64 = u64::from(target);
-        if p_u64 < 256
-            || p_u64 > 256 + (engine_size as u64) - 4
-            || !patch.is_multiple_of(4)
-            || t_u64 < 256
-            || t_u64 >= ram_u64
-            || u32_be(raw, fit_count(p_u64, "r5 重定位与引擎不匹配")?) != target
-        {
-            return Err(dat_error("r5 重定位与引擎不匹配"));
-        }
-    }
 
     let cat = catalogue(library, generation)?;
     if cat[80..112] != dat.resident_id || cat[212..228] != dat.abi_id {
@@ -485,6 +505,52 @@ pub fn parse(raw: &[u8], library: Option<&[u8]>) -> Result<Dat, CoreError> {
 mod tests {
     use super::*;
 
+    fn synthetic_r5_shell(
+        generation: u32,
+        nreloc_header: u16,
+        relocs: &[(u32, u32)],
+        engine_size: usize,
+    ) -> Vec<u8> {
+        let mut engine = vec![0u8; engine_size];
+        for &(patch, target) in relocs {
+            if patch >= 256 && (patch as usize) + 4 <= 256 + engine_size && patch.is_multiple_of(4)
+            {
+                let off = (patch as usize) - 256;
+                engine[off..off + 4].copy_from_slice(&target.to_be_bytes());
+            }
+        }
+        let mut reloc_bytes = Vec::with_capacity(relocs.len() * 8);
+        for &(patch, target) in relocs {
+            reloc_bytes.extend_from_slice(&patch.to_be_bytes());
+            reloc_bytes.extend_from_slice(&target.to_be_bytes());
+        }
+        let mut raw = vec![0u8; HEADER];
+        raw.extend_from_slice(&engine);
+        raw.extend_from_slice(&reloc_bytes);
+        raw[..12].copy_from_slice(b"GXRCE001\x00\x01\x01\x00");
+        let total_len = raw.len() as u32;
+        raw[16..20].copy_from_slice(&total_len.to_be_bytes());
+        raw[28..32].copy_from_slice(&generation.to_be_bytes());
+        raw[112..116].copy_from_slice(&256u32.to_be_bytes());
+        raw[116..120].copy_from_slice(&16u32.to_be_bytes());
+        raw[120..122].copy_from_slice(&nreloc_header.to_be_bytes());
+        let mut cursor = HEADER as u32;
+        let sizes = [engine.len() as u32, reloc_bytes.len() as u32, 0, 0, 0, 0, 0];
+        for (i, size) in sizes.into_iter().enumerate() {
+            let off = 128 + 12 * i;
+            raw[off..off + 2].copy_from_slice(&((i + 1) as u16).to_be_bytes());
+            raw[off + 2..off + 4].copy_from_slice(&0u16.to_be_bytes());
+            raw[off + 4..off + 8].copy_from_slice(&cursor.to_be_bytes());
+            raw[off + 8..off + 12].copy_from_slice(&size.to_be_bytes());
+            cursor += size;
+        }
+        let body_crc = crc(&raw[HEADER..]);
+        raw[24..28].copy_from_slice(&body_crc.to_be_bytes());
+        let hdr_crc = zero_crc(&raw[..HEADER], 20);
+        raw[20..24].copy_from_slice(&hdr_crc.to_be_bytes());
+        raw
+    }
+
     #[test]
     fn rejects_huge_r5_library_and_wide_entry_counts() {
         let mut desc = [0u8; 44];
@@ -493,5 +559,43 @@ mod tests {
         let pool_info = [(0, 62, 0), (0, 33, 0), (0, 96, 0), (0, 56, 0)];
         assert!(build_entry(&desc, &shared, &pool_info, true).is_err());
         assert!(catalogue(Some(&vec![0u8; MAX_LIBRARY_BYTES + 1]), 178).is_err());
+    }
+
+    #[test]
+    fn r5_relocation_bounds_size_and_order_guards() {
+        // nreloc = 0 和 nreloc = 257 均拒绝
+        for bad in [
+            synthetic_r5_shell(266, 0, &[], 32),
+            synthetic_r5_shell(266, 0, &[(260, 256)], 32),
+            synthetic_r5_shell(266, 257, &[], 32),
+            synthetic_r5_shell(
+                266,
+                257,
+                &(0..257u32).map(|i| (256 + 4 * i, 256)).collect::<Vec<_>>(),
+                1040,
+            ),
+            // reloc_size != 8 * nreloc 拒绝
+            synthetic_r5_shell(266, 2, &[(260, 256)], 32),
+            synthetic_r5_shell(266, 1, &[(260, 256), (264, 256)], 32),
+        ] {
+            let err = parse(&bad, None).expect_err("expected size/nreloc rejection");
+            assert_eq!(err.message, "r5 执行外壳尺寸不合格");
+        }
+
+        // 非严格递增 patch（相等或递减）在 r5/r6 上均拒绝
+        for generation in [262u32, 266] {
+            for relocs in [[(260, 256), (260, 256)], [(264, 256), (260, 256)]] {
+                let bad = synthetic_r5_shell(generation, 2, &relocs, 32);
+                let err = parse(&bad, None).expect_err("expected non-increasing patch rejection");
+                assert_eq!(err.message, "r5 重定位与引擎不匹配");
+            }
+        }
+
+        // 合法双条重定位通过结构解析后，仍受 BOUND_ENGINES 精确绑定拦截（包括 g262）
+        for generation in [262u32, 266] {
+            let two_ok = synthetic_r5_shell(generation, 2, &[(260, 256), (264, 256)], 32);
+            let err = parse(&two_ok, None).expect_err("expected engine binding rejection");
+            assert_eq!(err.message, format!("{generation} 引擎或链接布局未登记"));
+        }
     }
 }
