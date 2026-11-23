@@ -309,13 +309,13 @@ def test_bad_dat_from_card_is_refused_and_old_data_is_kept(client, volumes, sett
         assert message == "不支持这个版本的相机配方文件。"
         assert r.json()["detail"] == (
             "第 130 代。支持第 127、129、131、135、137、138、150、152、153、154、155、156、158、"
-            "176、178、181、182、185、250、253、256、257、258、259、260、262 代。"
+            "176、178、181、182、185、250、253、256、257、258、259、260、262、266 代。"
         )
     elif name == "generation_zero":
         assert message == "不支持这个版本的相机配方文件。"
         assert r.json()["detail"] == (
             "第 0 代。支持第 127、129、131、135、137、138、150、152、153、154、155、156、158、"
-            "176、178、181、182、185、250、253、256、257、258、259、260、262 代。"
+            "176、178、181、182、185、250、253、256、257、258、259、260、262、266 代。"
         )
     else:
         assert "无法导入" in message
@@ -358,9 +358,31 @@ def test_bad_dat_messages_are_specific(client, volumes):
         (200, "不支持这个版本的相机配方文件。"),
         (251, "不支持这个版本的相机配方文件。"),
         (261, "不支持这个版本的相机配方文件。"),
-        (263, "这个相机配方文件需要更新版本的 GXR 工作室。"),
+        (263, "不支持这个版本的相机配方文件。"),
+        (264, "不支持这个版本的相机配方文件。"),
+        (265, "不支持这个版本的相机配方文件。"),
+        (267, "这个相机配方文件需要更新版本的 GXR 工作室。"),
     ],
-    ids=("g126", "g139", "g151", "g157", "g159", "g160", "g161", "g177", "g179", "g180", "g183", "g200", "g251", "g261", "g263"),
+    ids=(
+        "g126",
+        "g139",
+        "g151",
+        "g157",
+        "g159",
+        "g160",
+        "g161",
+        "g177",
+        "g179",
+        "g180",
+        "g183",
+        "g200",
+        "g251",
+        "g261",
+        "g263",
+        "g264",
+        "g265",
+        "g267",
+    ),
 )
 def test_unsupported_generation_copy_keeps_numbers_in_detail(client, generation, message):
     response = client.post("/api/camdata/import-upload", content=forge_generation(dat(), generation))
@@ -371,7 +393,7 @@ def test_unsupported_generation_copy_keeps_numbers_in_detail(client, generation,
         "message": message,
         "detail": (
             f"第 {generation} 代。支持第 127、129、131、135、137、138、150、152、153、154、155、156、158、"
-            "176、178、181、182、185、250、253、256、257、258、259、260、262 代。"
+            "176、178、181、182、185、250、253、256、257、258、259、260、262、266 代。"
         ),
     }
     assert not any(character.isdigit() for character in body["message"])

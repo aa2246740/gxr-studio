@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import struct
+from typing import Any
 
 from . import datcodec as dc
 
@@ -119,6 +120,25 @@ def _modules(cat: bytes, sections: list[tuple[int, int]], shared: bytes) -> list
     return modules
 
 
+def _parse_relocations(raw: bytes, reloc_at: int, nreloc: int, engine_size: int, bss: int) -> list[Any]:
+    relocations: list[Any] = []
+    previous = 0
+    ram_end = len(raw) + bss
+    for i in range(nreloc):
+        patch, target = struct.unpack_from(">II", raw, reloc_at + 8 * i)
+        if (
+            patch <= previous
+            or not 256 <= patch <= 256 + engine_size - 4
+            or patch % 4
+            or not 256 <= target < ram_end
+            or dc.u32(raw, patch) != target
+        ):
+            raise dc.DatError("r5 重定位与引擎不匹配")
+        relocations.append((patch, target))
+        previous = patch
+    return relocations
+
+
 def parse(raw: bytes, library: bytes | None) -> dc.Dat:
     _check_envelope(raw, b"GXRCE001", 0)
     sections = _sections(raw)
@@ -129,19 +149,30 @@ def parse(raw: bytes, library: bytes | None) -> dc.Dat:
     engine_at, engine_size = sections[0]
     reloc_at, reloc_size = sections[1]
     xdata_at, xdata_size = sections[2]
+    nreloc = dc.u16(raw, 120)
     trailing = sections[3:] if prof.xdata else sections[2:]
-    if len(raw) > prof.max_file or not 16 <= engine_size <= prof.max_engine or reloc_size != 8 or any(n for _, n in trailing):
+    if (
+        len(raw) > prof.max_file
+        or not 16 <= engine_size <= prof.max_engine
+        or not 1 <= nreloc <= 256
+        or reloc_size != 8 * nreloc
+        or any(n for _, n in trailing)
+    ):
         raise dc.DatError("r5 执行外壳尺寸不合格")
+    entry, bss = dc.u32(raw, 112), dc.u32(raw, 116)
+    if len(raw) + bss > dc.MAX_RAM or not 256 <= entry <= 256 + engine_size - 4 or entry % 4:
+        raise dc.DatError("r5 BSS 或重定位不合格")
+    relocations = _parse_relocations(raw, reloc_at, nreloc, engine_size, bss)
     xdata = raw[xdata_at : xdata_at + xdata_size] if prof.xdata else b""
     dat = dc.Dat(
         generation,
         0,
-        dc.u32(raw, 112),
-        dc.u32(raw, 116),
+        entry,
+        bss,
         raw[80:112],
         raw[212:228],
         raw[engine_at : engine_at + engine_size],
-        [struct.unpack_from(">II", raw, reloc_at)],
+        relocations,
         [],
         (),
         b"",
@@ -152,11 +183,6 @@ def parse(raw: bytes, library: bytes | None) -> dc.Dat:
         xdata=xdata,
     )
     dc._check_engine_binding(dat, len(raw))
-    if len(raw) + dat.bss > dc.MAX_RAM or dc.u16(raw, 120) != 1 or not 256 <= dat.entry <= 256 + engine_size - 4 or dat.entry % 4:
-        raise dc.DatError("r5 BSS 或重定位不合格")
-    for patch, target in dat.relocations:
-        if not 256 <= patch <= 256 + engine_size - 4 or patch % 4 or not 256 <= target < len(raw) + dat.bss or dc.u32(raw, patch) != target:
-            raise dc.DatError("r5 重定位与引擎不匹配")
     cat = _catalogue(library, generation)
     if cat[80:112] != dat.resident_id or cat[212:228] != dat.abi_id:
         raise dc.DatError(f"GXRFX.BIN 与第 {generation} 代 GXRCE.DAT 不匹配或已损坏，请重新复制同一套两个文件。")
