@@ -1,12 +1,14 @@
 // iPad Safari / WebKit 无 WebGPU 回归驱动（D1–D5）：
 // 用固定 Playwright WebKit（hasTouch: true, isMobile: true）验证 1032×1376、1376×1032、
-// 820×1180、844×390 与 390×844。未装 WebKit 时打印 skipped JSON 并以 0 退出。
+// 820×1180、844×390 与 390×844；带头另查 375×667、320×568，横屏「存到相册」另查 932×430、844×300、932×330。
+// 未装 WebKit 时打印 skipped JSON 并以 0 退出。
 // stdout 仅打印单行脱敏 JSON，绝不含文件名、拍摄时间或 EXIF。
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { auditPhonePortraitNoGpuHeader } from './mobile_ipad_webkit_header.mjs';
+import { auditPhoneLandscapeSave } from './mobile_phone_landscape_save.mjs';
 
 const [runtime, base, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -48,10 +50,16 @@ const EDITOR_VIEWPORTS = [
   { label: '440x956', width: 440, height: 956, layout: 'phone-portrait', ipad: false, safe: PHONE_PORT_SAFE, checkExport: false },
 ];
 
+// 更窄的手机竖屏（iPhone SE 375×667，SE 放大显示 320×568）：只查无 WebGPU 带头（N2 「LUT」不单独一行，N5 配方槽宽度）。
+const NARROW_PORTRAIT = [
+  { label: '375x667', width: 375, height: 667, layout: 'phone-portrait', ipad: false, safe: { top: 20, bottom: 0, left: 0, right: 0 } },
+  { label: '320x568', width: 320, height: 568, layout: 'phone-portrait', ipad: false, safe: { top: 20, bottom: 0, left: 0, right: 0 } },
+];
+
 const STEMS = (manifest.stems ?? []).filter(Boolean);
 const failures = [];
 const pageErrors = [];
-const summary = { grid: {}, editor: {}, d5: {}, d6: {}, d7: {}, f1: {}, rotation: {} };
+const summary = { grid: {}, editor: {}, d5: {}, d6: {}, d7: {}, f1: {}, rotation: {}, landscapeSave: {} };
 
 const IPAD_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
 const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1';
@@ -322,7 +330,9 @@ async function auditEditorViewport(page, vp, landscapeId, landscapeStem) {
       return r.width > 4 && r.height > 4 && r.right > 0 && r.bottom > 0 && r.left < window.innerWidth && r.top < window.innerHeight;
     };
     const leaves = [...document.querySelectorAll('.editor *')].filter((n) => n.childElementCount === 0 && isVis(n));
-    const visText = leaves.map((n) => (n.textContent || '').trim()).filter(Boolean).join('\n');
+    // 说明里「配方和 LUT」用了词连接符和不换行空格，比对前先还原成普通文字。
+    const visText = leaves.map((n) => (n.textContent || '').replace(/\u2060/g, '').replace(/\u00a0/g, ' ').trim()).filter(Boolean).join('\n');
+    const noticeText = leaves.filter((n) => n.matches('.nogpu-note, .nogpu-detail')).map((n) => (n.textContent || '').replace(/\u2060/g, '').replace(/\u00a0/g, ' ')).join('\n');
     const noticeLeaves = leaves.filter((n) => /显卡预览/.test(n.textContent || ''));
     const hists = [...document.querySelectorAll('.editor .hist')].map((h) => {
       const r = h.getBoundingClientRect();
@@ -339,6 +349,7 @@ async function auditEditorViewport(page, vp, landscapeId, landscapeStem) {
       noticeVisibleCount: noticeLeaves.length,
       hasCoreNotice: visText.includes('这个浏览器现在用不了显卡预览'),
       hasExportAndJpg: /导出/.test(visText) && /配方/.test(visText) && /LUT/.test(visText) && /JPG/.test(visText),
+      noticeExact: noticeText.includes('预览只显示相机 JPG，导出仍会套用配方和 LUT'),
       emptyHistCount: emptyHist.length,
       hists,
       hscroll: document.documentElement.scrollWidth > window.innerWidth + 1,
@@ -349,6 +360,7 @@ async function auditEditorViewport(page, vp, landscapeId, landscapeStem) {
   check(d1.layout === vp.layout, `D1 ${vp.label}: layout=${d1.layout}, want ${vp.layout}`);
   check(d1.noticeVisibleCount >= 1 && d1.hasCoreNotice, `D1 ${vp.label}: no-GPU notice 「这个浏览器现在用不了显卡预览」 is not visible`);
   check(d1.hasExportAndJpg, `D1 ${vp.label}: visible notice does not explain JPG preview + export still applying recipe and LUT`);
+  check(d1.noticeExact, `D1 ${vp.label}: no-GPU detail text is not 「预览只显示相机 JPG，导出仍会套用配方和 LUT」 after normalising joiners`);
   check(d1.emptyHistCount === 0, `D1 ${vp.label}: visible empty histogram frame found (${JSON.stringify(d1.hists)})`);
   check(!d1.hscroll, `D1 ${vp.label}: horizontal page scroll detected in editor`);
 
@@ -620,6 +632,22 @@ try {
   for (const vp of EDITOR_VIEWPORTS) {
     freshRects[vp.label] = await auditEditorViewport(page, vp, landscapeId, manifest.landscapeStem);
   }
+
+  // N2 / N5：编辑器还开着，换到更窄的手机竖屏，只量带头。
+  for (const vp of NARROW_PORTRAIT) {
+    await page.setViewportSize({ width: vp.width, height: vp.height });
+    await setSafeArea(page, vp.safe);
+    await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'phone-portrait', null, { timeout: 10_000 });
+    await frame(page, 4);
+    if ((await page.locator('.screen.editor').getAttribute('data-collapsed')) === '1') {
+      await page.locator('.editor .toolbar [data-tool="recipe"]').tap();
+      await frame(page, 3);
+    }
+    await auditPhonePortraitNoGpuHeader(page, vp, { check, frame, summary });
+  }
+
+  // L5：手机横屏（含 Safari 工具栏压矮的 844×300 / 932×330）「存到相册」完整可见，照片不被盖住。
+  await auditPhoneLandscapeSave(page, { check, frame, setSafeArea, summary: summary.landscapeSave, prefix: 'L5 webkit' });
 
   // D3：编辑器内旋转 1032×1376 -> 1376×1032 -> 1032×1376，照片矩形位移 <= 1 px
   await toGrid(page);

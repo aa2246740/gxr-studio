@@ -10,7 +10,8 @@ import { isGone, zeroKnobs, type AppApi, type Photo } from './model';
 export type MediaMode = 'raw' | 'jpg' | 'still';
 
 export const NO_GPU_TITLE = '这个浏览器现在用不了显卡预览';
-export const NO_GPU_DETAIL = '预览只显示相机 JPG，导出仍会套用配方和 LUT';
+// 「配方和 LUT」不拆行：字间用 U+2060（词连接符），「和」与「LUT」之间用不换行空格，折行时整组移到下一行，「LUT」不会单独一行。
+export const NO_GPU_DETAIL = '预览只显示相机 JPG，导出仍会套用配\u2060方\u2060和\u00a0LUT';
 
 export interface EditorMediaCallbacks {
   api(): AppApi;

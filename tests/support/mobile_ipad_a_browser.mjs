@@ -10,6 +10,7 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { auditPhoneLandscapeSave } from './mobile_phone_landscape_save.mjs';
 
 const [runtime, base, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -268,7 +269,7 @@ async function tapStageCenter(page, session) {
   return true;
 }
 
-async function snap(page, dir, name) {
+async function snap(page, dir, name, clip = undefined) {
   if (!dir) return;
   const stems = [...STEM_ALIAS.keys()].filter(Boolean);
   const count = await page.evaluate((stemList) => {
@@ -298,7 +299,7 @@ async function snap(page, dir, name) {
     return edits.length;
   }, stems);
   await frame(page, 2);
-  await page.screenshot({ path: join(dir, `${name}.png`) });
+  await page.screenshot({ path: join(dir, `${name}.png`), ...(clip ? { clip } : {}) });
   if (count > 0) {
     await page.evaluate(() => {
       window.__snapRestore?.();
@@ -708,6 +709,11 @@ try {
   for (const spec of TARGETS) {
     await auditLayout(page, session, spec, manifest.landscapeAspect, manifest.screenshotsDir);
   }
+
+  // L5：手机横屏（含 Safari 工具栏压矮的 844×300 / 932×330）「存到相册」完整可见，照片不被盖住。
+  behaviour.landscapeSave = {};
+  const landscapeShot = (label, clip) => snap(page, manifest.screenshotsDir, `phone-${label}-landscape-save`, clip);
+  await auditPhoneLandscapeSave(page, { check, frame, setSafeArea, summary: behaviour.landscapeSave, prefix: 'L5 chromium', shot: landscapeShot });
 
   // iPad 点照片收起面板和两条，只留底栏，并记住
   await page.setViewportSize({ width: 1366, height: 1024 });
