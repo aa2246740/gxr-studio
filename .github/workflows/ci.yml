@@ -69,6 +69,8 @@ jobs:
         env:
           PYTEST_ADDOPTS: "--force-reruns 0"
           GXR_REQUIRE_GPU_TEST: "1"
+          # 一次性的 CI 机器上显式指定浏览器；测试本身在 macOS 上不再自动退回系统 Chrome。
+          GXR_CHROME: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
           GXR_FUZZ_JOBS: "4"
         run: uv run --frozen pytest -vv --maxfail=10 --durations=20 -o faulthandler_timeout=300
 

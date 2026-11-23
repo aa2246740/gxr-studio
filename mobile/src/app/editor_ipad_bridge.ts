@@ -2,6 +2,7 @@
 
 import { button, el, icon } from './dom';
 import type { HistWidget } from './editor_hist';
+import { NO_GPU_DETAIL, NO_GPU_TITLE } from './editor_media';
 import { IpadDock } from './ipad_dock';
 import { isIpadLayout, watchViewportLayout, type LayoutMode, type LayoutWatch } from './layout';
 import type { LutView } from './lut_view';
@@ -11,6 +12,20 @@ import type { MoreSheetHooks } from './more_sheet';
 import type { RecipeView } from './recipe_view';
 
 const HIST_ICON = 'M4 19V11M9 19V6M14 19V13M19 19V8M3 19h18';
+const WARN_ICON = 'M12 4l9 16H3zM12 10v4M12 17h.01';
+
+/** 无 WebGPU 时的说明条（iPad 放直方图区，手机横屏放带子顶部；有 GPU 时不创建）。 */
+export function createNoGpuNotice(): HTMLElement {
+  const box = el('div', 'nogpu-notice');
+  box.dataset.nogpuNotice = '1';
+  const mark = el('span', 'warn');
+  mark.setAttribute('aria-hidden', 'true');
+  mark.append(icon(WARN_ICON));
+  const tx = el('div', 'tx');
+  tx.append(el('b', 'nogpu-title', NO_GPU_TITLE), el('small', 'nogpu-detail', NO_GPU_DETAIL));
+  box.append(mark, tx);
+  return box;
+}
 
 export interface IpadHistArea {
   root: HTMLElement;
@@ -52,8 +67,14 @@ export function mountHistForLayout(
   histArea: IpadHistArea | null,
   stage: HTMLElement | null,
   histWidget: HistWidget | null,
+  hasGpu = true,
 ): void {
   if (!histWidget) return;
+  if (!hasGpu) {
+    histWidget.root.hidden = true;
+    histArea?.sync(false);
+    return;
+  }
   const ipad = isIpadLayout(mode);
   if (ipad && histArea) {
     histWidget.root.classList.remove('hist-float');
@@ -162,6 +183,7 @@ export function createEditorIpadBridge(opts: {
   shell: HTMLElement;
   api: AppApi;
   photo: Photo;
+  hasGpu: boolean;
   moreHooks: MoreSheetHooks;
   onLayoutChange: (mode: LayoutMode) => void;
   onToggleHist: () => void;
@@ -170,6 +192,8 @@ export function createEditorIpadBridge(opts: {
 }): EditorIpadBridge {
   const watch: LayoutWatch = watchViewportLayout(opts.shell, (mode) => opts.onLayoutChange(mode));
   const histArea = createIpadHistArea(opts.onToggleHist);
+  const noGpuNotice = opts.hasGpu ? null : createNoGpuNotice();
+  if (!opts.hasGpu) histArea.root.dataset.nogpu = '1';
   const morePanel = new MorePanel(opts.photo, opts.moreHooks);
   const dock = new IpadDock(opts.api, opts.photo.id, {
     onSubChange: opts.onSubChange,
@@ -181,20 +205,32 @@ export function createEditorIpadBridge(opts: {
     isIpad: () => isIpadLayout(watch.mode()),
     morePanelEl: () => morePanel.panelEl(),
     refreshMore: (photo) => morePanel.refresh(photo),
-    syncHistUi: (open) => histArea.sync(open),
+    syncHistUi: (open) => histArea.sync(opts.hasGpu && open),
     syncSub: (sub, lutActive) => dock.syncSub(sub, lutActive),
     apply: (s) => {
-      attachIpadNodes(isIpadLayout(s.mode), histArea.root, s.band, dock.el(), s.stage?.parentElement ?? null);
-      mountHistForLayout(s.mode, s.histOpen, histArea, s.stage, s.histWidget);
+      const ipad = isIpadLayout(s.mode);
+      attachIpadNodes(ipad, histArea.root, s.band, dock.el(), s.stage?.parentElement ?? null);
+      mountHistForLayout(s.mode, s.histOpen, histArea, s.stage, s.histWidget, opts.hasGpu);
+      if (noGpuNotice) {
+        if (ipad) {
+          if (noGpuNotice.parentElement !== histArea.root) histArea.root.append(noGpuNotice);
+        } else if (s.mode === 'phone-landscape' && s.band) {
+          const body = s.band.querySelector(':scope > .band-body');
+          if (body && noGpuNotice.parentElement !== body) body.prepend(noGpuNotice);
+        } else {
+          noGpuNotice.remove();
+        }
+      }
       syncStripsForLayout(s.mode, s.recipeSub, dock, s.recipes, s.luts);
       dock.syncSub(s.recipeSub, s.lutActive);
-      dock.setActive(isIpadLayout(s.mode));
+      dock.setActive(ipad);
     },
     destroy: () => {
       watch.destroy();
       dock.destroy();
       dock.el().remove();
       histArea.root.remove();
+      noGpuNotice?.remove();
     },
   };
 }

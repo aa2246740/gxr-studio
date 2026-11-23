@@ -744,4 +744,8 @@ WASM：`source_plan(shot, edit, dat, library, entry, calib_index_json, calib_byt
   - **点一下照片**：面板和下面两条一起收起，只留底栏（照片约 1300×864），和手机共用 `gxr.mobile.band_collapsed`，换照片也记得。手机横屏收起时只收带子，返回、工具和「存到相册」留在右边那一列，照片不动。
   - 顶栏 HDR 胶囊在 iPad 和手机横屏把命中区补到 44（手机竖屏没动）。
 - **胶片条（`filmstrip.ts`）**：网格排成一行，分组照网格的规矩（只有一张的组不起组头，紧跟上一组时留一道细缝），点一下换照片。只在 iPad 版式里画，手机上不建缩略图。
-- **验收测试**：`tests/test_mobile_ipad_a_unit.py`（版式判定、直方图记忆、胶片条分组、文案）和 `tests/test_mobile_ipad_a_browser.py`（真实照片，1366×1024、1024×1366、1180×820、844×390、956×440 带主屏幕安全区：照片尺寸在样稿 2% 以内、骨架和样稿一致、切工具 / 拖滑块 / 导出中 / 做好了 0 px 挪动、13 条编辑路径加 ⋯ 和导出条在时的全部入口都 `>= 44 pt` 且 `elementFromPoint` 落在控件上、iPad 专有行为；手机竖屏 390×844、440×956 和无安全区 390×844 的照片、带子、底栏矩形和 main 量得的数逐项相同，也不建胶片条）。
+- **无 WebGPU / iPad Safari 补齐（`ipad-safari-fix`，D1–D7）**：
+  - 无显卡预览时（iOS 18 Safari、Playwright WebKit）：iPad 竖/横屏把原直方图区换成说明条（隐藏空白直方图框与开关），手机横屏放在带子顶部，手机竖屏在 `.band-hd .lbl` 下补一行短说明，统一写明「这个浏览器现在用不了显卡预览」与「预览只显示相机 JPG，导出仍会套用配方和 LUT」；切配方卡同步刷新编辑器顶栏标题，不依赖 GPU `useLook`；静态图画布 `paintStill` 按文件头真实尺寸锁住虚拟画布比例，消除 WebKit `resizeWidth` 向上取整导致的提锐/导出/旋转 2 px 跳动（≤ 1 px）。
+  - 图库网格在 iPad 版式按屏宽分列（`gridColumns`：`13"` 竖 6 列 / 横 8 列、`11"` 竖 5 列 / 横 7 列，单张缩略图 150–200 pt；手机仍为 3 列，旋转/改窗宽自动重排），每张缩略图按钮带无障碍名称（如「第 3 张，RAW+JPG」，按状态附加「已编辑」「已选中」，绝不含文件名或拍摄时间）。
+  - 设备文案与首屏（D6–D7）：`mobile/src/lib/device.ts` 的 `deviceName()` 用 `navigator.maxTouchPoints > 1` 配合 Mac/iPad 平台或 UA 识别 iPadOS（横屏手机仍为 `iPhone`），首屏、帮助、校准、图库 ⋯、LUT 脚注、自定义标志面板与 HDR 说明统一按设备名渲染；iPad 版式首屏 `.start` 限宽 680 pt 并居中，手机首屏保持不变。
+- **验收测试**：`tests/test_mobile_ipad_a_unit.py`（版式判定、直方图记忆、胶片条分组、网格列数、缩略图无障碍名、设备名识别、文案）、`tests/test_mobile_ipad_a_browser.py`（Chromium 有 GPU 验收，覆盖 1366×1024、1024×1366、1180×820、844×390、956×440 与手机竖屏基线）与 `tests/test_mobile_ipad_webkit.py`（固定 Playwright WebKit `hasTouch: true` 无 WebGPU 验收，覆盖 1032×1376、1376×1032、820×1180、844×390 与 390×844 / 440×956 的 D1–D7 及手机竖屏带头防挤压断言）。

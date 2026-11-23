@@ -1,6 +1,7 @@
 // 配方与 LUT 共用的 128pt 单带辅件：带首「配方 | LUT」切换键、配方筛选工作表、状态说明与 06d 缺文件弹层。
 
 import { crossed, uncalibratedReason, type Unit } from '../lib/calib';
+import { deviceName } from '../lib/device';
 import {
   CAMERA_RECIPE_LEVELS_UNKNOWN,
   choices,
@@ -302,7 +303,7 @@ export function buildStatusBlock(scene: RecipeStatusScene, pickCalib: () => void
   const bring = button('btn primary block', '导入校准数据');
   bring.prepend(icon(PLUS));
   bring.addEventListener('click', pickCalib);
-  box.append(banner, bring, el('p', 'faint small', '在 Mac 的 GXR Studio 里导出校准数据，用隔空投送发到这台 iPhone，再点上面的按钮。只需一次。'));
+  box.append(banner, bring, el('p', 'faint small', `在 Mac 的 GXR Studio 里导出校准数据，用隔空投送发到这台 ${deviceName()}，再点上面的按钮。只需一次。`));
   return box;
 }
 

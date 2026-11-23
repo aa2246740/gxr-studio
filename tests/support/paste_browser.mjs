@@ -4,7 +4,7 @@
 // 输出一行 JSON，断言在 Python 那边。每一步都有超时，总时限在 PASTE_DEADLINE_MS。
 import { spawn } from 'node:child_process';
 import { closeSync, openSync, readFileSync } from 'node:fs';
-import { readDebugPort } from './debug_port.mjs';
+import { closeChrome, readDebugPort } from './debug_port.mjs';
 
 const [chromePath, port, token, profile] = process.argv.slice(2);
 const extra = JSON.parse(process.env.CHROME_FLAGS || '[]');
@@ -31,10 +31,8 @@ async function finish(code) {
   finished = true;
   if (code !== 0) out.chromeLog = (() => { try { return readFileSync(chromeLogPath, 'utf8').slice(-2000); } catch { return ''; } })();
   console.log(JSON.stringify(out));
+  await closeChrome(chrome, () => ws);
   try { ws.close(); } catch { /* 已经关了 */ }
-  chrome.kill('SIGTERM');
-  await sleep(1000);
-  chrome.kill('SIGKILL');
   try { closeSync(chromeLog); } catch { /* 已经关了 */ }
   process.exit(code);
 }

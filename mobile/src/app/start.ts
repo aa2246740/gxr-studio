@@ -1,4 +1,5 @@
 import type { AppApi } from './model';
+import { deviceName } from '../lib/device';
 import { FONT_LICENCE_LABELS, FONT_LICENCES } from '../lib/font_assets';
 import { calibCard } from './calib_ui';
 import { button, el, icon, ICON } from './dom';
@@ -26,12 +27,13 @@ export function renderStart(host: HTMLElement, api: AppApi): void {
   title.append(brand);
   nav.append(el('span', 'nb'), title, el('span', 'nb'));
 
+  const dev = deviceName();
   const body = el('div', 'start');
   const picture = el('div', 'hero');
   picture.append(hero());
   const heading = el('h1', '', '选照片，换配方，存到相册');
-  const lead = el('p', 'lead', '用读卡器把存储卡插到 iPhone，再点下面的按钮，在「文件」里选照片。');
-  const priv = el('p', 'priv', '照片只在这次使用中保留，不会上传，也不会离开这台 iPhone。');
+  const lead = el('p', 'lead', `用读卡器把存储卡插到 ${dev}，再点下面的按钮，在「文件」里选照片。`);
+  const priv = el('p', 'priv', `照片只在这次使用中保留，不会上传，也不会离开这台 ${dev}。`);
   priv.prepend(icon(ICON.lock));
 
   const calib = calibCard(api);
@@ -70,7 +72,7 @@ export function renderStart(host: HTMLElement, api: AppApi): void {
   pick.addEventListener('click', () => api.addPhotos());
   cta.append(pick);
   const help = el('div', 'help');
-  const helpBtn = button('lnk', '怎么把卡插到 iPhone');
+  const helpBtn = button('lnk', `怎么把卡插到 ${dev}`);
   helpBtn.prepend(icon(ICON.help));
   helpBtn.addEventListener('click', () => api.showHelp());
   help.append(helpBtn);
@@ -80,18 +82,21 @@ export function renderStart(host: HTMLElement, api: AppApi): void {
   host.append(screen);
 }
 
-const STEPS: Array<[string, string]> = [
-  ['把存储卡放进读卡器', '用带 USB-C 接口的读卡器。卡面朝向读卡器上标的方向。'],
-  ['把读卡器插到 iPhone 底部', '插好后不用等，不会有任何弹窗。'],
-  ['回到这里，点「从存储卡选照片」', '在「文件」里找到存储卡，打开 DCIM 文件夹，选要用的照片。'],
-  ['需要配方时，再选相机配方文件', '文件名是 GXRCE.DAT，在存储卡最外层，和 DCIM 并排。选照片时一起选上也行；没选的话，之后会提示你补选。'],
-];
+function helpSteps(dev: string): Array<[string, string]> {
+  return [
+    ['把存储卡放进读卡器', '用带 USB-C 接口的读卡器。卡面朝向读卡器上标的方向。'],
+    [`把读卡器插到 ${dev} 底部`, '插好后不用等，不会有任何弹窗。'],
+    ['回到这里，点「从存储卡选照片」', '在「文件」里找到存储卡，打开 DCIM 文件夹，选要用的照片。'],
+    ['需要配方时，再选相机配方文件', '文件名是 GXRCE.DAT，在存储卡最外层，和 DCIM 并排。选照片时一起选上也行；没选的话，之后会提示你补选。'],
+  ];
+}
 
 export function renderHelp(host: HTMLElement): HTMLElement {
+  const dev = deviceName();
   const scrim = el('div', 'scrim');
   const sheet = el('div', 'ms');
   const row = el('div', 'hd');
-  row.append(el('h2', '', '怎么把卡插到 iPhone'));
+  row.append(el('h2', '', `怎么把卡插到 ${dev}`));
   const done = button('nb', '完成');
   const close = () => {
     scrim.remove();
@@ -101,7 +106,7 @@ export function renderHelp(host: HTMLElement): HTMLElement {
   scrim.addEventListener('click', close);
   row.append(done);
   sheet.append(el('div', 'grab'), row);
-  STEPS.forEach(([title, detail], index) => {
+  helpSteps(dev).forEach(([title, detail], index) => {
     const line = el('div', 'lrow');
     line.append(el('span', 'step', String(index + 1)));
     const text = el('div');

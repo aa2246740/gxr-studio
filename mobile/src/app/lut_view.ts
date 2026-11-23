@@ -7,6 +7,7 @@ import {
   SOURCE_TAGS,
   computeInputChoice,
   isDisplaySpace,
+  lutFootnote,
   lutRenderToken,
   spaceShortLabel,
   type LutRecord,
@@ -73,7 +74,7 @@ export class LutView {
   private readonly pin = el('div', 'lut-pin');
   private readonly strip = el('div', 'strip');
   private readonly statusEl = el('div', 'lut-err', '');
-  private readonly footEl = el('p', 'lut-foot', 'LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。');
+  private readonly footEl = el('p', 'lut-foot', lutFootnote());
   private readonly spaceBtn = button('rc filter-tile lut-space-tile', '');
   private readonly spaceTxt = el('span', 'lut-space-txt', '色彩空间');
   private readonly addBtn = button('rc filter-tile lut-import-tile', '');

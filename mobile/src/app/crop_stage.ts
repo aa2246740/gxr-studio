@@ -201,27 +201,41 @@ export class CropStage {
     if (placeholder) placeholder.hidden = true;
     still.hidden = false;
     const angle = this.liveStraighten();
-    const crop = !this.host.active() ? this.host.photo()?.crop : null;
+    const photo = this.host.photo();
+    const crop = !this.host.active() ? photo?.crop : null;
     const rect = crop ? rectFromArray(crop.rect) : null;
     const srcW = bitmap.width;
     const srcH = bitmap.height;
-    const bx = rect ? Math.round(rect.x * srcW) : 0;
-    const by = rect ? Math.round(rect.y * srcH) : 0;
-    const bw = rect ? Math.max(1, Math.round(rect.w * srcW)) : srcW;
-    const bh = rect ? Math.max(1, Math.round(rect.h * srcH)) : srcH;
+    const frame = photo?.frame;
+    const useFrame =
+      Boolean(frame && frame.width > 0 && frame.height > 0 && srcW > 0 && srcH > 0) &&
+      (frame!.width >= frame!.height) === (srcW >= srcH) &&
+      Math.abs((frame!.width / frame!.height) / (srcW / srcH) - 1) <= 0.02;
+    const refW = useFrame ? frame!.width : srcW;
+    const refH = useFrame ? frame!.height : srcH;
+    // 无 GPU 时先画 360px 缩略图再换清图：WebKit 对 resizeWidth 向上取整高度会导致两帧宽高比差约 0.3%（iPad 上跳 2 px）。
+    // 按文件头真实尺寸锁住虚拟画布比例，提锐、导出与旋转前后位移均 <= 1 px。
+    const targetLong = useFrame ? Math.max(srcW, srcH, Math.min(1024, Math.max(refW, refH))) : Math.max(srcW, srcH);
+    const scale = targetLong / Math.max(1, refW, refH);
+    const baseW = refW * scale;
+    const baseH = refH * scale;
+    const bx = rect ? rect.x * baseW : 0;
+    const by = rect ? rect.y * baseH : 0;
+    const bw = rect ? Math.max(1, Math.round(rect.w * baseW)) : Math.max(1, Math.round(baseW));
+    const bh = rect ? Math.max(1, Math.round(rect.h * baseH)) : Math.max(1, Math.round(baseH));
     still.width = bw;
     still.height = bh;
     const ctx = still.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, bw, bh);
     if (Math.abs(angle) < 1e-6 && !rect) {
-      ctx.drawImage(bitmap, 0, 0);
+      ctx.drawImage(bitmap, 0, 0, bw, bh);
       return;
     }
     ctx.save();
-    ctx.translate(srcW / 2 - bx, srcH / 2 - by);
+    ctx.translate(baseW / 2 - bx, baseH / 2 - by);
     if (Math.abs(angle) >= 1e-6) ctx.rotate((angle * Math.PI) / 180);
-    ctx.drawImage(bitmap, -srcW / 2, -srcH / 2);
+    ctx.drawImage(bitmap, -baseW / 2, -baseH / 2, baseW, baseH);
     ctx.restore();
   }
 

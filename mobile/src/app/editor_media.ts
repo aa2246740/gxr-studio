@@ -9,6 +9,9 @@ import { isGone, zeroKnobs, type AppApi, type Photo } from './model';
 
 export type MediaMode = 'raw' | 'jpg' | 'still';
 
+export const NO_GPU_TITLE = '这个浏览器现在用不了显卡预览';
+export const NO_GPU_DETAIL = '预览只显示相机 JPG，导出仍会套用配方和 LUT';
+
 export interface EditorMediaCallbacks {
   api(): AppApi;
   engine(): Engine | null;
@@ -130,7 +133,7 @@ export class EditorMedia {
       return;
     }
     if (!engine && photo.checked === version) {
-      this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览', token);
+      this.showStillPhoto(photo, NO_GPU_TITLE, token);
       return;
     }
     let bytes: ArrayBuffer;
@@ -162,7 +165,7 @@ export class EditorMedia {
         ? { ...described.meta, copyright: photo.dngMeta.copyright }
         : described.meta;
     if (!engine) {
-      this.showStillPhoto(photo, '这个浏览器现在用不了显卡预览', token);
+      this.showStillPhoto(photo, NO_GPU_TITLE, token);
       this.cb.setAdjustDisabled(true);
       this.cb.refreshRecipes();
       this.prefetch(this.nextPhoto(1), token);

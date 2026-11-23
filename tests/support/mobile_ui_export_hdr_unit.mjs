@@ -40,7 +40,12 @@ test('switch: available when any photo has a DNG (desktop hdrAvailable)', () => 
   assert.equal(hdr.hdrAvailable([{ dng: null }, { dng: null }]), false);
   assert.equal(hdr.hdrAvailable([]), false);
   assert.equal(hdr.HDR_NO_RAW, 'HDR 需要 RAW 文件');
-  assert.equal(hdr.HDR_LINE, '在 iPhone 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。');
+  assert.equal('HDR_LINE' in hdr, false);
+  assert.equal(hdr.hdrLine(), '在 iPhone 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。');
+  assert.equal(
+    hdr.hdrLine({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', platform: 'MacIntel', maxTouchPoints: 5 }),
+    '在 iPad 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。',
+  );
 });
 
 test('05a mix line only when some, not all, photos are JPG-only', () => {

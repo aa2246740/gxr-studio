@@ -360,6 +360,7 @@ class App implements AppApi {
   open(id: string): void {
     const photo = this.byId.get(id);
     if (!photo || !openable(photo)) return;
+    this.grid?.destroy(); this.grid = null;
     this.closeEditor();
     this.resetPerf();
     this.screen = 'editor';
@@ -465,7 +466,7 @@ class App implements AppApi {
     this.resetPerf();
     this.screen = 'start';
     this.shell.dataset.screen = 'start';
-    this.grid = null;
+    this.grid?.destroy(); this.grid = null;
     renderStart(this.view, this);
     syncExportDock(this.shell);
   }
@@ -475,7 +476,7 @@ class App implements AppApi {
     this.shell.dataset.screen = 'grid';
     if (this.screen !== 'grid') this.resetPerf();
     if (!this.grid || remount || this.screen !== 'grid') {
-      this.grid = new GridView(this.view, this);
+      this.grid?.destroy(); this.grid = new GridView(this.view, this);
       this.grid.show();
     } else this.grid.refresh();
     this.screen = 'grid';

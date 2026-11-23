@@ -105,3 +105,80 @@ test('approved copy and inline More order (边框 first)', () => {
   const idxCurves = moreSrc.indexOf("key: 'curves'");
   assert.ok(idxFrame > 0 && idxFrame < idxStamp && idxStamp < idxCurves, '边框 must be first in inline MorePanel');
 });
+
+test('gridColumns keeps phone at 3 and iPad thumbnails in 150-200 pt across widths', async () => {
+  const { gridColumns } = await import('../../mobile/src/app/layout.ts');
+  const { layoutRows } = await import('../../mobile/src/lib/group.ts');
+  for (const w of [390, 440, 844, 956]) {
+    assert.equal(gridColumns(w, false), 3);
+  }
+  assert.equal(gridColumns(820, true), 5);
+  assert.equal(gridColumns(1024, true), 6);
+  assert.equal(gridColumns(1032, true), 6);
+  assert.equal(gridColumns(1180, true), 7);
+  assert.equal(gridColumns(1366, true), 8);
+  assert.equal(gridColumns(1376, true), 8);
+  for (let w = 700; w <= 1440; w += 17) {
+    const cols = gridColumns(w, true);
+    const thumbW = (w - (cols - 1) * 2) / cols;
+    assert.ok(thumbW >= 150 && thumbW <= 200, `width ${w}: cols=${cols} thumbW=${thumbW}`);
+  }
+  const rows = layoutRows([{ dayKey: '2026-11-22', dayLabel: '11月22日', rangeLabel: '10:00', startMs: 0, endMs: 0, ids: ['1', '2', '3', '4', '5', '6', '7'] }], 100, 6);
+  const cellRows = rows.filter((r) => r.kind === 'cells');
+  assert.equal(cellRows.length, 2);
+  assert.equal(cellRows[0].ids.length, 6);
+  assert.equal(cellRows[1].ids.length, 1);
+});
+
+test('cellAriaLabel formats position, kind and state without leaking private names', async () => {
+  const { cellAriaLabel } = await import('../../mobile/src/app/layout.ts');
+  assert.equal(cellAriaLabel(3, { dng: true, jpg: true }, false, false), '第 3 张，RAW+JPG');
+  assert.equal(cellAriaLabel(3, { dng: true, jpg: true }, true, false), '第 3 张，RAW+JPG，已编辑');
+  assert.equal(cellAriaLabel(3, { dng: true, jpg: true }, true, true), '第 3 张，RAW+JPG，已编辑，已选中');
+  assert.equal(cellAriaLabel(1, { dng: true, jpg: false }, false, false), '第 1 张，RAW');
+  assert.equal(cellAriaLabel(2, { dng: false, jpg: true }, false, true), '第 2 张，JPG，已选中');
+  assert.equal(cellAriaLabel(4, { dng: false, jpg: true, diptych: true }, false, false), '第 4 张，半格双联');
+  assert.equal(cellAriaLabel(5, { dng: true, jpg: false, bad: true }, false, false), '第 5 张，RAW，读不了');
+});
+
+test('deviceName detects iPadOS via maxTouchPoints + Mac/iPad UA and keeps iPhone on phones/desktop', async () => {
+  const { deviceName, isIpadDevice } = await import('../../mobile/src/lib/device.ts');
+  const { hdrLine } = await import('../../mobile/src/lib/hdr_text.ts');
+  const { lutFootnote } = await import('../../mobile/src/lib/lut.ts');
+  const ipadDesktopUa = {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15',
+    platform: 'MacIntel',
+    maxTouchPoints: 5,
+  };
+  const ipadLegacyUa = {
+    userAgent: 'Mozilla/5.0 (iPad; CPU OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+    platform: 'iPad',
+    maxTouchPoints: 5,
+  };
+  const iphoneUa = {
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1',
+    platform: 'iPhone',
+    maxTouchPoints: 5,
+  };
+  const macDesktop = {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15',
+    platform: 'MacIntel',
+    maxTouchPoints: 0,
+  };
+  assert.equal(isIpadDevice(ipadDesktopUa), true);
+  assert.equal(deviceName(ipadDesktopUa), 'iPad');
+  assert.equal(isIpadDevice(ipadLegacyUa), true);
+  assert.equal(deviceName(ipadLegacyUa), 'iPad');
+  assert.equal(isIpadDevice(iphoneUa), false);
+  assert.equal(deviceName(iphoneUa), 'iPhone');
+  assert.equal(isIpadDevice(macDesktop), false);
+  assert.equal(deviceName(macDesktop), 'iPhone');
+  assert.equal(deviceName({ ...ipadDesktopUa, maxTouchPoints: 1 }), 'iPhone');
+  assert.equal(hdrLine(ipadDesktopUa), '在 iPad 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。');
+  assert.equal(hdrLine(iphoneUa), '在 iPhone 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。');
+  assert.equal(lutFootnote(ipadDesktopUa), 'LUT 只存在这台 iPad 上，直接套在照片上，不写入相机。');
+  assert.equal(lutFootnote(iphoneUa), 'LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。');
+  const logoSrc = readFileSync(new URL('../../mobile/src/app/logo_sheet.ts', import.meta.url), 'utf8');
+  assert.ok(logoSrc.includes('标志只保存在这台 ${deviceName()} 上'), 'logo_sheet must use deviceName()');
+  assert.ok(!logoSrc.includes('这台手机'), 'logo_sheet must not hardcode 这台手机');
+});

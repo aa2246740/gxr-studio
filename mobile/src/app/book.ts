@@ -5,6 +5,7 @@ import type { Engine } from '../../../frontend/src/index';
 import type { Bake, CalibPick, CalibRead, CalibRestored, DatRead, Resolved } from '../core/api';
 import type { BakeArgs, CalibCheckArgs } from '../core/protocol';
 import { modelIso, TEXT, UNIT_ISOS, type Unit, type UnitPack } from '../lib/calib';
+import { deviceName } from '../lib/device';
 import { selection, selectionKey, unitIndex, type Card, type Listing } from '../lib/recipes';
 import { ZIP_LIMITS, type ZipFail } from '../lib/zip';
 import { whenExportIdle } from './export_pause';
@@ -43,7 +44,9 @@ export type UnitState =
   | { state: 'ready' }
   | { state: 'invalid'; message: string };
 
-const NOT_SAVED = '校准数据没有存进这台 iPhone：这次能用，下次打开要重新导入。';
+function notSavedText(): string {
+  return `校准数据没有存进这台 ${deviceName()}：这次能用，下次打开要重新导入。`;
+}
 const DELETE_FAILED = '删除没有成功，校准数据还在。请再试一次。';
 
 /** 相机配方文件的上限：真的 DAT 不到 1 MB，超过这个一定不是，先拒绝再读。 */
@@ -218,7 +221,7 @@ export class Book {
       this.appliedAt = Math.max(this.appliedAt, savedAt);
       this.commit(read, file.name, savedAt);
       if (!read.saved) {
-        this.packError = NOT_SAVED;
+        this.packError = notSavedText();
         return false;
       }
       return true;

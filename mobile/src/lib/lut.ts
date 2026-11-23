@@ -1,12 +1,14 @@
-// LUT 纯函数：12 个色彩空间、命名与声明识别、文件头署名读取、输入色彩空间选择建议、出图规格与令牌。
-// 全部照桌面 `lut/spaces.py`、`lut/service.py`、`lut/library.py`、`lut/metadata.py`、`lut/identify.py`、`lut/page.py` 原样搬过来，
-// 不碰 DOM、IndexedDB 或 WASM，Node 测试可以直接跑。
+// LUT 纯函数：12 个色彩空间、命名与声明识别、文件头署名读取、输入色彩空间选择建议、出图规格与令牌（照桌面 lut/*.py 实现，不碰 DOM/IDB/WASM）。
+
+import { deviceName, type DeviceEnv } from './device.ts';
 
 export const MAX_CUBE_BYTES = 64 << 20;
 /** 浏览器本地 LUT 库总大小上限（IndexedDB 与读取前的唯一常量）。 */
 export const MAX_LUT_LIBRARY_BYTES = 256 << 20;
 
-export const LUT_FOOTNOTE = 'LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。';
+export function lutFootnote(env?: DeviceEnv): string {
+  return `LUT 只存在这台 ${deviceName(env)} 上，直接套在照片上，不写入相机。`;
+}
 
 export const LUT_ERRORS = {
   cube_too_big: '无法读取 LUT。文件过大。',

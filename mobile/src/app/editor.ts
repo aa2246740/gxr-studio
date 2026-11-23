@@ -13,7 +13,7 @@ import { EditorBand, positionFloatHist } from './editor_band';
 import { EditorBar, type BandTool, type BarTool } from './editor_bar';
 import { createHistWidget, drawHistCanvas, editedFlagsOf, fitGpuCanvas, type HistWidget } from './editor_hist';
 import { createEditorIpadBridge, type EditorIpadBridge } from './editor_ipad_bridge';
-import { EditorMedia, type MediaMode } from './editor_media';
+import { EditorMedia, NO_GPU_DETAIL, NO_GPU_TITLE, type MediaMode } from './editor_media';
 import { openExportOptions, startQuickExport, syncExportDock } from './export_ui';
 import { releaseFinishDrawResources } from './finish_draw';
 import { photoExportSize } from './frame_state';
@@ -145,7 +145,7 @@ export class EditorView {
       push: () => this.push(),
       setAdjustDisabled: (disabled) => this.adjust?.setDisabled(disabled),
       startRecipes: (key) => this.recipes?.start(key),
-      refreshRecipes: () => this.recipes?.refresh(),
+      refreshRecipes: () => { this.recipes?.refresh(); this.navCtrl?.refresh(); },
       setNeutralRecipe: (bitmap) => this.recipes?.neutral(bitmap),
       startLuts: (key) => this.luts?.start(key),
       onMediaReady: () => {
@@ -302,6 +302,7 @@ export class EditorView {
     this.pv = pv;
     this.gpuCanvas = document.createElement('canvas');
     this.gpuCanvas.className = 'gpu';
+    this.gpuCanvas.hidden = !this.engine;
     this.still = document.createElement('canvas');
     this.still.className = 'still';
     this.still.hidden = true;
@@ -428,7 +429,7 @@ export class EditorView {
     this.stageLabel = band.labelEl();
     this.ipad?.destroy();
     this.ipad = createEditorIpadBridge({
-      shell: this.shell, api: this.api, photo, moreHooks: this.moreHooksOf(photo),
+      shell: this.shell, api: this.api, photo, hasGpu: this.engine !== null, moreHooks: this.moreHooksOf(photo),
       onLayoutChange: (mode) => this.applyLayout(mode),
       onToggleHist: () => { this.toggleHist(); },
       onSubChange: (sub) => this.setRecipeSub(sub),
@@ -487,7 +488,7 @@ export class EditorView {
     const nowIpad = isIpadLayout(mode);
     this.layoutMode = mode;
     if (initial || wasIpad !== nowIpad) {
-      this.histOpen = nowIpad ? loadIpadHist() : false;
+      this.histOpen = this.engine !== null && nowIpad ? loadIpadHist() : false;
       if (!nowIpad && this.activeTool === 'more') this.selectBandTool('recipe', false);
     }
     this.syncIpad(mode, this.recipeSub);
@@ -606,6 +607,7 @@ export class EditorView {
   }
 
   private toggleHist(): boolean {
+    if (!this.engine) return false;
     this.histOpen = !this.histOpen;
     if (isIpadLayout(this.layoutMode)) {
       saveIpadHist(this.histOpen);
@@ -641,6 +643,7 @@ export class EditorView {
   private updateEditedDots(): void {
     if (this.photo && this.bar) this.bar.setEdited(editedFlagsOf(this.photo));
     if (this.photo) this.ipad?.refreshMore(this.photo);
+    this.navCtrl?.refresh();
   }
 
   /** 配方那边定下了舞台该用哪张烘焙表。 */
@@ -688,12 +691,11 @@ export class EditorView {
   private renderStageLabel(): void {
     if (!this.stageLabel) return;
     this.stageLabel.replaceChildren();
-    const text = this.holding
-      ? '原图'
-      : this.lutLabel
-        ? `LUT · ${this.lutLabel}${this.caption ? ` · ${this.caption}` : ''}`
-        : this.caption;
+    const noGpu = !this.engine && !this.holding && this.caption === NO_GPU_TITLE;
+    this.stageLabel.classList.toggle('nogpu', noGpu);
+    const text = this.holding ? '原图' : noGpu ? this.caption : this.lutLabel ? `LUT · ${this.lutLabel}${this.caption ? ` · ${this.caption}` : ''}` : this.caption;
     if (text) this.stageLabel.append(el('span', 'tag neutral', text));
+    if (noGpu) this.stageLabel.append(el('span', 'nogpu-note', NO_GPU_DETAIL));
     this.hdr.paintLabel(this.stageLabel);
   }
 
@@ -777,7 +779,7 @@ export class EditorView {
   }
 
   private restLabelText(): string {
-    return this.mode === 'raw' ? this.lookCaption || '中性转换' : this.mode === 'jpg' ? '相机 JPG' : this.photo?.jpg ? '相机 JPG' : '只有 RAW';
+    return this.mode === 'raw' ? this.lookCaption || '中性转换' : this.mode === 'jpg' ? '相机 JPG' : this.lookCaption || (this.photo?.jpg ? '相机 JPG' : '只有 RAW');
   }
 
   private same(token: number, photo: Photo, version: number, session: number, rev?: number): boolean {
