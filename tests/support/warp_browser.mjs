@@ -5,7 +5,7 @@
 // 服务器出图（server）：行为不变，拖滑块照旧请求 /render。输出一行 JSON，断言在 Python 那边。
 import { spawn } from 'node:child_process';
 import { closeSync, openSync } from 'node:fs';
-import { readDebugPort } from './debug_port.mjs';
+import { closeChrome, readDebugPort } from './debug_port.mjs';
 import { chromeLogReader, diagnosticsExpression } from './gpu_diag.mjs';
 
 const [chromePath, port, token, photoId, mode, profile] = process.argv.slice(2);
@@ -35,10 +35,8 @@ async function finish(code) {
   finished = true;
   if (code !== 0) out.chromeLog = chromeTail();
   console.log(JSON.stringify(out));
+  await closeChrome(chrome, () => ws);
   try { ws.close(); } catch { /* 已经关了 */ }
-  chrome.kill('SIGTERM');
-  await sleep(1200);
-  chrome.kill('SIGKILL');
   try { closeSync(chromeLog); } catch { /* 已经关了 */ }
   process.exit(code);
 }

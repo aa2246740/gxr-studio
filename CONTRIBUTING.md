@@ -16,6 +16,9 @@ Python 用 snake_case，类用 PascalCase。页面脚本用 camelCase。测试�
 在 Headless Shell 1228 上，只指定前者会出现离屏纹理正确、实际画布全黑的情况；验收仍检查实际画布像素和原直方图更新门槛。
 
 设置 `GXR_PLAYWRIGHT_RUNTIME` 时，也把该运行时的浏览器可执行路径传给 `GXR_CHROME`。旧驱动缺少这个路径时直接失败，不再自动选择系统浏览器。
+两个都没设时，测试去默认位置的运行时里找固定版本的 Chromium；macOS 上找不到就跳过（`GXR_REQUIRE_GPU_TEST=1` 时失败），不会启动本机装的 Google Chrome。
+驱动关浏览器走 `tests/support/debug_port.mjs` 的 `closeChrome`：先发 `Browser.close`，再 SIGTERM，等够了才 SIGKILL。
+本地跑测试时把 `TMPDIR` 设到开发盘上，pytest 的临时目录和浏览器的用户目录都在它下面。
 
 问题用 `.github/ISSUE_TEMPLATE/` 里的缺陷或功能模板，并带上优先级、类型和区域标签。标签表在 `.github/labels.yml`。
 

@@ -4,7 +4,7 @@
 // 步骤：卡片出来（有真像素、各不相同）→ 点一张卡片，卡片和舞台比对 → 拖滑块，期间没有请求、卡片不画 → 换照片，旧照片的卡片停下。
 import { spawn } from 'node:child_process';
 import { closeSync, openSync } from 'node:fs';
-import { readDebugPort } from './debug_port.mjs';
+import { closeChrome, readDebugPort } from './debug_port.mjs';
 import { chromeLogReader, diagnosticsExpression } from './gpu_diag.mjs';
 
 const [chromePath, port, token, photoId, nextId, mode, profile] = process.argv.slice(2);
@@ -33,10 +33,8 @@ async function finish(code) {
   finished = true;
   if (code !== 0) out.chromeLog = gpuLog.tail();
   console.log(JSON.stringify(out));
+  await closeChrome(chrome, () => ws);
   try { ws.close(); } catch { /* 已经关了 */ }
-  chrome.kill('SIGTERM');
-  await sleep(1200);
-  chrome.kill('SIGKILL');
   try { closeSync(chromeLog); } catch { /* 已经关了 */ }
   process.exit(code);
 }

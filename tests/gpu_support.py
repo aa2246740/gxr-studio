@@ -1,11 +1,13 @@
 """显卡一致性测试：用无头 Chrome 的软件适配器（SwiftShader）跑 web/assets/gpu/engine.js，读回像素给 Python 比。
 
-不需要显卡，CI 上也能跑。找不到 Chrome 时跳过；设了 `GXR_REQUIRE_GPU_TEST=1`（CI）时找不到就失败。
+不需要显卡，CI 上也能跑。浏览器用固定版本的 Playwright Chromium（GXR_CHROME 或运行时里的那份），
+找不到时跳过；设了 `GXR_REQUIRE_GPU_TEST=1`（CI）时找不到就失败。
 页面和数据由这里起的本机 HTTP 服务提供，只听 127.0.0.1，测试结束就关。
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
@@ -27,18 +29,60 @@ HARNESS = Path(__file__).resolve().parent / "support" / "gpu_harness.mjs"
 PAGE = b'<!doctype html><meta charset="utf-8"><script type="module" src="/harness.mjs"></script>'
 TYPES = {".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".jpg": "image/jpeg", ".png": "image/png"}
 
+# Linux 和 Windows 上的系统浏览器查找（Windows 适配暂停，代码保留）。macOS 不用，见 find_chrome。
 _CANDIDATES = (
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
 )
+_PATH_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")
+# 导入时的 HOME，和 conftest.REAL_HOME 一样：测试里会把 HOME 换成临时目录。
+_REAL_HOME = Path.home()
+_IS_MAC = sys.platform == "darwin"
+_PINNED_PATH_SCRIPT = "const m = await import(process.argv[1]); process.stdout.write(String(m.pinnedRuntime?.executablePath ?? ''));"
+
+
+def pinned_runtime() -> Path:
+    """固定版本的 Playwright 运行时（runtime.mjs）。GXR_PLAYWRIGHT_RUNTIME 优先。"""
+    configured = os.environ.get("GXR_PLAYWRIGHT_RUNTIME")
+    return Path(configured) if configured else _REAL_HOME / ".codex" / "playwright-runtime" / "runtime.mjs"
+
+
+@functools.cache
+def _pinned_executable(runtime: str) -> str | None:
+    """问运行时它固定的 Chromium 在哪（pinnedRuntime.executablePath）；没有运行时或 Node 就是 None。"""
+    node = shutil.which("node")
+    if node is None or not Path(runtime).is_file():
+        return None
+    try:
+        result = subprocess.run(  # noqa: S603
+            [node, "--input-type=module", "-e", _PINNED_PATH_SCRIPT, Path(runtime).as_uri()],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    path = result.stdout.strip()
+    return path if result.returncode == 0 and path and Path(path).is_file() else None
 
 
 def find_chrome() -> str | None:
+    """测试用的 Chrome：GXR_CHROME，否则固定版本 Playwright 运行时里的 Chromium。
+
+    macOS 上不再退回本机装的 Google Chrome。它每次启动都会把整个应用复制到内置盘的系统临时目录
+    （code_sign_clone，约 1.4 GB），进程没有正常退出时副本就留下（2026-11 积了 432 份）。
+    Linux 和 Windows 仍按原来的顺序找系统浏览器（CI 的 Linux 任务靠它）。
+    """
     env = os.environ.get("GXR_CHROME")
     if env:
         return env
-    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome"):
+    pinned = _pinned_executable(str(pinned_runtime()))
+    if pinned:
+        return pinned
+    if _IS_MAC:
+        return None
+    for name in _PATH_NAMES:
         path = shutil.which(name)
         if path:
             return path
@@ -54,8 +98,8 @@ def require_chrome() -> str:
     chrome = find_chrome()
     if chrome is None:
         if os.environ.get("GXR_REQUIRE_GPU_TEST") == "1":
-            pytest.fail("GXR_REQUIRE_GPU_TEST=1，但找不到 Chrome")
-        pytest.skip("本机没有 Chrome，跳过显卡一致性测试")
+            pytest.fail("GXR_REQUIRE_GPU_TEST=1，但找不到固定版本的 Chromium（设 GXR_CHROME）")
+        pytest.skip("本机没有固定版本的 Chromium（设 GXR_CHROME 或装好 Playwright 运行时），跳过显卡一致性测试")
     return chrome
 
 
