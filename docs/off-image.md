@@ -15,7 +15,7 @@
 ## 桌面端与手机端实现
 
 - 桌面端（Python，`src/gxr_studio/off_image.py` 与 `src/gxr_studio/api/off_image_routes.py`）：完全运行在进程内（Pillow 基线 4:2:2 + `restart_marker_rows=1` + 纯 Python remux 与校验），不依赖外部二进制，macOS 与 Windows 同口径。编辑器顶栏导出按钮旁提供菜单入口「做成关机图…」，支持预览最终字节、使用「换一张图…」替换为任意图片、显示大小与品质，并沿用桌面导出路径安全检查。
-- 手机端（Rust WASM，`core/crates/gxr-export/src/off_image/` 与 `mobile/src/app/off_image_sheet.ts`）：在独立的短命 Worker 中完成解码、Lanczos 缩放裁切、纯整数 4:2:2 + DRI 40 编码与严格校验，完成后立即终止 Worker 回收线性内存。入口位于编辑器顶栏 `⋯` 菜单「做成关机图」，导出走系统共享表（提示选「存储到“文件”」，避免进相册重压缩）或下载兜底。
+- 手机端（Rust WASM，`core/crates/gxr-export/src/off_image/` 与 `mobile/src/app/off_image_sheet.ts`）：在独立的短命 Worker 中完成解码、Lanczos 缩放裁切、纯整数 4:2:2 + DRI 40 编码与严格校验，完成后立即终止 Worker 回收线性内存。入口位于编辑器顶栏 `⋯` 菜单「做成关机图」，导出走系统共享表（提示选「保存到“文件”」（有的系统叫「存储到“文件”」），避免进相册重压缩）或下载兜底。
 
 ## 卡安全
 

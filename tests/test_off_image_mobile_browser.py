@@ -24,7 +24,7 @@ DRIVER = REPO / "tests" / "support" / "mobile_off_image_browser.mjs"
 
 NOTE_CAMERA = "相机会把当天张数叠在关机画面上，下部别放重要内容。"
 NOTE_CARD = "把 GXROFF.JPG 拷到存储卡最外层（和 GXRCE.DAT 放在一起）。"
-NOTE_FILES = "存的时候选「存储到“文件”」，不要存进相册（相册会改动文件，相机就不认了）。"
+NOTE_FILES = "存的时候选「保存到“文件”」（有的系统叫「存储到“文件”」），不要存进相册（相册会改动文件，相机就不认了）。"
 
 
 def _make_off_image_script() -> Path:

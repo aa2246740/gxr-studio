@@ -84,6 +84,25 @@ def encode_tag(unit: str, position: int, levels: dict[str, int]) -> str:
     return f"GXR1 {KUBIK_CATALOG_ID} {unit} {position:02d} {''.join(chars)}"
 
 
+_MAX_AMT: dict[str, int] = {**KINO_ZERO, "amount": 150, "split": -9}
+_ACROS_ZERO: dict[str, int] = {"contrast": 0, "highlight": 0, "shadow": 0, "fade": 0, "filter": 0}
+_TRIX_POS: dict[str, int] = {"contrast": 5, "highlight": -4, "shadow": -3, "fade": 2, "filter": 6}
+_STD_FT: dict[str, int] = {"contrast": 3, "highlight": -2, "shadow": 2, "fade": 1, "saturation": -3, "warmth": 4, "tint": -1, "split": 2}
+
+TAG_CASES: tuple[tuple[str, str, str, str, dict[str, int]], ...] = (
+    ("kino_finetune_50", encode_tag("50", 68, KINO_FINETUNE), "record", "K-KINO", KINO_FINETUNE),
+    ("kino_zero_amount_28", encode_tag("28", 69, KINO_ZERO_AMOUNT), "record", "K-KINO", KINO_ZERO_AMOUNT),
+    ("kino_max_amount_mt", encode_tag("MT", 70, _MAX_AMT), "record", "K-KINO", _MAX_AMT),
+    ("pacific_zero_50", encode_tag("50", 65, KINO_ZERO), "record", "K-PACIFIC", KINO_ZERO),
+    ("acros_finetune_50", encode_tag("50", 56, ACROS_FINETUNE), "record", "Acros", ACROS_FINETUNE),
+    ("acros_zero_28", encode_tag("28", 57, _ACROS_ZERO), "record", "Acros", _ACROS_ZERO),
+    ("trix_pos_filter_mt", encode_tag("MT", 61, _TRIX_POS), "record", "Tri-X 400", _TRIX_POS),
+    ("grpos_finetune_50", encode_tag("50", 1, GRPOS_FINETUNE), "builtin", "GRPos", GRPOS_FINETUNE),
+    ("hcbw_finetune_28", encode_tag("28", 3, HCBW_FINETUNE), "builtin", "HC BW", HCBW_FINETUNE),
+    ("std_finetune_mt", encode_tag("MT", 4, _STD_FT), "builtin", "Std", _STD_FT),
+)
+
+
 def need_g262() -> tuple[bytes, bytes, Path, Path]:
     parent = samples.sample_parent()
     dat_path = parent / G262_REL_DIR / "GXRCE.DAT"

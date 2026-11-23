@@ -38,6 +38,8 @@ const {
   stripExifCopyrightFromJpeg,
 } = await import('../../mobile/src/lib/halfframe.ts');
 const { loadExportHalfframe, saveExportHalfframe } = await import('../../mobile/src/lib/prefs.ts');
+const { tagAmountLevels } = await import('../../mobile/src/lib/recipes.ts');
+const { resolveCatalogPosition } = await import('../../mobile/src/lib/recipe_tags.ts');
 const { basePhotoId, ExportQueueState } = await import('../../mobile/src/app/export_queue.ts');
 const { readyPositionsSummary } = await import('../../mobile/src/app/export_ready.ts');
 const { applyHalfframeFirstNeighbors, buildBatchItems, singleHalfRequestPhoto } = await import(
@@ -328,6 +330,58 @@ test('parseRecipeTag and formatShootingRecipeTag decode g258 GXR1 tags without D
   assert.equal(formatShootingRecipeTag('GXR1 6adf847602 28 03'), 'HC BW（28mm · 03） · 微调未知');
   assert.equal(formatShootingRecipeTag('Not a GXR tag'), '未标记');
   assert.equal(formatShootingRecipeTag(null), '未标记');
+});
+
+test('formatShootingRecipeTag and tagAmountLevels resolve synthetic amount levels and show 强度未知 without matching DAT', () => {
+  const mkAmount = (levels) => ({
+    name: 'amount',
+    label: '强度',
+    min: levels[0],
+    max: levels[levels.length - 1],
+    default: 100,
+    cap_lower: false,
+    cap_upper: false,
+    amount_step: null,
+    levels,
+  });
+  const listing178 = {
+    units: [
+      {
+        id: 'jlaunch',
+        recipes: [
+          { kind: 'builtin', slot: 1, number: '01', controls: [mkAmount([0, 25, 50, 75, 100, 125, 150])] },
+          { kind: 'record', id: 'k-kino', name: 'K-KINO', slot: 6, number: '26', controls: [mkAmount([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150])] },
+          { kind: 'record', id: 'k64', name: 'K64', slot: 6, number: '12', controls: [mkAmount([0, 10, 50, 80, 100, 150])] },
+        ],
+      },
+      {
+        id: 'qlaunch',
+        recipes: [
+          { kind: 'record', id: 'k64', name: 'K64', slot: 6, number: '12', controls: [mkAmount([0, 10, 50, 80, 100, 150])] },
+        ],
+      },
+    ],
+  };
+  const dat262 = { generation: 262, listing: listing178 };
+  const dat176 = { generation: 176, listing: listing178 };
+
+  const kino80 = 'GXR1 0ccc86c19b 50 68 879999999-';
+  const kino0 = 'GXR1 0ccc86c19b 50 68 079999999-';
+  const kino100 = 'GXR1 0ccc86c19b 50 68 A99999999-';
+  const grpos75 = 'GXR1 0ccc86c19b 50 01 799999999-';
+  assert.equal(formatShootingRecipeTag(kino80, tagAmountLevels(parseRecipeTag(kino80), dat262)), 'K-KINO（50mm · 68） · 强度 80% · 对比度 -2');
+  assert.equal(formatShootingRecipeTag(kino0, tagAmountLevels(parseRecipeTag(kino0), dat262)), 'K-KINO（50mm · 68） · 强度 0% · 对比度 -2');
+  assert.equal(formatShootingRecipeTag(kino100, tagAmountLevels(parseRecipeTag(kino100), dat262)), 'K-KINO（50mm · 68）');
+  assert.equal(formatShootingRecipeTag(grpos75, tagAmountLevels(parseRecipeTag(grpos75), dat262)), 'GRPos（50mm · 01） · 强度 75%');
+  assert.equal(formatShootingRecipeTag(kino80, tagAmountLevels(parseRecipeTag(kino80), null)), 'K-KINO（50mm · 68） · 对比度 -2 · 强度未知');
+  assert.equal(formatShootingRecipeTag(kino80, tagAmountLevels(parseRecipeTag(kino80), dat176)), 'K-KINO（50mm · 68） · 对比度 -2 · 强度未知');
+  assert.equal(formatShootingRecipeTag(kino100), 'K-KINO（50mm · 68） · 强度未知');
+
+  // lib-178 回退到旧基底槽 5（28 05 K64）时必须按 builtin slot=5 查表（目录无槽位 5 → null → 强度未知），不借用同名 Look 记录。
+  const fallbackK64 = 'GXR1 0ccc86c19b 28 05 899999999-';
+  assert.deepEqual(resolveCatalogPosition('0ccc86c19b', '28', 5), { kind: 'builtin', slot: 5, effect: null, name: 'K64' });
+  assert.equal(tagAmountLevels(parseRecipeTag(fallbackK64), dat262), null);
+  assert.equal(formatShootingRecipeTag(fallbackK64, tagAmountLevels(parseRecipeTag(fallbackK64), dat262)), 'K64（28mm · 05） · 强度未知');
 });
 
 test('basePhotoId preserves # in ordinary stems and strips only #half:[12]', () => {

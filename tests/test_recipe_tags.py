@@ -466,3 +466,132 @@ def test_preview_never_replaces_recorded_knobs_with_defaults(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"actualKnobsKept": True, "unsupportedPredictionDisabled": True, "legacyApproxUnchanged": True}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="没有 node")
+def test_info_panel_amount_percent_and_phone_amount_unknown_without_dat(tmp_path):
+    """不依赖任何本机 DAT，用合成数据验证桌面信息面板「强度 N% / 0%」与手机端「强度 N% / 强度未知」。"""
+    modules = tmp_path / "modules"
+    modules.mkdir()
+    for name in ("info_panel.js", "dom.js", "halfframe.js"):
+        shutil.copyfile(ROOT / "web/assets" / name, modules / name)
+    (modules / "package.json").write_text('{"type":"module"}\n')
+    (modules / "api.js").write_text("export const api = () => Promise.reject(new Error('api not expected'));\n")
+    (modules / "caps.js").write_text("export const loadMeta = () => Promise.resolve({state:'ok', data:{lens:'A12'}});\n")
+    (modules / "preview.js").write_text(
+        "export const slotName=(_u, s)=>s===1?'01 GR 正片':'电脑配方';\n"
+        "export const recipeInfo=(_v, r)=>r && r.kind==='record' ? {name:'K-KINO'} : null;\n"
+        "export const KNOB_NAMES={amount:'强度',contrast:'对比度',highlight:'高光',shadow:'阴影',"
+        "fade:'褪色',saturation:'饱和度',warmth:'色温',tint:'色调',split:'分离色调',filter:'黑白滤镜'};\n"
+    )
+    (modules / "controls.js").write_text("export const fmtSigned=v=>v>0?'+'+v:String(v);\n")
+    (modules / "state.js").write_text("export const state={}; export const on=()=>{};\n")
+
+    tag_80 = "GXR1 0ccc86c19b 50 68 879999999-"
+    tag_0 = "GXR1 0ccc86c19b 50 68 079999999-"
+    tag_100 = "GXR1 0ccc86c19b 50 68 A99999999-"
+    amount_levels = list(range(0, 151, 10))
+    photos = [
+        {
+            "id": "kino-80",
+            "name": "R0000101",
+            "has_raw": True,
+            "has_jpg": True,
+            "recipe_tag": recipe_payload(parse_recipe_tag(tag_80), amount_levels=amount_levels),
+            "copyright": tag_80,
+            "_ed": {
+                "adj": {},
+                "recipe": {"kind": "record", "unit": "jlaunch", "slot": 6, "id": "k-kino", "levels": {"amount": 80, "contrast": -2}},
+            },
+        },
+        {
+            "id": "kino-0",
+            "name": "R0000102",
+            "has_raw": True,
+            "has_jpg": True,
+            "recipe_tag": recipe_payload(parse_recipe_tag(tag_0), amount_levels=amount_levels),
+            "copyright": tag_0,
+            "_ed": {
+                "adj": {},
+                "recipe": {"kind": "record", "unit": "jlaunch", "slot": 6, "id": "k-kino", "levels": {"amount": 0, "contrast": -2}},
+            },
+        },
+        {
+            "id": "kino-100-nodat",
+            "name": "R0000103",
+            "has_raw": True,
+            "has_jpg": True,
+            "recipe_tag": recipe_payload(parse_recipe_tag(tag_80), amount_levels=None),
+            "copyright": tag_80,
+            "_ed": {
+                "adj": {},
+                "recipe": {"kind": "record", "unit": "jlaunch", "slot": 6, "id": "k-kino", "levels": {"amount": 100, "contrast": 0}},
+            },
+        },
+        {
+            "id": "grpos-75",
+            "name": "R0000104",
+            "has_raw": True,
+            "has_jpg": True,
+            "recipe_tag": recipe_payload(parse_recipe_tag(tag_100), amount_levels=amount_levels),
+            "copyright": tag_100,
+            "_ed": {
+                "adj": {},
+                "recipe": {"kind": "builtin", "unit": "jlaunch", "slot": 1, "levels": {"amount": 75, "contrast": 2}},
+            },
+        },
+    ]
+    data = tmp_path / "synthetic-ui-photos.json"
+    data.write_text(json.dumps(photos, ensure_ascii=False), encoding="utf-8")
+    result = subprocess.run(
+        ["node", str(ROOT / "tests/support/recipe_tags.mjs"), str(modules), str(data)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    rows = json.loads(result.stdout)
+
+    assert rows[0]["recipe"] == "配方K-KINO（50mm · 68） · 强度 80% · 对比度 -2"
+    assert "配方K-KINO · 强度 80% · 对比度 -2" in rows[0]["edit"]
+    assert rows[1]["recipe"] == "配方K-KINO（50mm · 68） · 强度 0% · 对比度 -2"
+    assert "配方K-KINO · 强度 0% · 对比度 -2" in rows[1]["edit"]
+    assert rows[2]["recipe"] == "配方K-KINO（50mm · 68） · 对比度 -2 · 强度未知"
+    assert "配方K-KINOLUT无" in rows[2]["edit"]
+    assert rows[3]["recipe"] == "配方K-KINO（50mm · 68）"
+    assert "配方01 GR 正片 · 强度 75% · 对比度 +2" in rows[3]["edit"]
+
+    # 手机端不依赖 DAT：合成目录解析出强度 N%，无 DAT / 错代 DAT 输出「强度未知」。
+    mobile_js = "\n".join(
+        [
+            "import assert from 'node:assert/strict';",
+            "import { formatShootingRecipeTag, parseRecipeTag } from './mobile/src/lib/recipe_tags.ts';",
+            "import { tagAmountLevels } from './mobile/src/lib/recipes.ts';",
+            "const levels = [0,10,20,30,40,50,60,70,80,90,100,110,120,130,140,150];",
+            "const ctrl = { name: 'amount', label: '强度', min: 0, max: 150, default: 100,",
+            "  cap_lower: false, cap_upper: false, amount_step: 10, levels };",
+            "const rec = { kind: 'record', id: 'k-kino', name: 'K-KINO', slot: 6, controls: [ctrl] };",
+            "const listing = { units: [{ id: 'jlaunch', recipes: [rec] }] };",
+            "const dat = { generation: 262, listing };",
+            "const wrongDat = { generation: 176, listing };",
+            "const fmt = (tag, d) => formatShootingRecipeTag(tag, tagAmountLevels(parseRecipeTag(tag), d));",
+            "const tag80 = 'GXR1 0ccc86c19b 50 68 879999999-';",
+            "const tag0 = 'GXR1 0ccc86c19b 50 68 079999999-';",
+            "const tag100 = 'GXR1 0ccc86c19b 50 68 A99999999-';",
+            "assert.equal(fmt(tag80, dat), 'K-KINO（50mm · 68） · 强度 80% · 对比度 -2');",
+            "assert.equal(fmt(tag0, dat), 'K-KINO（50mm · 68） · 强度 0% · 对比度 -2');",
+            "assert.equal(fmt(tag100, dat), 'K-KINO（50mm · 68）');",
+            "assert.equal(fmt(tag80, null), 'K-KINO（50mm · 68） · 对比度 -2 · 强度未知');",
+            "assert.equal(fmt(tag80, wrongDat), 'K-KINO（50mm · 68） · 对比度 -2 · 强度未知');",
+            "assert.equal(formatShootingRecipeTag(tag100), 'K-KINO（50mm · 68） · 强度未知');",
+        ]
+    )
+    mobile_check = subprocess.run(
+        ["node", "--experimental-strip-types", "-e", mobile_js],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert mobile_check.returncode == 0, mobile_check.stdout + mobile_check.stderr
