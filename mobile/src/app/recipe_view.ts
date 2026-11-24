@@ -22,7 +22,7 @@ import { recipeSwitch } from '../lib/recipe_memory';
 import type { UnitState } from './book';
 import { button, el, icon } from './dom';
 import { exportPaused } from './export_pause';
-import { lookCache } from './looks';
+import { CardBakeController, lookCache, renderCardThumb } from './looks';
 import { ensureCameraRecipe, needsCameraRecipe, onCameraRecipe, type AppApi, type Photo } from './model';
 import {
   bitmapId,
@@ -122,6 +122,7 @@ export class RecipeView {
   private neutralBitmap: ImageBitmap | null = null;
   private shown = '';
   private wanted = '';
+  private readonly bakeCtrl = new CardBakeController<Card>(2, 1);
   private asked = false;
   private askHandle: AskSheetHandle | null = null;
   private readonly api: AppApi;
@@ -197,6 +198,7 @@ export class RecipeView {
 
   destroy(): void {
     this.token += 1;
+    this.bakeCtrl.destroy();
     if (this.scrollRaf) {
       cancelAnimationFrame(this.scrollRaf);
       this.scrollRaf = 0;
@@ -386,6 +388,7 @@ export class RecipeView {
           : 'uncalibrated';
     const isEmpty = Boolean(scene.list && this.which === 'mine' && !cards.length);
     if (isEmpty) {
+      this.bakeCtrl.clearObserver();
       this.strip.replaceChildren();
       this.slots = [];
       this.stripKeys = ['__empty__'];
@@ -441,6 +444,7 @@ export class RecipeView {
       this.strip.append(node);
       this.slots.push({ card, node, thumb, nameEl, sub });
     }
+    this.bakeCtrl.observe(this.slots.map((s) => s.node));
     this.paintThumbs();
     this.scheduleScrollActive(picked?.id ?? null);
   }
@@ -669,6 +673,7 @@ export class RecipeView {
     const ready = scene.dat && scene.state.state === 'ready' && target !== null && !needsCameraRecipe(this.photo, book.dat);
     if (!target || !ready) {
       this.wanted = NEUTRAL_BAKE_KEY;
+      this.bakeCtrl.clearStage();
       this.show(NEUTRAL_BAKE_KEY, NEUTRAL_LABEL);
       return;
     }
@@ -676,19 +681,23 @@ export class RecipeView {
     const key = book.bakeKey(target, scene.unit, scene.iso, levels);
     if (key && book.ready(key)) {
       this.wanted = key;
+      this.bakeCtrl.clearStage();
       this.show(key, PREDICTED_LABEL);
       return;
     }
     if (!this.shown) this.show(NEUTRAL_BAKE_KEY, NEUTRAL_LABEL);
     const want = `${target.id}|${JSON.stringify(levels ?? null)}|${scene.unit}|${scene.iso}`;
     this.wanted = want;
+    this.bakeCtrl.beginStage(want);
     book.bake(target, scene.unit, scene.iso, levels).then(
       (made) => {
-        if (this.wanted !== want || !this.panel.isConnected) return;
-        this.wanted = made;
-        this.show(made, PREDICTED_LABEL);
+        if (this.wanted === want && this.panel.isConnected) {
+          this.wanted = made;
+          this.show(made, PREDICTED_LABEL);
+        }
+        this.bakeCtrl.endStage(want);
       },
-      () => undefined,
+      () => this.bakeCtrl.endStage(want),
     );
   }
 
@@ -703,6 +712,7 @@ export class RecipeView {
   }
 
   private async renderCards(scene: Scene, token: number): Promise<void> {
+    this.bakeCtrl.cancel();
     const engine = this.engine;
     const source = this.rawKey;
     const book = this.api.book();
@@ -716,57 +726,40 @@ export class RecipeView {
     const thumbGeometry = geomInfo.geometry;
     const order = [...this.cardsOf(scene), ...shelf(scene.list, 'all')];
     const seen = new Set<string>();
-    const jobs: Array<{ card: Card; bake: Promise<string> }> = [];
+    const jobs: Array<{ id: string; item: Card }> = [];
     for (const card of order) {
       if (seen.has(card.id) || !card.controls.length) continue;
       seen.add(card.id);
       const known = book.bakeKey(card, scene.unit, scene.iso, this.levelsOf(card, scene));
       if (known && lookCache.get(photo, known)) continue;
-      const bake = book.bake(card, scene.unit, scene.iso, this.levelsOf(card, scene));
-      bake.catch(() => undefined);
-      jobs.push({ card, bake });
+      jobs.push({ id: card.id, item: card });
     }
-    for (const job of jobs) {
-      let key: string;
-      try {
-        key = await job.bake;
-      } catch (err) {
-        if (!alive()) return;
-        const slot = this.slots.find((s) => s.card.id === job.card.id);
-        if (slot) {
-          slot.sub.textContent = '无法生成电脑预测';
-          slot.node.classList.add('lockd');
-          slot.node.title = err instanceof Error ? err.message : String(err);
-        }
-        continue;
-      }
-      while (alive() && (this.hooks.dragging() || exportPaused())) await new Promise((done) => setTimeout(done, 120));
-      if (!alive()) return;
-      let gpu = book.gpuKey(key);
-      if (!gpu) {
-        try {
-          await book.bake(job.card, scene.unit, scene.iso, this.levelsOf(job.card, scene));
-        } catch {
-          continue;
-        }
-        if (!alive()) return;
-        gpu = book.gpuKey(key);
-        if (!gpu) continue;
-      }
-      const out = await engine.thumb({ source, look: { recipe: gpu, lut: null, lutStrength: 1, curve: null, adjust: ADJUST }, geometry: thumbGeometry, aspect: null, maxEdge: 192 });
-      if (!out || !alive()) return;
-      const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));
-      if (!alive()) {
-        bitmap.close();
-        return;
-      }
-      if (lookCache.get(photo, key)) {
-        bitmap.close();
-        continue;
-      }
-      lookCache.put(photo, key, version, bitmap, job.card.id);
-      this.paintThumbs();
-    }
+    if (!jobs.length) return;
+    const isBusy = () => this.hooks.dragging() || exportPaused();
+    this.bakeCtrl.start(jobs, {
+      isAlive: alive,
+      isBusy,
+      isPriority: (id) => id === this.target(scene)?.id,
+      run: (card) => {
+        const levels = this.levelsOf(card, scene);
+        return renderCardThumb({
+          engine, source, photo, version, cardId: card.id, geometry: thumbGeometry, adjust: ADJUST,
+          alive, isBusy, bakeCtrl: this.bakeCtrl,
+          bakeKey: () => book.bakeKey(card, scene.unit, scene.iso, levels),
+          ready: (k) => book.ready(k),
+          gpuKey: (k) => book.gpuKey(k),
+          bake: () => book.bake(card, scene.unit, scene.iso, levels),
+          onError: (err) => {
+            const slot = this.slots.find((s) => s.card.id === card.id);
+            if (!slot) return;
+            slot.sub.textContent = '无法生成电脑预测';
+            slot.node.classList.add('lockd');
+            slot.node.title = err instanceof Error ? err.message : String(err);
+          },
+          onPainted: () => this.paintThumbs(),
+        });
+      },
+    });
   }
 
   private syncAsk(): void {
