@@ -1,18 +1,23 @@
-// 启动性能与 Service Worker 浏览器回归驱动（perf-startup）。
-// 模式：wasm-once / start-before-editor / service-worker。
+// 启动性能浏览器回归驱动（perf-startup，不含已拆至 studio/offline-sw 的 SW 用例）。
+// 模式：wasm-once / start-before-editor / worker-wasm-retry / pool-slot-recovery / import-before-prewarm。
 // 所有服务只绑 127.0.0.1 临时端口（避开禁用端口），结束后确保关闭浏览器和 HTTP 服务。
 
 import fs from 'node:fs';
 import http from 'node:http';
+import { stripTypeScriptTypes } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const [runtimePath, mode, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-const { pinnedRuntime, verifyPinnedRuntime, launchPinnedChromium } = await import(pathToFileURL(runtimePath).href);
-verifyPinnedRuntime();
 
 const FORBIDDEN_PORTS = new Set([60887, 18772, 18801, 18802, 18803, 5290]);
+const CHROMIUM_ARGS = [
+  '--enable-unsafe-webgpu',
+  '--enable-unsafe-swiftshader',
+  '--use-angle=swiftshader',
+  '--use-webgpu-adapter=swiftshader',
+];
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -29,7 +34,13 @@ const MIME = {
   '.jpg': 'image/jpeg',
 };
 
-async function loadWebKit() {
+async function loadRuntime() {
+  const mod = await import(pathToFileURL(runtimePath).href);
+  mod.verifyPinnedRuntime();
+  return mod;
+}
+
+async function loadWebKit(pinnedRuntime) {
   const { webkit } = await import(pathToFileURL(pinnedRuntime.modulePath).href);
   const direct = webkit.executablePath();
   if (direct && fs.existsSync(direct)) return { webkit, executablePath: direct };
@@ -45,21 +56,12 @@ async function loadWebKit() {
 }
 
 function startStaticServer(initialRoot) {
-  let rootDir = path.resolve(initialRoot);
+  const rootDir = path.resolve(initialRoot);
   let blockCalib = false;
   let reqLog = [];
   const server = http.createServer((req, res) => {
     const rawUrl = req.url || '/';
     const cleanPath = decodeURIComponent(rawUrl.split('?')[0]);
-    if (cleanPath === '/other/user-photo.jpg' || cleanPath === '/other/sample.dng') {
-      const body = Buffer.from(cleanPath.endsWith('.jpg') ? '\xff\xd8\xff\xd9' : 'II*\0', 'latin1');
-      res.setHeader('Content-Type', cleanPath.endsWith('.jpg') ? 'image/jpeg' : 'application/octet-stream');
-      res.setHeader('Cache-Control', 'no-store');
-      res.setHeader('Content-Length', String(body.byteLength));
-      res.end(body);
-      reqLog.push({ path: cleanPath, status: 200, bytes: body.byteLength, ts: performance.now() });
-      return;
-    }
     if (blockCalib && cleanPath === '/calib/gxr-default-calib.zip') {
       res.statusCode = 404;
       res.end('default calib blocked');
@@ -105,7 +107,6 @@ function startStaticServer(initialRoot) {
         }
         resolve({
           url: `http://127.0.0.1:${addr.port}`,
-          setRoot(nextRoot) { rootDir = path.resolve(nextRoot); },
           setBlockCalib(on) { blockCalib = Boolean(on); },
           resetLog() { reqLog = []; },
           snapshotLog() { return reqLog.slice(); },
@@ -119,19 +120,14 @@ function startStaticServer(initialRoot) {
 }
 
 async function runWasmOnce() {
+  const { pinnedRuntime, launchPinnedChromium } = await loadRuntime();
   const server = await startStaticServer(manifest.distDir);
   const results = {};
   try {
     const engines = [
-      {
-        name: 'chromium',
-        launch: () =>
-          launchPinnedChromium({
-            args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'],
-          }),
-      },
+      { name: 'chromium', launch: () => launchPinnedChromium({ args: CHROMIUM_ARGS }) },
     ];
-    const wk = await loadWebKit();
+    const wk = await loadWebKit(pinnedRuntime);
     if (wk) {
       engines.push({
         name: 'webkit',
@@ -196,16 +192,14 @@ async function runWasmOnce() {
 }
 
 async function runStartBeforeEditor() {
+  const { launchPinnedChromium } = await loadRuntime();
   const server = await startStaticServer(manifest.distDir);
   const assetsDir = path.join(manifest.distDir, 'assets');
   const distAssets = fs.readdirSync(assetsDir);
   const editorChunkFiles = distAssets.filter((f) => /^editor[-.].*\.js$/.test(f));
-  const bootChunkFiles = distAssets.filter((f) => /^boot[-.].*\.js$/.test(f));
-  const bootBytes = bootChunkFiles.reduce((sum, f) => sum + fs.statSync(path.join(assetsDir, f)).size, 0);
+  const exportChunkFiles = distAssets.filter((f) => /^export_ui[-.].*\.js$/.test(f));
 
-  const browser = await launchPinnedChromium({
-    args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'],
-  });
+  const browser = await launchPinnedChromium({ args: CHROMIUM_ARGS });
   try {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
     const page = await ctx.newPage();
@@ -255,14 +249,21 @@ async function runStartBeforeEditor() {
     await page.waitForSelector('.app[data-screen="start"] .start button.btn.primary', { state: 'visible', timeout: 30000 });
     await page.waitForFunction(() => window.__BOOT_TRACE__?.interactiveAt !== null, null, { timeout: 10000 });
     const trace = await page.evaluate(() => window.__BOOT_TRACE__);
-    const reqsAtInteractive = server.snapshotLog().map((r) => r.path);
+    const swRegistrations = await page.evaluate(async () =>
+      'serviceWorker' in navigator ? (await navigator.serviceWorker.getRegistrations()).length : 0,
+    );
 
-    // Now pick a synthetic photo and open it in the editor to verify on-demand loading works.
     await page.locator('input.filepick:not(.calibpick)').first().setInputFiles(manifest.photoFiles);
     await page.waitForSelector('.cell canvas[data-drawn]', { timeout: 30000 });
     await page.locator('.cell').first().click();
     await page.waitForSelector('.editor .stage', { state: 'visible', timeout: 30000 });
-    await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1' || (document.querySelector('.app')?.dataset.settled && document.querySelector('.app').dataset.settled !== '0'), null, { timeout: 60000 });
+    await page.waitForFunction(
+      () =>
+        document.querySelector('.app')?.dataset.frame === '1' ||
+        (document.querySelector('.app')?.dataset.settled && document.querySelector('.app').dataset.settled !== '0'),
+      null,
+      { timeout: 60000 },
+    );
 
     const afterOpen = await page.evaluate(() => ({
       screen: document.querySelector('.app')?.dataset.screen ?? null,
@@ -275,10 +276,9 @@ async function runStartBeforeEditor() {
     await ctx.close();
     return {
       editorChunkFiles,
-      bootChunkFiles,
-      bootBytes,
+      exportChunkFiles,
+      swRegistrations,
       trace,
-      reqsAtInteractive,
       afterOpen,
       reqsAfterOpen,
       pageErrors,
@@ -289,153 +289,224 @@ async function runStartBeforeEditor() {
   }
 }
 
-async function runServiceWorker() {
-  const server = await startStaticServer(manifest.distV1);
-  const browser = await launchPinnedChromium({
-    args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'],
-  });
+async function runWorkerWasmRetry() {
+  const { launchPinnedChromium } = await loadRuntime();
+  const assets = fs.readdirSync(path.join(manifest.distDir, 'assets'));
+  const workerPath = '/assets/' + assets.find((f) => /^worker-.*\.js$/.test(f));
+  const wasmPath = '/assets/' + assets.find((f) => /\.wasm$/.test(f));
+  const server = await startStaticServer(manifest.distDir);
+  const browser = await launchPinnedChromium({ args: CHROMIUM_ARGS });
   try {
-    // 1. Disabled by default in automated tests (no ?sw=1)
-    const ctxDefault = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
-    const pageDefault = await ctxDefault.newPage();
-    await pageDefault.goto(`${server.url}/`, { waitUntil: 'domcontentloaded' });
-    await pageDefault.waitForSelector('.app[data-screen="start"] .start button.btn.primary', { state: 'visible', timeout: 30000 });
-    await pageDefault.waitForTimeout(800);
-    const defaultRegs = await pageDefault.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length);
-    await ctxDefault.close();
-
-    // 2. Enabled explicitly via ?sw=1
-    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 2 });
-    const pageErrors = [];
-    const dialogs = [];
-
-    const p1 = await ctx.newPage();
-    p1.on('pageerror', (e) => pageErrors.push(`p1:${e.message}`));
-    p1.on('dialog', async (d) => { dialogs.push(d.message()); await d.dismiss(); });
-    server.resetLog();
-    await p1.goto(`${server.url}/?sw=1`, { waitUntil: 'domcontentloaded' });
-    await p1.waitForSelector('.app[data-screen="start"] .start button.btn.primary', { state: 'visible', timeout: 30000 });
-    const swRegistered = await p1.evaluate(async () => {
-      if (!('serviceWorker' in navigator)) return false;
-      const deadline = Date.now() + 10000;
-      while (Date.now() < deadline) {
-        const regs = await navigator.serviceWorker.getRegistrations();
-        if (regs.length > 0 && regs[0].active) break;
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      const regs = await navigator.serviceWorker.getRegistrations();
-      if (!regs.length) return false;
-      if (!navigator.serviceWorker.controller) {
-        await new Promise((resolve) => {
-          const t = setTimeout(resolve, 4000);
-          navigator.serviceWorker.addEventListener('controllerchange', () => { clearTimeout(t); resolve(); }, { once: true });
-        });
-      }
-      return Boolean(regs[0].active);
-    });
-    await p1.waitForTimeout(1500);
-    const load1Paths = server.snapshotLog().map((r) => r.path);
-    await p1.close();
-
-    // Second load: assets must come from SW cache
-    server.resetLog();
-    const p2 = await ctx.newPage();
-    p2.on('pageerror', (e) => pageErrors.push(`p2:${e.message}`));
-    p2.on('dialog', async (d) => { dialogs.push(d.message()); await d.dismiss(); });
-    await p2.goto(`${server.url}/?sw=1`, { waitUntil: 'domcontentloaded' });
-    await p2.waitForSelector('.app[data-screen="start"] .start button.btn.primary', { state: 'visible', timeout: 30000 });
-    await p2.waitForTimeout(1500);
-    const load2Log = server.snapshotLog();
-    const load2Controlled = await p2.evaluate(() => Boolean(navigator.serviceWorker.controller));
-
-    // User files + blob/data + non-allowlisted same-origin fetches must NEVER be cached
-    await p2.locator('input.filepick:not(.calibpick)').first().setInputFiles(manifest.userFiles);
-    await p2.waitForSelector('.cell canvas[data-drawn]', { timeout: 30000 });
-    await p2.locator('input.lutpick').first().setInputFiles([manifest.lutFile]);
-    await p2.waitForTimeout(500);
-    await p2.evaluate(async () => {
-      const blobUrl = URL.createObjectURL(new Blob(['user-photo-bytes'], { type: 'application/octet-stream' }));
-      try {
-        await fetch(blobUrl);
-      } finally {
-        URL.revokeObjectURL(blobUrl);
-      }
-      await fetch('data:text/plain;base64,dXNlcg==');
-      await fetch('/other/user-photo.jpg');
-      await fetch('/other/sample.dng');
-    });
-    const cacheAuditV1 = await p2.evaluate(async () => {
-      const names = await caches.keys();
-      const entries = {};
-      for (const name of names) {
-        const cache = await caches.open(name);
-        const reqs = await cache.keys();
-        entries[name] = reqs.map((r) => r.url).sort();
-      }
-      return { names: names.sort(), entries };
-    });
-    await p2.close();
-
-    // Offline load: cached index.html + assets still open start screen
-    await ctx.setOffline(true);
-    const pOff = await ctx.newPage();
-    pOff.on('pageerror', (e) => pageErrors.push(`pOff:${e.message}`));
-    let offlineStartVisible = false;
-    try {
-      await pOff.goto(`${server.url}/?sw=1`, { waitUntil: 'domcontentloaded', timeout: 15000 });
-      await pOff.waitForSelector('.app[data-screen="start"] .start button.btn.primary', { state: 'visible', timeout: 15000 });
-      offlineStartVisible = true;
-    } catch {
-      offlineStartVisible = false;
-    }
-    await pOff.close();
-    await ctx.setOffline(false);
-
-    // New build version (V2): next load uses V2 code with no prompt, and V2 SW replaces V1 cache
-    server.setRoot(manifest.distV2);
-    server.resetLog();
-    const p3 = await ctx.newPage();
-    p3.on('pageerror', (e) => pageErrors.push(`p3:${e.message}`));
-    p3.on('dialog', async (d) => { dialogs.push(d.message()); await d.dismiss(); });
-    await p3.goto(`${server.url}/?sw=1`, { waitUntil: 'domcontentloaded' });
-    await p3.waitForSelector('.app[data-screen="start"] .start button.btn.primary', { state: 'visible', timeout: 30000 });
-    const v2Marker = await p3.evaluate(() => document.documentElement.dataset.swTestBuild || null);
-    await p3.evaluate(async (oldNames) => {
-      const reg = await navigator.serviceWorker.getRegistration();
-      if (reg) await reg.update().catch(() => undefined);
-      const deadline = Date.now() + 15000;
-      while (Date.now() < deadline) {
-        const now = await caches.keys();
-        if (now.length > 0 && oldNames.every((n) => !now.includes(n))) break;
-        await new Promise((r) => setTimeout(r, 150));
-      }
-    }, cacheAuditV1.names);
-    const cacheAuditV2 = await p3.evaluate(async () => {
-      const names = await caches.keys();
-      const entries = {};
-      for (const name of names) {
-        const cache = await caches.open(name);
-        const reqs = await cache.keys();
-        entries[name] = reqs.map((r) => r.url).sort();
-      }
-      return { names: names.sort(), entries };
-    });
-    await p3.close();
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await page.goto(`${server.url}/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.locator('.app[data-screen="start"] .start button.btn.primary').waitFor({ state: 'visible', timeout: 20000 });
+    const result = await page.evaluate(
+      async ({ workerPath: wp, wasmPath: mp }) => {
+        const wasm = await WebAssembly.compileStreaming(fetch(mp));
+        const worker = new Worker(wp, { type: 'module' });
+        let needCount = 0;
+        const replies = new Map();
+        worker.onmessage = ({ data }) => {
+          if (data?.needWasm) {
+            needCount += 1;
+            worker.postMessage(needCount === 1 ? { wasmError: 'temporary fetch failure' } : { wasmModule: wasm });
+          } else if (typeof data?.id === 'number') {
+            replies.get(data.id)?.(data);
+          }
+        };
+        const send = (id, extra = {}) =>
+          new Promise((resolve) => {
+            replies.set(id, resolve);
+            worker.postMessage({
+              id,
+              op: 'export-output-sizes',
+              wasmManaged: true,
+              buffer: null,
+              args: null,
+              sizes: { w: 96, h: 64, side: '{}', rect: '' },
+              ...extra,
+            });
+          });
+        try {
+          const first = await send(1);
+          const second = await send(2, { wasmModule: wasm });
+          return {
+            needCount,
+            firstOk: Boolean(first.ok),
+            firstError: first.message ?? null,
+            secondOk: Boolean(second.ok),
+            secondError: second.message ?? null,
+          };
+        } finally {
+          worker.terminate();
+        }
+      },
+      { workerPath, wasmPath },
+    );
     await ctx.close();
+    return result;
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+}
 
-    return {
-      defaultRegs,
-      swRegistered,
-      load1Paths,
-      load2Controlled,
-      load2Paths: load2Log.map((r) => r.path),
-      offlineStartVisible,
-      cacheAuditV1,
-      v2Marker,
-      cacheAuditV2,
-      dialogs,
-      pageErrors,
-    };
+async function runPoolSlotRecovery() {
+  const corePath = path.resolve(manifest.repoDir, 'mobile', 'src', 'core');
+  const source = fs
+    .readFileSync(path.join(corePath, 'pool.ts'), 'utf8')
+    .replace("'./protocol'", JSON.stringify(pathToFileURL(path.join(corePath, 'protocol.ts')).href))
+    .replaceAll('import.meta.url', JSON.stringify(pathToFileURL(path.join(corePath, 'pool.ts')).href));
+  const { Pool } = await import(`data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(source)).toString('base64')}`);
+
+  const instances = [];
+  let holdWorkers = new Set();
+  const heldReplies = [];
+  globalThis.Worker = class FakeWorker {
+    dead = false;
+    sent = [];
+    constructor() {
+      instances.push(this);
+    }
+    postMessage(message) {
+      this.sent.push(message);
+      const reply = () => {
+        if (!this.dead) this.onmessage?.({ data: { id: message.id, ok: true, json: '{}', buffers: [] } });
+      };
+      if (holdWorkers.has(this)) heldReplies.push(reply);
+      else queueMicrotask(reply);
+    }
+    terminate() {
+      this.dead = true;
+    }
+  };
+
+  Object.defineProperty(navigator, 'hardwareConcurrency', { value: 2, configurable: true });
+  const single = new Pool();
+  const p1 = single.request('ping', null, []);
+  instances[0].dead = true;
+  instances[0].onerror?.({ message: 'simulated module load failure' });
+  const firstResult = await p1.then(() => 'resolved', () => 'rejected');
+  const p2 = single.request('ping', null, []);
+  const retryResult = await Promise.race([
+    p2.then(() => 'resolved', () => 'rejected'),
+    new Promise((resolve) => setTimeout(() => resolve('pending'), 300)),
+  ]);
+  const singleSummary = {
+    firstResult,
+    retryResult,
+    workersCreated: instances.length,
+    messagesToFailedWorker: instances[0].sent.length,
+    failedWorkerTerminated: instances[0].dead,
+  };
+  single.stop();
+  await p2.catch(() => {});
+
+  instances.length = 0;
+  heldReplies.length = 0;
+  holdWorkers = new Set();
+  Object.defineProperty(navigator, 'hardwareConcurrency', { value: 5, configurable: true });
+  const origWorker = globalThis.Worker;
+  globalThis.Worker = class HeldFirstTwo extends origWorker {
+    constructor() {
+      super();
+      if (instances.length <= 2) holdWorkers.add(this);
+    }
+  };
+  const iso = new Pool();
+  const r0 = iso.request('ping', null, []);
+  const r1 = iso.request('ping', null, []);
+  instances[0].onerror?.({ message: 'slot 0 crashed' });
+  const slot0Result = await r0.then(() => 'resolved', () => 'rejected');
+  for (const fn of heldReplies.splice(0)) fn();
+  const slot1Result = await Promise.race([
+    r1.then(() => 'resolved', () => 'rejected'),
+    new Promise((resolve) => setTimeout(() => resolve('pending'), 300)),
+  ]);
+  iso.stop();
+  await r1.catch(() => {});
+
+  return { singleSummary, isolationSummary: { slot0Result, slot1Result } };
+}
+
+async function runImportBeforePrewarm() {
+  const { launchPinnedChromium } = await loadRuntime();
+  const assets = fs.readdirSync(path.join(manifest.distDir, 'assets'));
+  const editorChunk = assets.find((f) => /^editor-.*\.js$/.test(f)) || null;
+  const exportChunk = assets.find((f) => /^export_ui-.*\.js$/.test(f)) || null;
+  const offImageChunk = assets.find((f) => /^off_image_sheet-.*\.js$/.test(f)) || null;
+  const server = await startStaticServer(manifest.distDir);
+  const browser = await launchPinnedChromium({ args: CHROMIUM_ARGS });
+  try {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const pageErrors = [];
+    const page = await ctx.newPage();
+    page.on('pageerror', (e) => pageErrors.push(e.message));
+    await page.addInitScript(() => {
+      window.__FIRST_THUMB_TRACE__ = { drawnAt: null };
+      const check = () => {
+        if (window.__FIRST_THUMB_TRACE__.drawnAt !== null) return;
+        const c = document.querySelector('.cell canvas[data-drawn]');
+        if (c) window.__FIRST_THUMB_TRACE__.drawnAt = performance.now();
+      };
+      new MutationObserver(check).observe(document, { childList: true, subtree: true, attributes: true });
+    });
+    await page.goto(`${server.url}/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.locator('.app[data-screen="start"] .start button.btn.primary').waitFor({ state: 'visible', timeout: 20000 });
+    await page.waitForTimeout(300);
+    await page.locator('input.filepick:not(.calibpick)').first().setInputFiles(manifest.photoFiles);
+    await page.waitForFunction(() => window.__FIRST_THUMB_TRACE__?.drawnAt !== null, null, { timeout: 20000 });
+    const drawnAt = await page.evaluate(() => window.__FIRST_THUMB_TRACE__.drawnAt);
+
+    // 等首图绘制后的后台预热把 editor 与 export_ui 都拉取完毕，再用精确的 startTime 对照 drawnAt，不漏掉已发起未结束的请求。
+    await page.waitForFunction(
+      ([editor, exporter]) => {
+        const names = performance.getEntriesByType('resource').map((e) => new URL(e.name).pathname);
+        return (
+          (!editor || names.some((p) => p.endsWith('/' + editor))) &&
+          (!exporter || names.some((p) => p.endsWith('/' + exporter)))
+        );
+      },
+      [editorChunk, exportChunk],
+      { timeout: 20000 },
+    );
+
+    const order = await page.evaluate(
+      ([editor, exporter, offImg, tDraw]) => {
+        const entries = performance.getEntriesByType('resource');
+        const find = (name) => (name ? entries.find((e) => new URL(e.name).pathname.endsWith('/' + name)) : null);
+        const firstEditor = find(editor);
+        const firstExporter = find(exporter);
+        const firstOffImg = find(offImg);
+        return {
+          drawnAt: tDraw,
+          editor: firstEditor ? editor : null,
+          exporter: firstExporter ? exporter : null,
+          offImage: firstOffImg ? offImg : null,
+          editorBegunBeforeDraw: Boolean(firstEditor && firstEditor.startTime < tDraw),
+          editorCompletedBeforeDraw: Boolean(firstEditor && firstEditor.responseEnd < tDraw),
+          exporterBegunBeforeDraw: Boolean(firstExporter && firstExporter.startTime < tDraw),
+          exporterCompletedBeforeDraw: Boolean(firstExporter && firstExporter.responseEnd < tDraw),
+          offImageBegunBeforeDraw: Boolean(firstOffImg && firstOffImg.startTime < tDraw),
+        };
+      },
+      [editorChunk, exportChunk, offImageChunk, drawnAt],
+    );
+
+    // 进入编辑器并从顶栏「…」打开「导出选项」，验证动态导入链路正常。
+    await page.locator('.cell').first().click();
+    await page.locator('.editor .stage').waitFor({ state: 'visible', timeout: 20000 });
+    await page.locator('[data-act="editor-more"]').click();
+    await page.locator('.ms[data-state="editor-more"] [data-act="more-export-options"]').click();
+    const exportOptionsOpened = await page
+      .locator('.ms.export[data-state="export-sheet"]')
+      .first()
+      .waitFor({ state: 'visible', timeout: 10000 })
+      .then(() => true, () => false);
+
+    await ctx.close();
+    return { order, exportOptionsOpened, pageErrors };
   } finally {
     await browser.close();
     await server.close();
@@ -445,7 +516,9 @@ async function runServiceWorker() {
 let output;
 if (mode === 'wasm-once') output = await runWasmOnce();
 else if (mode === 'start-before-editor') output = await runStartBeforeEditor();
-else if (mode === 'service-worker') output = await runServiceWorker();
+else if (mode === 'worker-wasm-retry') output = await runWorkerWasmRetry();
+else if (mode === 'pool-slot-recovery') output = await runPoolSlotRecovery();
+else if (mode === 'import-before-prewarm') output = await runImportBeforePrewarm();
 else throw new Error(`unknown mode: ${mode}`);
 
 fs.writeFileSync(manifest.out, JSON.stringify(output, null, 2));
