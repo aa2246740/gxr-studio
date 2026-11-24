@@ -131,9 +131,19 @@ export class Book {
     return this.user ?? this.fallback;
   }
 
-  /** 还在等默认校准（读回存下的包、下载、核对）：手上没有任何包，也还没有用不了的原因。 */
+  /** 还在等默认校准（读回存下的包、下载、核对）：手上没有任何包，也还没有用不了的原因。没有默认校准时永远是 false。 */
   get loadingDefault(): boolean {
-    return !this.pack && this.io.defaultCalib !== undefined && this.defaultError === null;
+    return !this.pack && this.defaultLoader() !== null && this.defaultError === null;
+  }
+
+  /**
+   * 下载默认校准的那个函数。没有 io（有的测试只拿 Book 画界面，`new Book()`），或者 io 里没有 `defaultCalib`，
+   * 就当没有默认校准：返回 null，不抛。默认校准相关的地方（loadingDefault、calibSettled、useDefault）都只经过这里碰 io。
+   */
+  private defaultLoader(): (() => Promise<CalibRead>) | null {
+    const io = this.io as BookIo | undefined;
+    const load = io?.defaultCalib;
+    return io && typeof load === 'function' ? () => load.call(io) : null;
   }
 
   /** 相机配方文件和校准数据的组合版本；变了就说明旧的烘焙表（和用它画的小图）都作废了。 */
@@ -226,10 +236,10 @@ export class Book {
    * 自己导入的包（「恢复默认校准」）时再试一次，这是用户明确要默认校准。读回存下的包时还没下载过，也会开始下载。不抛。
    */
   private useDefault(): Promise<void> {
-    const load = this.io.defaultCalib;
+    const load = this.defaultLoader();
     if (this.fallback || !load) return Promise.resolve();
     if (!this.defaultJob) {
-      const job: Promise<void> = this.loadDefault(() => load.call(this.io)).finally(() => {
+      const job: Promise<void> = this.loadDefault(load).finally(() => {
         if (this.defaultJob === job) this.defaultJob = null;
       });
       this.defaultJob = job;

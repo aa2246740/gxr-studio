@@ -218,6 +218,47 @@ export function bookCases(page) {
       await tick();
       out.badImport = { before, imported, flashed, after: view(t) };
     }
+    // 10. 没有 io 的 Book（有的测试只拿它画界面，`new Book()`），以及 io 里没有 defaultCalib：当没有默认校准，
+    // 什么都不抛：loadingDefault 是 false，calibSettled 马上好，配方页照常画出来，导出门禁直接开始。
+    {
+      const { RecipeView } = await import('/src/app/recipe_view.ts');
+      const { zeroKnobs } = await import('/src/app/model.ts');
+      const { calibGate } = await import('/src/app/export_calib_wait.ts');
+      const photo = {
+        id: 'p', stem: 'p', version: 1, rev: 0, dng: new File(['synthetic'], 'p.DNG'), jpg: null, lastModified: 0, captureMs: null,
+        status: 'ready', gone: false, cached: null, checked: null, bitmap: null, neutral: null, jpgMeta: null, dngMeta: null,
+        choice: null, levels: new Map(), memory: new Map(), knobs: zeroKnobs(), looks: new Map(),
+      };
+      const hooks = { mode: () => 'raw', look() {}, dragging: () => false, recipeTab: () => true, geometry: async () => ({ geometry: null, cropped: false }) };
+      const probe = async (book) => {
+        const settled = await Promise.race([book.calibSettled(10_000).then(() => true), tick().then(() => false)]);
+        const api = { photo: () => null, photos: () => [], session: () => 1, book: () => book, pickDat() {}, pickCalib() {} };
+        const view = new RecipeView(api, null, photo, hooks);
+        const host = document.createElement('div');
+        host.className = 'app';
+        host.append(view.headEl(), view.panelEl());
+        document.body.append(host);
+        const rendered = host.querySelector('[data-recipes]') !== null || host.textContent.length > 0;
+        host.remove();
+        let started = false;
+        calibGate(() => book, () => 1, 10_000)(() => {
+          started = true;
+        });
+        return { loading: book.loadingDefault, unit: book.unitState('jlaunch').state, pack: book.pack, settled, rendered, started };
+      };
+      const bare = new Book();
+      const noIo = await probe(bare);
+      const partialIo = {
+        readFile: async () => null,
+        restoreCalib: async () => null,
+        deletePack: async () => true,
+        watermark: async () => 0,
+      };
+      const partial = new Book(partialIo);
+      await partial.restore();
+      await tick();
+      out.noDefaultIo = { noIo, partial: await probe(partial) };
+    }
     return out;
   });
 }

@@ -359,6 +359,10 @@ def _check_book(book: dict) -> None:
     assert bad["before"]["error"] == "默认校准没有下载下来，可能没联网。" and bad["before"]["calls"]["default"] == 1
     assert bad["imported"] is False and not bad["flashed"], bad
     assert bad["after"]["calls"]["default"] == 1 and bad["after"]["error"] == bad["before"]["error"] and not bad["after"]["loading"], bad
+    for case in ("noIo", "partial"):
+        got = book["noDefaultIo"][case]
+        want = {"loading": False, "unit": "none", "pack": None, "settled": True, "rendered": True, "started": True}
+        assert got == want, (case, got)
     settled = book["settled"]
     assert settled["idle"] and settled["landed"] and settled["listenersAfterLanded"] == settled["listenersBefore"]
     assert settled["timedOut"] and settled["listenersAfterTimeout"] == settled["listenersBefore"]
