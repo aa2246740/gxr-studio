@@ -415,6 +415,7 @@ export class RecipeView {
         slot.node.disabled = !scene.raw;
         this.syncMark(slot.node, slot.thumb, Boolean(picked && picked.id === card.id));
       }
+      if (this.strip.isConnected && !this.bakeCtrl.hasVisible()) this.bakeCtrl.observe(this.slots.map((s) => s.node));
       this.paintThumbs();
       this.scheduleScrollActive(picked?.id ?? null);
       return;
@@ -620,7 +621,7 @@ export class RecipeView {
     }
     const nextScene = this.scene();
     this.buildHead(nextScene);
-    this.applyLook(nextScene);
+    this.applyLook(nextScene, true);
     this.hooks.onEditedChanged?.();
     void this.renderCards(nextScene, this.token);
   }
@@ -662,11 +663,11 @@ export class RecipeView {
     }
     const nextScene = this.scene();
     this.syncSubView(nextScene);
-    this.applyLook(nextScene);
+    this.applyLook(nextScene, true);
     this.hooks.onEditedChanged?.();
   }
 
-  private applyLook(scene: Scene): void {
+  private applyLook(scene: Scene, userTap = false): void {
     if (!scene.raw || !this.engine || this.hooks.mode() !== 'raw') return;
     const target = this.target(scene);
     const book = this.api.book();
@@ -688,16 +689,16 @@ export class RecipeView {
     if (!this.shown) this.show(NEUTRAL_BAKE_KEY, NEUTRAL_LABEL);
     const want = `${target.id}|${JSON.stringify(levels ?? null)}|${scene.unit}|${scene.iso}`;
     this.wanted = want;
-    this.bakeCtrl.beginStage(want);
+    this.bakeCtrl.beginStage(want, target.id, userTap);
     book.bake(target, scene.unit, scene.iso, levels).then(
       (made) => {
         if (this.wanted === want && this.panel.isConnected) {
           this.wanted = made;
           this.show(made, PREDICTED_LABEL);
         }
-        this.bakeCtrl.endStage(want);
+        this.bakeCtrl.endStage(want, target.id);
       },
-      () => this.bakeCtrl.endStage(want),
+      () => this.bakeCtrl.endStage(want, target.id),
     );
   }
 
@@ -721,9 +722,7 @@ export class RecipeView {
     const version = photo.version;
     const session = this.api.session();
     const alive = () => token === this.token && this.api.photo(photo.id) === photo && photo.version === version && this.api.session() === session;
-    const geomInfo = await this.hooks.geometry().catch(() => ({ geometry: GEOMETRY, cropped: false }));
-    if (!alive()) return;
-    const thumbGeometry = geomInfo.geometry;
+    const geomPromise = this.hooks.geometry().then((info) => info.geometry, () => GEOMETRY);
     const order = [...this.cardsOf(scene), ...shelf(scene.list, 'all')];
     const seen = new Set<string>();
     const jobs: Array<{ id: string; item: Card }> = [];
@@ -739,11 +738,12 @@ export class RecipeView {
     this.bakeCtrl.start(jobs, {
       isAlive: alive,
       isBusy,
+      isDeferred: (id) => this.bakeCtrl.isStageBaking(id),
       isPriority: (id) => id === this.target(scene)?.id,
       run: (card) => {
         const levels = this.levelsOf(card, scene);
         return renderCardThumb({
-          engine, source, photo, version, cardId: card.id, geometry: thumbGeometry, adjust: ADJUST,
+          engine, source, photo, version, cardId: card.id, geometry: () => geomPromise, adjust: ADJUST,
           alive, isBusy, bakeCtrl: this.bakeCtrl,
           bakeKey: () => book.bakeKey(card, scene.unit, scene.iso, levels),
           ready: (k) => book.ready(k),

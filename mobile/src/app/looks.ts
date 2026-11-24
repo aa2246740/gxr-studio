@@ -139,6 +139,8 @@ export interface BakeJob<T> {
 export interface CardBakeHooks<T> {
   isAlive(): boolean;
   isBusy(): boolean;
+  /** 正在舞台烘焙的卡不占用后台并发槽，等舞台就绪后再画小图。 */
+  isDeferred?(id: string): boolean;
   isPriority?(id: string): boolean;
   run(item: T): Promise<void>;
 }
@@ -150,9 +152,9 @@ interface IdleWindow {
 
 /**
  * 配方卡可见优先与点击抢占调度器：
- * - 舞台烘焙进行中 / 拖动 / 导出时暂停派发，用户点选立即抢占；
- * - 视口内可见卡片优先，并发上限 2（留出空闲 Worker 给用户即时点击）；
- * - 离屏卡片等浏览器空闲再按并发 1 逐张烘焙。
+ * - 初始打开照片时允许最多 2 张视口内可见卡与主舞台并行烘焙（保留空闲 Worker 给随时到来的点击）；
+ * - 用户主动点击选卡或调旋钮时立即抢占并暂停派发新的后台任务，直到所点配方落到舞台；
+ * - 离屏卡片等可见卡完成后再于浏览器空闲期按并发 1 逐张烘焙。
  */
 export class CardBakeController<T> {
   private readonly visibleLimit: number;
@@ -165,8 +167,9 @@ export class CardBakeController<T> {
   private waitVisTimer = 0;
   private busyTimer = 0;
   private visFallback = false;
-  private stageWant = '';
-  private stageWaiters: Array<() => void> = [];
+  private tapWant = '';
+  private stageCardId = '';
+  private tapWaiters: Array<() => void> = [];
   private readonly visibleIds = new Set<string>();
   private visObserver: IntersectionObserver | null = null;
   private ioReady = false;
@@ -174,6 +177,10 @@ export class CardBakeController<T> {
   constructor(visibleLimit = 2, idleLimit = 1) {
     this.visibleLimit = visibleLimit;
     this.idleLimit = idleLimit;
+  }
+
+  hasVisible(): boolean {
+    return this.visibleIds.size > 0;
   }
 
   observe(nodes: Iterable<HTMLElement>): void {
@@ -217,28 +224,43 @@ export class CardBakeController<T> {
     this.visibleIds.clear();
   }
 
-  beginStage(want: string): void {
-    this.stageWant = want;
+  beginStage(want: string, cardId: string, userTap: boolean): void {
+    this.stageCardId = cardId;
+    if (userTap) this.tapWant = want;
   }
 
-  endStage(want: string): void {
-    if (this.stageWant !== want) return;
-    this.stageWant = '';
-    this.flushStageWaiters();
-    this.wake();
+  endStage(want: string, cardId: string): void {
+    let wake = false;
+    if (this.stageCardId === cardId) {
+      this.stageCardId = '';
+      wake = true;
+    }
+    if (this.tapWant === want) {
+      this.tapWant = '';
+      this.flushTapWaiters();
+      wake = true;
+    }
+    if (wake) this.wake();
   }
 
   clearStage(): void {
-    if (!this.stageWant) return;
-    this.stageWant = '';
-    this.flushStageWaiters();
-    this.wake();
+    const had = this.tapWant !== '' || this.stageCardId !== '';
+    this.stageCardId = '';
+    if (this.tapWant) {
+      this.tapWant = '';
+      this.flushTapWaiters();
+    }
+    if (had) this.wake();
+  }
+
+  isStageBaking(cardId: string): boolean {
+    return this.stageCardId !== '' && this.stageCardId === cardId;
   }
 
   async waitUntilReady(alive: () => boolean, isBusy: () => boolean): Promise<void> {
-    while (alive() && (this.stageWant !== '' || isBusy())) {
-      if (this.stageWant !== '' && !isBusy()) {
-        await new Promise<void>((done) => this.stageWaiters.push(done));
+    while (alive() && (this.tapWant !== '' || isBusy())) {
+      if (this.tapWant !== '' && !isBusy()) {
+        await new Promise<void>((done) => this.tapWaiters.push(done));
       } else {
         await new Promise((done) => setTimeout(done, 120));
       }
@@ -280,15 +302,16 @@ export class CardBakeController<T> {
   }
 
   destroy(): void {
-    this.stageWant = '';
-    this.flushStageWaiters();
+    this.tapWant = '';
+    this.stageCardId = '';
+    this.flushTapWaiters();
     this.cancel();
     this.clearObserver();
   }
 
-  private flushStageWaiters(): void {
-    const waiters = this.stageWaiters;
-    this.stageWaiters = [];
+  private flushTapWaiters(): void {
+    const waiters = this.tapWaiters;
+    this.tapWaiters = [];
     for (const wake of waiters) wake();
   }
 
@@ -328,7 +351,7 @@ export class CardBakeController<T> {
   }
 
   private paused(hooks: CardBakeHooks<T>): boolean {
-    if (this.stageWant !== '') return true;
+    if (this.tapWant !== '') return true;
     if (hooks.isBusy()) {
       this.scheduleBusyRetry();
       return true;
@@ -339,15 +362,17 @@ export class CardBakeController<T> {
   private takeNext(visibleOnly: boolean): BakeJob<T> | null {
     const hooks = this.hooks;
     if (!hooks || !this.pending.length) return null;
+    const eligible = (job: BakeJob<T>): boolean => !(hooks.isDeferred && hooks.isDeferred(job.id));
     if (hooks.isPriority) {
-      const prio = this.pending.findIndex((job) => hooks.isPriority!(job.id) && (!visibleOnly || this.visibleIds.has(job.id)));
+      const prio = this.pending.findIndex((job) => eligible(job) && hooks.isPriority!(job.id) && (!visibleOnly || this.visibleIds.has(job.id)));
       if (prio >= 0) return this.pending.splice(prio, 1)[0];
     }
     if (visibleOnly) {
-      const idx = this.pending.findIndex((job) => this.visibleIds.has(job.id));
+      const idx = this.pending.findIndex((job) => eligible(job) && this.visibleIds.has(job.id));
       return idx >= 0 ? this.pending.splice(idx, 1)[0] : null;
     }
-    return this.pending.shift() ?? null;
+    const idx = this.pending.findIndex(eligible);
+    return idx >= 0 ? this.pending.splice(idx, 1)[0] : null;
   }
 
   private launch(job: BakeJob<T>): void {
@@ -392,7 +417,7 @@ export class CardBakeController<T> {
       this.clearIdle();
       this.launch(next);
     }
-    if (this.pending.length > 0 && this.inFlight === 0) {
+    if (this.pending.length > 0 && this.inFlight === 0 && this.stageCardId === '') {
       this.scheduleIdle();
     }
   }
@@ -404,8 +429,10 @@ export class CardBakeController<T> {
       this.cancel();
       return;
     }
-    if (this.paused(hooks)) return;
-    if (this.pending.some((job) => this.visibleIds.has(job.id))) {
+    if (this.paused(hooks) || this.stageCardId !== '') return;
+    const eligibleVisible = (job: BakeJob<T>): boolean =>
+      !(hooks.isDeferred && hooks.isDeferred(job.id)) && this.visibleIds.has(job.id);
+    if (this.pending.some(eligibleVisible)) {
       this.pump();
       return;
     }
@@ -424,7 +451,7 @@ export interface CardThumbRunnerOpts {
   photo: Photo;
   version: number;
   cardId: string;
-  geometry: Geometry;
+  geometry(): Promise<Geometry>;
   adjust: Adjust;
   alive(): boolean;
   isBusy(): boolean;
@@ -465,10 +492,12 @@ export async function renderCardThumb(opts: CardThumbRunnerOpts): Promise<void> 
     gpu = opts.gpuKey(key);
     if (!gpu) return;
   }
+  const geometry = await opts.geometry();
+  if (!opts.alive()) return;
   const out = await opts.engine.thumb({
     source: opts.source,
     look: { recipe: gpu, lut: null, lutStrength: 1, curve: null, adjust: opts.adjust },
-    geometry: opts.geometry,
+    geometry,
     aspect: null,
     maxEdge: 192,
   });
