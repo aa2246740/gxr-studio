@@ -260,6 +260,40 @@ def test_missing_or_tampered_default_falls_back_to_neutral_with_a_reason(tmp_pat
         _check_book(steps["book"])
 
 
+# 导出前最多等默认校准这么久（mobile/src/app/export_calib_wait.ts 的 CALIB_WAIT_MS）。
+CALIB_WAIT_MS = 4000
+
+
+def test_export_wait_is_short_and_matches_the_source() -> None:
+    src = (REPO / "mobile" / "src" / "app" / "export_calib_wait.ts").read_text(encoding="utf-8")
+    assert f"export const CALIB_WAIT_MS = {CALIB_WAIT_MS};" in src
+    assert 1000 <= CALIB_WAIT_MS <= 6000
+
+
+@pytest.mark.browser_serial
+def test_export_started_while_the_default_downloads_waits_for_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """默认校准还在路上（开发服务器压着不回）时点导出：落定了就按它导出，和落定后再导出的字节一样；
+    一直不来就等满 CALIB_WAIT_MS 照旧开始（中性转换），不卡住。"""
+    hold = tmp_path / "hold"
+    hold.mkdir()
+    monkeypatch.setenv("GXR_MOBILE_DEFAULT_CALIB", f"hold:{hold}")
+    data = _run(tmp_path, "held", {"holdDir": str(hold)})
+    a = data["steps"]["heldA"]
+    # 点导出的时候默认校准还没到；一秒后这一批还没开始（在等它），而不是先按中性转换做起来。
+    assert a["before"]["kind"] is None and a["before"]["loading"]
+    assert a["waiting"] == {"batch": False, "loading": True}
+    assert a["landed"]["kind"] == "default"
+    held = _shared(tmp_path, "held-", a["heldFiles"])
+    assert held == _shared(tmp_path, "after-", a["afterFiles"]), "an export started while the default was downloading came out uncalibrated"
+    b = data["steps"]["heldB"]
+    # 一直不放行：等满几秒就照旧开始，用的是中性转换，和放行后校准过的导出不同。
+    assert CALIB_WAIT_MS - 500 <= b["startedAfter"] <= CALIB_WAIT_MS + 8000, b["startedAfter"]
+    assert b["stillLoading"] == {"loading": True, "kind": None}
+    timed_out = _shared(tmp_path, "timeout-", b["timeoutFiles"])
+    later = _shared(tmp_path, "later-", b["laterFiles"])
+    assert later == held and timed_out != later
+
+
 def _check_book(book: dict) -> None:
     fresh = book["fresh"]
     assert fresh["beforeRestore"] == 0, "the default is fetched only after the stored pack is known to be absent"
@@ -280,3 +314,7 @@ def _check_book(book: dict) -> None:
     assert book["stored"]["kind"] == "user" and book["stored"]["calls"]["default"] == 0
     broken = book["storedBroken"]
     assert broken["kind"] == "default" and broken["packError"] == "校准数据被改动，请重新导入" and broken["calls"]["default"] == 1
+    settled = book["settled"]
+    assert settled["idle"] and settled["landed"] and settled["listenersAfterLanded"] == settled["listenersBefore"]
+    assert settled["timedOut"] and settled["listenersAfterTimeout"] == settled["listenersBefore"]
+    assert 40 <= settled["timeoutMs"] < 1000 and settled["stillLoading"]

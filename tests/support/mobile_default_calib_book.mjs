@@ -146,6 +146,34 @@ export function bookCases(page) {
       await tick();
       out.storedBroken = view(t);
     }
+    // 7. calibSettled：没在等就马上好；默认校准落定时好；一直不来就到时好。都不留监听。
+    {
+      const idle = make({ ...pack('STORED'), name: 'mine.zip', savedAt: 5 });
+      await idle.book.restore();
+      const idleDone = await Promise.race([idle.book.calibSettled(10_000).then(() => true), tick().then(() => false)]);
+      const t = make();
+      const listenersBefore = t.book.listeners.size;
+      await t.book.restore();
+      const waiting = t.book.calibSettled(10_000).then(() => true);
+      t.pendingDefault[0].resolve(pack('DEFAULT'));
+      const landed = await Promise.race([waiting, new Promise((done) => setTimeout(() => done(false), 1000))]);
+      const listenersAfterLanded = t.book.listeners.size;
+      const u = make();
+      await u.book.restore();
+      const t0 = performance.now();
+      await u.book.calibSettled(50);
+      const timeoutMs = performance.now() - t0;
+      out.settled = {
+        idle: idleDone,
+        landed,
+        listenersBefore,
+        listenersAfterLanded,
+        timedOut: true,
+        timeoutMs,
+        stillLoading: u.book.loadingDefault,
+        listenersAfterTimeout: u.book.listeners.size,
+      };
+    }
     return out;
   });
 }

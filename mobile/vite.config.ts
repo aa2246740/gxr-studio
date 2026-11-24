@@ -168,7 +168,8 @@ async function handleDev(
 
 /**
  * 测试用的开关：`GXR_MOBILE_DEFAULT_CALIB=off` 时开发服务器不发内置的默认校准（404，和第一次打开时没联网一样）；
- * 给一个绝对路径时改发那个文件（核对不过的情形）。不设就照常发 public/ 里的那份。只在开发服务器里，不进构建。
+ * 给一个绝对路径时改发那个文件（核对不过的情形）；`hold:<文件夹>` 时先压着不回，等 `<文件夹>/release` 出现（最多 2 分钟）
+ * 再发 public/ 里的那份（默认校准下载得慢的情形）。不设就照常发 public/ 里的那份。只在开发服务器里，不进构建。
  */
 function defaultCalibSwitch(): Plugin {
   return {
@@ -180,6 +181,20 @@ function defaultCalibSwitch(): Plugin {
       server.middlewares.use((req, res, next) => {
         if (new URL(req.url || '/', 'http://127.0.0.1').pathname !== `/${DEFAULT_CALIB_PATH}`) {
           next();
+          return;
+        }
+        if (mode.startsWith('hold:')) {
+          const release = path.join(mode.slice('hold:'.length), 'release');
+          const until = Date.now() + 120_000;
+          const tick = (): void => {
+            if (!fs.existsSync(release) && Date.now() < until) {
+              setTimeout(tick, 100);
+              return;
+            }
+            res.setHeader('content-type', 'application/zip');
+            res.end(fs.readFileSync(path.join(root, 'public', DEFAULT_CALIB_PATH)));
+          };
+          tick();
           return;
         }
         let body: Buffer | null = null;

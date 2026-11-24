@@ -4,9 +4,11 @@
 //   只下载一次。
 // - `missing` / `tampered`：默认校准下载不下来 / 文件被改过：中性转换，「未校准」写明原因，页面不抛错。`missing` 这一轮
 //   顺便在页面里 import 真的 Book，用手里攥着的回复造默认校准和导入、删除的先后时序。
+// - `held`：开发服务器压着默认校准不回（`hold:<文件夹>`），驱动写 `<文件夹>/release` 才放行。默认校准还在路上时点导出：
+//   A 等它落定、按它导出，和落定后再导出的字节一样；B 一直不放行：等满几秒照旧开始（中性转换），不会卡住。
 // 结果写进 manifest.out；stdout 只打 done。照片字节和文件名不打出来。
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { cellOf, exportFromGrid, pickAll, shareAll, sharedFiles, waitPhase } from './mobile_ui_export_parity.mjs';
 import { bookCases } from './mobile_default_calib_book.mjs';
@@ -229,8 +231,70 @@ async function runBroken() {
   await p.ctx.close();
 }
 
+/** 点「存到相册」（小 / 高，不做 HDR），不等它做完；返回点下去之后多久这一批才真的开始（毫秒）。 */
+async function clickExport(page) {
+  await exportFromGrid(page, [manifest.stem], '小', '高', null, { hdr: false });
+  const t0 = Date.now();
+  await page.waitForFunction(() => window.__devExport?.flow?.current() != null, null, { timeout: 60_000, polling: 50 });
+  return Date.now() - t0;
+}
+
+async function shareReady(page, prefix, before) {
+  await waitPhase(page, ['ready']);
+  await shareAll(page);
+  const files = await sharedFiles(page, manifest.outDir, prefix, before);
+  await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 30_000 }).catch(() => undefined);
+  return files.flatMap((row) => row.files.map((file) => file.name));
+}
+
+async function heldPage(label) {
+  const p = await freshPage(label);
+  await pickAll(p.page, { count: 1 }, manifest.files);
+  await p.page.waitForFunction(() => window.__gxrBook?.dat && !window.__gxrBook.datBusy, null, { timeout: 120_000 });
+  await openPhoto(p.page);
+  await chooseBuiltin1(p.page);
+  await backToGrid(p.page);
+  return p;
+}
+
+async function runHeld() {
+  const release = `${manifest.holdDir}/release`;
+  rmSync(release, { force: true });
+  // A：默认校准还压着时点导出，一秒后放行：这一批等它落定再开始，按默认校准做。
+  const a = await heldPage('held-A');
+  const before = await calibState(a.page);
+  let shares = await a.page.evaluate(() => window.__shareLog.calls.length);
+  await exportFromGrid(a.page, [manifest.stem], '小', '高', null, { hdr: false });
+  await a.page.waitForTimeout(1000);
+  const waiting = await a.page.evaluate(() => ({ batch: window.__devExport?.flow?.current() != null, loading: window.__gxrBook.loadingDefault }));
+  writeFileSync(release, '');
+  const heldFiles = await shareReady(a.page, 'held-', shares);
+  const landed = await calibState(a.page);
+  shares = await a.page.evaluate(() => window.__shareLog.calls.length);
+  await clickExport(a.page);
+  const afterFiles = await shareReady(a.page, 'after-', shares);
+  out.steps.heldA = { before, waiting, landed, heldFiles, afterFiles };
+  await a.ctx.close();
+
+  // B：一直不放行：等满几秒照旧开始（中性转换），不卡住；放行之后再导出就是校准过的。
+  rmSync(release, { force: true });
+  const b = await heldPage('held-B');
+  shares = await b.page.evaluate(() => window.__shareLog.calls.length);
+  const startedAfter = await clickExport(b.page);
+  const stillLoading = await b.page.evaluate(() => ({ loading: window.__gxrBook.loadingDefault, kind: window.__gxrBook.pack?.kind ?? null }));
+  const timeoutFiles = await shareReady(b.page, 'timeout-', shares);
+  writeFileSync(release, '');
+  await waitCalib(b.page, 'default');
+  shares = await b.page.evaluate(() => window.__shareLog.calls.length);
+  await clickExport(b.page);
+  const laterFiles = await shareReady(b.page, 'later-', shares);
+  out.steps.heldB = { startedAfter, stillLoading, timeoutFiles, laterFiles };
+  await b.ctx.close();
+}
+
 try {
   if (manifest.mode === 'bundled') await runBundled();
+  else if (manifest.mode === 'held') await runHeld();
   else await runBroken();
 } catch (err) {
   out.error = line(err);

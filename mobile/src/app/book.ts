@@ -234,6 +234,25 @@ export class Book {
     return this.defaultJob;
   }
 
+  /**
+   * 还在等默认校准（读回存下的包、下载、核对）时等它落定，最多 `ms` 毫秒。落定或到时都 resolve，不抛，也不留监听和定时器。
+   * 导出开始前用：别在默认校准落定前的这几百毫秒里悄悄按中性转换导出。
+   */
+  calibSettled(ms: number): Promise<void> {
+    if (!this.loadingDefault) return Promise.resolve();
+    return new Promise((resolve) => {
+      const finish = (): void => {
+        clearTimeout(timer);
+        off();
+        resolve();
+      };
+      const timer = setTimeout(finish, ms);
+      const off = this.onChange(() => {
+        if (!this.loadingDefault) finish();
+      });
+    });
+  }
+
   private async loadDefault(fetchDefault: () => Promise<CalibRead>): Promise<void> {
     this.defaultError = null;
     this.changed();
