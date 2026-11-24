@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
@@ -264,6 +265,20 @@ def test_missing_or_tampered_default_falls_back_to_neutral_with_a_reason(tmp_pat
 CALIB_WAIT_MS = 4000
 
 
+GATE_UNIT = REPO / "tests" / "support" / "mobile_calib_gate_unit.mjs"
+
+
+def test_queued_export_taps_share_one_wait() -> None:
+    """calibGate：等的时候连点只等一次、按先后开始（去重照旧）；到时以后再点不再等；清空照片后的新点击不多等。"""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required")
+    result = subprocess.run(
+        [node, "--experimental-strip-types", "--test", str(GATE_UNIT)], cwd=REPO, check=False, capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stdout[-3000:] + result.stderr[-2000:]
+
+
 def test_export_wait_is_short_and_matches_the_source() -> None:
     src = (REPO / "mobile" / "src" / "app" / "export_calib_wait.ts").read_text(encoding="utf-8")
     assert f"export const CALIB_WAIT_MS = {CALIB_WAIT_MS};" in src
@@ -273,7 +288,7 @@ def test_export_wait_is_short_and_matches_the_source() -> None:
 @pytest.mark.browser_serial
 def test_export_started_while_the_default_downloads_waits_for_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """默认校准还在路上（开发服务器压着不回）时点导出：落定了就按它导出，和落定后再导出的字节一样；
-    一直不来就等满 CALIB_WAIT_MS 照旧开始（中性转换），不卡住。"""
+    一直不来就等满 CALIB_WAIT_MS 照旧开始（中性转换），不卡住。连点「存到相册」只等一次、只做一批；关机图也等。"""
     hold = tmp_path / "hold"
     hold.mkdir()
     monkeypatch.setenv("GXR_MOBILE_DEFAULT_CALIB", f"hold:{hold}")
@@ -292,6 +307,27 @@ def test_export_started_while_the_default_downloads_waits_for_it(tmp_path: Path,
     timed_out = _shared(tmp_path, "timeout-", b["timeoutFiles"])
     later = _shared(tmp_path, "later-", b["laterFiles"])
     assert later == held and timed_out != later
+    # 编辑器里连点三次「存到相册」，默认校准还压着，一秒后放行：只做一批一张，按默认校准做，之后也没有第二批。
+    c = data["steps"]["quickC"]
+    assert c["waiting"] == {"batch": False, "loading": True}
+    assert c["ready"]["items"] == 1 and c["ready"]["phase"] == "ready" and c["ready"]["first"], c["ready"]
+    assert c["settled"]["shares"] == 1 and c["settled"]["batch"]["first"], c["settled"]
+    quick_held = _shared(tmp_path, "quick-held-", c["quickFiles"])
+    assert quick_held == _shared(tmp_path, "quick-after-", c["quickAfter"]), "quick export during the wait came out uncalibrated"
+    # 一直不放行：三次点击只等一次（约 4 秒，不是 12 秒），一批一张、中性转换；开始后再点、分享后再等 9 秒都不会再做一批。
+    d = data["steps"]["quickD"]
+    assert CALIB_WAIT_MS - 500 <= d["startedAfter"] <= CALIB_WAIT_MS + 3000, d["startedAfter"]
+    assert d["started"]["items"] == 1 and d["started"]["first"], d["started"]
+    assert d["ready"]["items"] == 1 and d["ready"]["first"], d["ready"]
+    assert d["later"]["shares"] == 1 and d["later"]["batch"]["first"] and d["later"]["loading"], d["later"]
+    quick_timeout = _shared(tmp_path, "quick-timeout-", d["timeoutFiles"])
+    assert quick_timeout != _shared(tmp_path, "quick-calibrated-", d["calibratedFiles"]), "the timed-out export should be neutral"
+    # 关机图：默认校准还压着时打开，一秒后放行：预览一直等着，做出来的 GXROFF.JPG 和落定后再做的一样。
+    e = data["steps"]["offE"]
+    assert e["waiting"] == {"ready": False, "loading": True}, e["waiting"]
+    off_held = _shared(tmp_path, "off-held-", e["heldFiles"])
+    off_after = _shared(tmp_path, "off-after-", e["afterFiles"])
+    assert off_held == off_after, "GXROFF.JPG made while the default was downloading came out uncalibrated"
 
 
 def _check_book(book: dict) -> None:
@@ -314,6 +350,15 @@ def _check_book(book: dict) -> None:
     assert book["stored"]["kind"] == "user" and book["stored"]["calls"]["default"] == 0
     broken = book["storedBroken"]
     assert broken["kind"] == "default" and broken["packError"] == "校准数据被改动，请重新导入" and broken["calls"]["default"] == 1
+    deadline = book["deadline"]
+    # 一轮一个截止时间：150 ms 后再等的人和第一个人一起在 ~300 ms 好，不是 ~450 ms。
+    assert 250 <= deadline["firstMs"] < 400 and 250 <= deadline["secondMs"] < 400, deadline
+    assert deadline["afterDeadlineMs"] < 60, deadline
+    assert 90 <= deadline["nextRoundMs"] < 400 and deadline["loading"] and deadline["calls"]["default"] == 2, deadline
+    bad = book["badImport"]
+    assert bad["before"]["error"] == "默认校准没有下载下来，可能没联网。" and bad["before"]["calls"]["default"] == 1
+    assert bad["imported"] is False and not bad["flashed"], bad
+    assert bad["after"]["calls"]["default"] == 1 and bad["after"]["error"] == bad["before"]["error"] and not bad["after"]["loading"], bad
     settled = book["settled"]
     assert settled["idle"] and settled["landed"] and settled["listenersAfterLanded"] == settled["listenersBefore"]
     assert settled["timedOut"] and settled["listenersAfterTimeout"] == settled["listenersBefore"]

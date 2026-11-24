@@ -50,9 +50,10 @@ async function settle(page) {
 }
 
 /** 一个新的配置文件（自己的 IndexedDB），数一数默认校准被下载了几次。 */
-async function freshPage(label) {
+async function freshPage(label, init = null) {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
+  if (init) await page.addInitScript(init);
   page.on('pageerror', (error) => out.pageErrors.push(`${label}: ${line(error)}`));
   const fetches = { count: 0 };
   page.on('request', (req) => {
@@ -290,6 +291,128 @@ async function runHeld() {
   const laterFiles = await shareReady(b.page, 'later-', shares);
   out.steps.heldB = { startedAfter, stillLoading, timeoutFiles, laterFiles };
   await b.ctx.close();
+  await runHeldQuick();
+  await runHeldOffImage();
+}
+
+/** 「存到相册」记住的选项：小 / 高，不做 HDR（快一点）。 */
+function quickPrefs() {
+  localStorage.setItem('gxr.mobile.export_size', 'small');
+  localStorage.setItem('gxr.mobile.export_quality', 'high');
+  localStorage.setItem('gxr.mobile.export_hdr', '0');
+}
+
+async function quickPage(label) {
+  const p = await freshPage(label, quickPrefs);
+  await pickAll(p.page, { count: 1 }, manifest.files);
+  await p.page.waitForFunction(() => window.__gxrBook?.dat && !window.__gxrBook.datBusy, null, { timeout: 120_000 });
+  await openPhoto(p.page);
+  await chooseBuiltin1(p.page);
+  return p;
+}
+
+/** 这一批：几张、阶段、结果的 render_kind、是不是还是第一批。 */
+function batchNow(page) {
+  return page.evaluate(() => {
+    const batch = window.__devExport?.flow?.current() ?? null;
+    if (!batch) return null;
+    window.__firstBatch ??= batch;
+    const results = [...batch.results.values()];
+    return { items: batch.items.length, phase: batch.phase, kinds: results.map((r) => r?.render_kind ?? null), first: batch === window.__firstBatch };
+  });
+}
+
+async function runHeldQuick() {
+  const release = `${manifest.holdDir}/release`;
+  const tapExport = (page) => page.locator('.editor .toolbar [data-act="export"]').click();
+  // C：编辑器里连点三次「存到相册」，默认校准还压着；一秒后放行：只做一批、一张，按默认校准做。
+  rmSync(release, { force: true });
+  const c = await quickPage('quick-C');
+  let shares = await c.page.evaluate(() => window.__shareLog.calls.length);
+  for (let i = 0; i < 3; i += 1) await tapExport(c.page);
+  await c.page.waitForTimeout(1000);
+  const waiting = await c.page.evaluate(() => ({ batch: window.__devExport?.flow?.current() != null, loading: window.__gxrBook.loadingDefault }));
+  writeFileSync(release, '');
+  await waitPhase(c.page, ['ready']);
+  const ready = await batchNow(c.page);
+  const quickFiles = await shareReady(c.page, 'quick-held-', shares);
+  await c.page.waitForTimeout(1500);
+  const settled = { batch: await batchNow(c.page), shares: (await c.page.evaluate(() => window.__shareLog.calls.length)) - shares };
+  // 默认校准已经落定：再点一次，这一批就是按默认校准做的，和上面那一张应该一样。
+  shares = await c.page.evaluate(() => window.__shareLog.calls.length);
+  await tapExport(c.page);
+  const quickAfter = await shareReady(c.page, 'quick-after-', shares);
+  out.steps.quickC = { waiting, ready, settled, quickFiles, quickAfter };
+  await c.ctx.close();
+
+  // D：一直不放行：连点三次只等一次，约 4 秒后开始一批一张（中性转换）；开始后再点两次不会再做；做完分享后再等几秒，
+  // 也不会有排在后面的点击再做一批。
+  rmSync(release, { force: true });
+  const d = await quickPage('quick-D');
+  shares = await d.page.evaluate(() => window.__shareLog.calls.length);
+  for (let i = 0; i < 3; i += 1) await tapExport(d.page);
+  const t0 = Date.now();
+  await d.page.waitForFunction(() => window.__devExport?.flow?.current() != null, null, { timeout: 60_000, polling: 50 });
+  const startedAfter = Date.now() - t0;
+  const started = await batchNow(d.page);
+  await tapExport(d.page);
+  await tapExport(d.page);
+  await waitPhase(d.page, ['ready']);
+  const readyD = await batchNow(d.page);
+  const timeoutFiles = await shareReady(d.page, 'quick-timeout-', shares);
+  await d.page.waitForTimeout(9000);
+  const laterD = { batch: await batchNow(d.page), shares: (await d.page.evaluate(() => window.__shareLog.calls.length)) - shares, loading: await d.page.evaluate(() => window.__gxrBook.loadingDefault) };
+  // 放行之后再点一次：按默认校准做，和到时开始的那一张（中性转换）不同。
+  writeFileSync(release, '');
+  await waitCalib(d.page, 'default');
+  shares = await d.page.evaluate(() => window.__shareLog.calls.length);
+  await tapExport(d.page);
+  const calibratedFiles = await shareReady(d.page, 'quick-calibrated-', shares);
+  out.steps.quickD = { startedAfter, started, ready: readyD, later: laterD, timeoutFiles, calibratedFiles };
+  await d.ctx.close();
+}
+
+async function offImageSheet(page) {
+  await page.locator('.editor .nav [data-act="editor-more"]').click();
+  await page.waitForSelector('.ms[data-state="editor-more"]', { timeout: 10_000 });
+  await page.locator('.ms[data-state="editor-more"] [data-act="more-off-image"]').click();
+  await page.waitForSelector('.ms.off-image-sheet', { timeout: 15_000 });
+}
+
+async function offImageExport(page, prefix) {
+  await page.waitForFunction(
+    () => {
+      const sheet = document.querySelector('.ms.off-image-sheet');
+      const btn = sheet?.querySelector('[data-act="off-image-export"]');
+      return sheet?.dataset.ready === '1' && btn && !btn.disabled;
+    },
+    null,
+    { timeout: 120_000 },
+  );
+  const before = await page.evaluate(() => window.__shareLog.calls.length);
+  await page.locator('.ms.off-image-sheet [data-act="off-image-export"]').click();
+  await page.waitForFunction((k) => window.__shareLog.calls.length > k, before, { timeout: 30_000 });
+  const files = await sharedFiles(page, manifest.outDir, prefix, before);
+  await page.locator('.ms.off-image-sheet [data-act="off-image-close"]').click();
+  await page.waitForFunction(() => !document.querySelector('.ms.off-image-sheet'), null, { timeout: 10_000 });
+  return files.flatMap((row) => row.files.map((file) => file.name));
+}
+
+async function runHeldOffImage() {
+  const release = `${manifest.holdDir}/release`;
+  // E：默认校准还压着时打开「做成关机图」，一秒后放行：GXROFF.JPG 按默认校准做，和落定后再做的一样。
+  rmSync(release, { force: true });
+  const e = await quickPage('off-E');
+  await offImageSheet(e.page);
+  await e.page.waitForTimeout(1000);
+  const waiting = await e.page.evaluate(() => ({ ready: document.querySelector('.ms.off-image-sheet')?.dataset.ready === '1', loading: window.__gxrBook.loadingDefault }));
+  writeFileSync(release, '');
+  const heldFiles = await offImageExport(e.page, 'off-held-');
+  await waitCalib(e.page, 'default');
+  await offImageSheet(e.page);
+  const afterFiles = await offImageExport(e.page, 'off-after-');
+  out.steps.offE = { waiting, heldFiles, afterFiles };
+  await e.ctx.close();
 }
 
 try {

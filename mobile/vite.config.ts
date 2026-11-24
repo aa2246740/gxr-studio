@@ -186,9 +186,17 @@ function defaultCalibSwitch(): Plugin {
         if (mode.startsWith('hold:')) {
           const release = path.join(mode.slice('hold:'.length), 'release');
           const until = Date.now() + 120_000;
+          let timer: ReturnType<typeof setTimeout> | null = null;
+          // 客户端先断开（页面关了）：不再轮询，也不往关掉的连接里写。
+          res.on('close', () => {
+            if (timer) clearTimeout(timer);
+            timer = null;
+          });
           const tick = (): void => {
+            timer = null;
+            if (res.writableEnded || res.destroyed) return;
             if (!fs.existsSync(release) && Date.now() < until) {
-              setTimeout(tick, 100);
+              timer = setTimeout(tick, 100);
               return;
             }
             res.setHeader('content-type', 'application/zip');

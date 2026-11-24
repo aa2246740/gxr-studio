@@ -151,6 +151,8 @@ export class Book {
   }
 
   private changed(): void {
+    // 默认校准落定了（用上了、用不了、或者用户的包到了）：这一轮的等待截止时间作废，下一轮重新算。
+    if (!this.loadingDefault) this.settleBy = null;
     for (const listener of [...this.listeners]) listener();
   }
 
@@ -220,7 +222,8 @@ export class Book {
 
   /**
    * 没有用户的包时用内置的默认校准。一次会话只下载、核对一次，成功后留在内存里，删除或恢复默认时直接用；
-   * 失败（没联网、文件不对）就是中性转换并写明原因，下一次要用默认校准时（删除、恢复默认）再试。不抛。
+   * 失败（没联网、文件不对）就是中性转换并写明原因。失败以后这次会话不会自己再下载（导入失败也不会）：只有用户删掉
+   * 自己导入的包（「恢复默认校准」）时再试一次，这是用户明确要默认校准。读回存下的包时还没下载过，也会开始下载。不抛。
    */
   private useDefault(): Promise<void> {
     const load = this.io.defaultCalib;
@@ -234,19 +237,26 @@ export class Book {
     return this.defaultJob;
   }
 
+  /** 这一轮等默认校准的截止时间（第一个等的人定下），落定时清掉。所有等的人共用它，不会一个接一个各等 `ms`。 */
+  private settleBy: number | null = null;
+
   /**
-   * 还在等默认校准（读回存下的包、下载、核对）时等它落定，最多 `ms` 毫秒。落定或到时都 resolve，不抛，也不留监听和定时器。
-   * 导出开始前用：别在默认校准落定前的这几百毫秒里悄悄按中性转换导出。
+   * 还在等默认校准（读回存下的包、下载、核对）时等它落定，最多等到这一轮的截止时间（第一次调用时的现在 + `ms`）。
+   * 落定或到时都 resolve，不抛，也不留监听和定时器；这一轮已经到时了就马上 resolve。导出开始前用：别在默认校准落定前
+   * 的这几百毫秒里悄悄按中性转换导出，也别让几次点击把等待叠起来。
    */
   calibSettled(ms: number): Promise<void> {
     if (!this.loadingDefault) return Promise.resolve();
+    this.settleBy ??= Date.now() + ms;
+    const left = this.settleBy - Date.now();
+    if (left <= 0) return Promise.resolve();
     return new Promise((resolve) => {
       const finish = (): void => {
         clearTimeout(timer);
         off();
         resolve();
       };
-      const timer = setTimeout(finish, ms);
+      const timer = setTimeout(finish, left);
       const off = this.onChange(() => {
         if (!this.loadingDefault) finish();
       });
@@ -315,7 +325,8 @@ export class Book {
         this.packBusy = false;
         this.changed();
       }
-      this.ensureDefault();
+      // 不在这里碰默认校准：读回存下的包（restore）和删除自己的包（removePack）已经管着；默认校准失败以后，
+      // 一次导入失败不该让它重新下载（一次会话只下载一次，见 useDefault）。
     }
   }
 

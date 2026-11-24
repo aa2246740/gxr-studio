@@ -174,6 +174,50 @@ export function bookCases(page) {
         listenersAfterTimeout: u.book.listeners.size,
       };
     }
+    // 8. 一轮只有一个截止时间：晚一点再等的人不会再多等 ms；到时以后再问马上就好；下一轮（恢复默认时重试）重新算。
+    {
+      const t = make();
+      await t.book.restore();
+      const t0 = performance.now();
+      const first = t.book.calibSettled(300).then(() => performance.now() - t0);
+      await new Promise((done) => setTimeout(done, 150));
+      const second = t.book.calibSettled(300).then(() => performance.now() - t0);
+      const [firstMs, secondMs] = await Promise.all([first, second]);
+      const t1 = performance.now();
+      await t.book.calibSettled(300);
+      const afterDeadlineMs = performance.now() - t1;
+      // 默认校准用不了，再导入一份、恢复默认：新的一轮，重新等。
+      t.pendingDefault[0].resolve(fail('fetch'));
+      await tick();
+      const importing = t.book.importPack(zip('mine.zip'));
+      await tick();
+      t.pendingImport[0].resolve(pack('MINE'));
+      await importing;
+      await t.book.removePack();
+      const t2 = performance.now();
+      await t.book.calibSettled(120);
+      const nextRoundMs = performance.now() - t2;
+      out.deadline = { firstMs, secondMs, afterDeadlineMs, nextRoundMs, loading: t.book.loadingDefault, calls: { ...t.calls } };
+    }
+
+    // 9. 默认校准用不了以后，导入失败不会让它重新下载，也不会闪一下「正在加载」。
+    {
+      const t = make();
+      await t.book.restore();
+      t.pendingDefault[0].resolve(fail('fetch'));
+      await tick();
+      const before = view(t);
+      let flashed = false;
+      t.book.onChange(() => {
+        if (t.book.loadingDefault) flashed = true;
+      });
+      const importing = t.book.importPack(zip('bad.zip'));
+      await tick();
+      t.pendingImport[0].resolve({ ok: false, zip: 'compressed', message: null, detail: 'x' });
+      const imported = await importing;
+      await tick();
+      out.badImport = { before, imported, flashed, after: view(t) };
+    }
     return out;
   });
 }
