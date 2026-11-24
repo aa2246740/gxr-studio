@@ -183,10 +183,28 @@ export class CardBakeController<T> {
     return this.visibleIds.size > 0;
   }
 
-  observe(nodes: Iterable<HTMLElement>): void {
+  syncVisible(nodes: Iterable<HTMLElement>, container?: HTMLElement | null): void {
+    if (!container || !container.isConnected || typeof container.getBoundingClientRect !== 'function') return;
+    const sr = container.getBoundingClientRect();
+    if (sr.width <= 0 || sr.height <= 0) return;
+    let found = 0;
+    for (const node of nodes) {
+      const id = node.dataset?.card;
+      if (!id || typeof node.getBoundingClientRect !== 'function') continue;
+      const r = node.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0 && r.right > sr.left && r.left < sr.right && r.bottom > sr.top && r.top < sr.bottom) {
+        this.visibleIds.add(id);
+        found += 1;
+      }
+    }
+    if (found > 0) this.ioReady = true;
+  }
+
+  observe(nodes: Iterable<HTMLElement>, container?: HTMLElement | null): void {
     this.clearObserver();
     this.ioReady = false;
     const list = [...nodes];
+    this.syncVisible(list, container);
     if (typeof IntersectionObserver !== 'function') {
       this.ioReady = true;
       for (let i = 0; i < Math.min(6, list.length); i += 1) {

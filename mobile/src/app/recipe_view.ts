@@ -415,7 +415,7 @@ export class RecipeView {
         slot.node.disabled = !scene.raw;
         this.syncMark(slot.node, slot.thumb, Boolean(picked && picked.id === card.id));
       }
-      if (this.strip.isConnected && !this.bakeCtrl.hasVisible()) this.bakeCtrl.observe(this.slots.map((s) => s.node));
+      if (this.strip.isConnected && !this.bakeCtrl.hasVisible()) this.bakeCtrl.syncVisible(this.slots.map((s) => s.node), this.strip);
       this.paintThumbs();
       this.scheduleScrollActive(picked?.id ?? null);
       return;
@@ -445,7 +445,7 @@ export class RecipeView {
       this.strip.append(node);
       this.slots.push({ card, node, thumb, nameEl, sub });
     }
-    this.bakeCtrl.observe(this.slots.map((s) => s.node));
+    this.bakeCtrl.observe(this.slots.map((s) => s.node), this.strip);
     this.paintThumbs();
     this.scheduleScrollActive(picked?.id ?? null);
   }
@@ -734,6 +734,7 @@ export class RecipeView {
       jobs.push({ id: card.id, item: card });
     }
     if (!jobs.length) return;
+    if (this.strip.isConnected && !this.bakeCtrl.hasVisible()) this.bakeCtrl.syncVisible(this.slots.map((s) => s.node), this.strip);
     const isBusy = () => this.hooks.dragging() || exportPaused();
     this.bakeCtrl.start(jobs, {
       isAlive: alive,
