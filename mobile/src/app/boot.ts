@@ -665,7 +665,7 @@ class App implements AppApi {
   }
 
   private afterRead(photo: Photo): void {
-    if (this.screen === 'grid') this.grid?.refresh();
+    if (this.screen === 'grid') this.grid?.update(photo.id);
     if (photo.status === 'bad' && this.screen === 'grid') this.grid?.showUnreadable(photo.id);
   }
 

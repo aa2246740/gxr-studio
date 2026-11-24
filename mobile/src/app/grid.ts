@@ -11,6 +11,17 @@ import { groupsText, pasteState, rangeOf } from './paste_state';
 import { groupBody, openConfirm, pasteBar, pickBody, PASTE_ICON } from './paste_ui';
 
 const GAPS: GapMinutes[] = [1, 3, 5, 10];
+const bitmapIds = new WeakMap<ImageBitmap, number>();
+let nextBitmapId = 1;
+
+function gridBitmapId(bitmap: ImageBitmap): number {
+  let id = bitmapIds.get(bitmap);
+  if (!id) {
+    id = nextBitmapId++;
+    bitmapIds.set(bitmap, id);
+  }
+  return id;
+}
 
 function calibDetail(api: AppApi): string {
   const book = api.book();
@@ -44,13 +55,18 @@ export class GridView {
   private cols = 3;
   private lastWidth = 0;
   private readonly indexById = new Map<string, number>();
+  private readonly laidOutMs = new Map<string, number>();
+  private cellNodes = new Map<string, HTMLButtonElement>();
+  private groupCountTotal = 0;
   private ro: ResizeObserver | null = null;
   private onResize: (() => void) | null = null;
+  private readonly host: HTMLElement;
+  private readonly api: AppApi;
 
-  constructor(
-    private readonly host: HTMLElement,
-    private readonly api: AppApi,
-  ) {}
+  constructor(host: HTMLElement, api: AppApi) {
+    this.host = host;
+    this.api = api;
+  }
 
   destroy(): void {
     this.ro?.disconnect();
@@ -65,6 +81,8 @@ export class GridView {
     }
     this.offPaste?.();
     this.offPaste = null;
+    this.cellNodes.clear();
+    this.laidOutMs.clear();
   }
 
   show(): void {
@@ -91,6 +109,28 @@ export class GridView {
     this.relayout();
   }
 
+  /** 单张照片缩略图或状态就绪时的增量更新：时间未变只刷单格，拍摄时间到达时再重排并复用已有节点。 */
+  update(id: string): void {
+    if (!this.scroller || !this.inner) {
+      this.refresh();
+      return;
+    }
+    const photo = this.api.photo(id);
+    const photos = this.api.photos();
+    if (!photo || photos.length !== this.laidOutMs.size) {
+      this.relayout();
+      return;
+    }
+    const prevMs = this.laidOutMs.get(id);
+    if (prevMs === undefined || prevMs !== photoMs(photo)) {
+      this.relayout();
+      return;
+    }
+    this.subtitle(photos, this.groupCountTotal);
+    const cell = this.cellNodes.get(id);
+    if (cell) this.fill(cell, photo);
+  }
+
   showUnreadable(id: string): void {
     const photo = this.api.photo(id);
     if (!photo) return;
@@ -103,6 +143,9 @@ export class GridView {
   }
 
   private mount(): void {
+    this.cellNodes.clear();
+    this.laidOutMs.clear();
+    this.sig = '';
     this.host.replaceChildren();
     const screen = el('section', 'screen');
     const nav = el('header', 'nav');
@@ -183,7 +226,11 @@ export class GridView {
     if (!this.scroller || !this.inner) return;
     const photos = this.api.photos();
     this.indexById.clear();
-    photos.forEach((photo, idx) => this.indexById.set(photo.id, idx + 1));
+    this.laidOutMs.clear();
+    photos.forEach((photo, idx) => {
+      this.indexById.set(photo.id, idx + 1);
+      this.laidOutMs.set(photo.id, photoMs(photo));
+    });
     const groups = groupByGap(
       photos.map((photo) => ({ id: photo.id, ms: photoMs(photo) })),
       this.api.gap(),
@@ -211,6 +258,7 @@ export class GridView {
       }
     }
     this.rows = kept;
+    this.groupCountTotal = groups.length;
     this.groupRows.clear();
     for (const group of groups) this.groupRows.set(`group:${group.ids[0] ?? group.startMs}`, group);
     this.subtitle(photos, groups.length);
@@ -218,7 +266,6 @@ export class GridView {
     for (const item of this.host.querySelectorAll<HTMLButtonElement>('[data-order]')) {
       item.classList.toggle('on', item.dataset.order === this.api.order());
     }
-    this.sig = '';
     this.renderWindow();
     this.selectionBar();
     this.paintPasteBar();
@@ -274,39 +321,54 @@ export class GridView {
       480,
     );
     const slice = this.rows.slice(range.start, range.end);
-    const sig = `${range.start}:${this.cols}:${slice.map((row) => row.key).join('|')}:${this.selecting ? 's' : ''}:${pasteState.clip ? 'c' : ''}`;
+    const rowSig = slice
+      .map((row) =>
+        row.kind === 'cells'
+          ? `${row.key}=${row.ids.join(',')}:${Math.round(row.height)}${this.soloRows.has(row.key) ? '!' : ''}`
+          : `${row.key}=${row.label}:${row.ids.length}`,
+      )
+      .join('|');
+    const sig = `${range.start}:${Math.round(range.top)}:${this.cols}:${rowSig}:${this.selecting ? 's' : ''}:${pasteState.clip ? 'c' : ''}`;
     const total = this.rows.reduce((sum, row) => sum + row.height, 0);
     this.inner.style.height = `${total}px`;
     if (sig !== this.sig) {
       this.sig = sig;
+      const nextNodes = new Map<string, HTMLButtonElement>();
       const wrap = el('div');
       wrap.style.transform = `translateY(${range.top}px)`;
-      for (const row of slice) wrap.append(this.renderRow(row));
+      for (const row of slice) wrap.append(this.renderRow(row, nextNodes));
+      this.cellNodes = nextNodes;
       this.inner.replaceChildren(wrap);
+    } else {
+      this.paint();
+      this.paintHeads();
     }
-    this.paint();
     this.scroller.classList.toggle('sel', this.selecting);
   }
 
-  private renderRow(row: VRow): HTMLElement {
+  private renderRow(row: VRow, nextNodes: Map<string, HTMLButtonElement>): HTMLElement {
     if (row.kind === 'day') return el('div', 'day', row.label);
     if (row.kind === 'group') return this.groupHead(row);
     const cells = el('div', this.soloRows.has(row.key) ? 'cells solo-sep' : 'cells');
     cells.style.height = `${row.height}px`;
     for (const id of row.ids) {
       const photo = this.api.photo(id);
-      const cell = button('cell', '');
-      cell.dataset.id = id;
-      cell.setAttribute('aria-label', '照片');
-      const ck = el('span', 'ck');
-      const bl = el('span', 'bl');
-      const raw = el('span', 'raw');
-      ck.setAttribute('aria-hidden', 'true');
-      bl.setAttribute('aria-hidden', 'true');
-      raw.setAttribute('aria-hidden', 'true');
-      cell.append(ck, bl, raw);
-      cell.addEventListener('click', () => this.onCell(id));
+      let cell = this.cellNodes.get(id);
+      if (!cell) {
+        cell = button('cell', '');
+        cell.dataset.id = id;
+        cell.setAttribute('aria-label', '照片');
+        const ck = el('span', 'ck');
+        const bl = el('span', 'bl');
+        const raw = el('span', 'raw');
+        ck.setAttribute('aria-hidden', 'true');
+        bl.setAttribute('aria-hidden', 'true');
+        raw.setAttribute('aria-hidden', 'true');
+        cell.append(ck, bl, raw);
+        cell.addEventListener('click', () => this.onCell(id));
+      }
       if (photo) this.fill(cell, photo);
+      nextNodes.set(id, cell);
       cells.append(cell);
     }
     return cells;
@@ -359,17 +421,19 @@ export class GridView {
         selected,
       ),
     );
-    if (!photo.bitmap) return;
+    const bmp = photo.bitmap;
+    if (!bmp || bmp.width <= 0 || bmp.height <= 0) return;
     let canvas = cell.querySelector('canvas');
     if (!canvas) {
       canvas = document.createElement('canvas');
       cell.prepend(canvas);
     }
-    if (canvas.dataset.drawn === photo.id) return;
-    canvas.width = photo.bitmap.width;
-    canvas.height = photo.bitmap.height;
-    canvas.getContext('2d')?.drawImage(photo.bitmap, 0, 0);
-    canvas.dataset.drawn = photo.id;
+    const drawnKey = `${photo.id}:${gridBitmapId(bmp)}`;
+    if (canvas.dataset.drawn === drawnKey) return;
+    canvas.width = bmp.width;
+    canvas.height = bmp.height;
+    canvas.getContext('2d')?.drawImage(bmp, 0, 0);
+    canvas.dataset.drawn = drawnKey;
   }
 
   private onCell(id: string): void {
