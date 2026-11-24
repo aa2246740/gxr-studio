@@ -38,6 +38,7 @@ export class Pool {
       CoreRequest,
       | 'file'
       | 'meta'
+      | 'defaultCalib'
       | 'resolve'
       | 'cameraRecipe'
       | 'check'

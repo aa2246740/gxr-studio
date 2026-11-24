@@ -8,7 +8,8 @@ export const cellOf = (stem) => `.cell[data-id="${stem.toLowerCase()}"]`;
 export async function pickAll(page, manifest, files) {
   if (manifest.pack) {
     await page.locator('input.calibpick').setInputFiles(manifest.pack);
-    await page.waitForSelector('.calib[data-calib="ready"]', { timeout: 60_000 });
+    // 起始页没有校准卡了：等导入的包真的用上（不是内置的默认校准）。
+    await page.waitForFunction(() => window.__gxrBook?.pack?.kind === 'user' && !window.__gxrBook.packBusy, null, { timeout: 60_000 });
   }
   await page.locator('input.filepick:not(.calibpick)').setInputFiles(files);
   await page.waitForFunction(

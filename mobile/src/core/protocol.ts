@@ -9,6 +9,7 @@ export type CoreOp =
   | 'dat'
   | 'calib-file'
   | 'calib-restore'
+  | 'calib-default'
   | 'bake'
   | 'resolve'
   | 'camera-recipe'
@@ -166,6 +167,8 @@ export interface CoreRequest {
   file?: File | null;
   /** 导入时存进 IndexedDB 用的名字和时间。 */
   meta?: { name: string; savedAt: number } | null;
+  /** 内置的默认校准：下载地址和整个文件应有的 SHA-256。 */
+  defaultCalib?: { url: string; sha256: string } | null;
   resolve?: ResolveArgs | null;
   cameraRecipe?: CameraRecipeArgs | null;
   check?: CalibCheckArgs | null;

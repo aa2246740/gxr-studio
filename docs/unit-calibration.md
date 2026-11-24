@@ -22,6 +22,8 @@
 
 导入先核对所有来源，再原子替换整个 `calib/`。可以导入部分单元，未列出的单元成为“未导入”。安装后的清单 schema 为 `gxr-studio/calib/2`，包含 `units.<id>.models`、实拍 ISO、曝光来源和原厂色表摘要。安装后的 NPZ 只存 `d0`、`d1`、输入系数；`stock` 与原厂查表矩阵运行时来自相机数据。参数和字节只保存在应用数据目录。旧 schema 拒绝使用，要求重新导入。
 
+桌面上的参数和字节只保存在应用数据目录。唯一公开的一份是手机版内置的默认校准包 `mobile/public/calib/gxr-default-calib.zip`（机主 2026-11-24 决定）：它就是上面这种安装后的包打成的 iPhone zip，只有拟合参数（d0、d1、输入系数、色相分区模型和清单），没有 `stock`、`S_eff`、原厂查表矩阵和固件字节，原厂 04 在手机上照样来自用户自己的相机数据。仓库的 `scripts/private_bytes.py` 只放行这个路径上的这一份字节，其它校准数据照样拦。见 `docs/mobile.md` 的「内置的默认校准」。桌面的导入、导出和状态不变。
+
 ## 接口字段
 
 - `POST /api/calibration/import` 接收绝对文件夹路径 `path`，支持新版包或开发机研究根目录。校验失败保留之前的包，错误码为 `calibration_pack_invalid` 或 `calibration_stock_mismatch`。

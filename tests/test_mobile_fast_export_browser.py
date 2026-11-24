@@ -172,12 +172,14 @@ def test_mobile_fast_export_acceptance(tmp_path: Path) -> None:
 
     # Acceptance 5: Grid & start screen calm-down (+ solo separation + grid ⋯ header alignment)
     grid = steps["grid"]
-    check(grid["startCollapsed"]["height"] <= 68, "start screen calib collapses to one line")
+    # 起始页没有校准这一步了（默认校准，2026-11-24）：没有校准卡，完整的面板在「更多 → 校准数据」。
+    check(grid["startCollapsed"]["cards"] == 0, "start screen has no calibration card")
+    check(grid["startCollapsed"]["height"] <= 68, "start screen calib takes no more than one line")
     check(
         grid["startCollapsed"]["unitsVisible"] is False and grid["startCollapsed"]["actsVisible"] is False,
-        "lens list and replace/delete collapsed",
+        "lens list and replace/restore are not on the start screen",
     )
-    check(grid["startCollapsed"]["sheetOpens"] is True, "tapping collapsed calib opens full sheet")
+    check(grid["startCollapsed"]["sheetOpens"] is True, "更多 → 校准数据 opens the full sheet")
     check(grid["gridBeforeCopy"]["applyGroupButtons"] == 0, "no 套用到这一组 before copying")
     check(grid["gridBeforeCopy"]["topSortButtons"] == 0, "sort removed from top of grid")
     check(grid["gridBeforeCopy"]["singleGroupHeadCount"] == 0, "single-photo group has no separate title")

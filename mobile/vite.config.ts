@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Connect, Plugin, ViteDevServer } from 'vite';
 import { defineConfig } from 'vite';
+import { DEFAULT_CALIB_PATH } from './src/lib/default_calib';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 
@@ -165,6 +166,40 @@ async function handleDev(
   res.end();
 }
 
+/**
+ * 测试用的开关：`GXR_MOBILE_DEFAULT_CALIB=off` 时开发服务器不发内置的默认校准（404，和第一次打开时没联网一样）；
+ * 给一个绝对路径时改发那个文件（核对不过的情形）。不设就照常发 public/ 里的那份。只在开发服务器里，不进构建。
+ */
+function defaultCalibSwitch(): Plugin {
+  return {
+    name: 'gxr-default-calib-switch',
+    apply: 'serve',
+    configureServer(server: ViteDevServer) {
+      const mode = process.env.GXR_MOBILE_DEFAULT_CALIB;
+      if (!mode) return;
+      server.middlewares.use((req, res, next) => {
+        if (new URL(req.url || '/', 'http://127.0.0.1').pathname !== `/${DEFAULT_CALIB_PATH}`) {
+          next();
+          return;
+        }
+        let body: Buffer | null = null;
+        try {
+          body = path.isAbsolute(mode) ? fs.readFileSync(mode) : null;
+        } catch {
+          body = null;
+        }
+        if (!body) {
+          res.statusCode = 404;
+          res.end('default calibration is off');
+          return;
+        }
+        res.setHeader('content-type', 'application/zip');
+        res.end(body);
+      });
+    },
+  };
+}
+
 /** 构建号：这次构建的短提交号，写进导出 EXIF 描述的 `gxr-core <构建号>`。开发服务器里是 `dev`。 */
 function buildId(command: string): string {
   if (command !== 'build') return 'dev';
@@ -195,5 +230,5 @@ export default defineConfig(({ command }) => ({
       },
     },
   },
-  plugins: [devSamples()],
+  plugins: [devSamples(), defaultCalibSwitch()],
 }));

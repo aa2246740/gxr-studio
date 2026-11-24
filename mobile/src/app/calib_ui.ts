@@ -1,6 +1,8 @@
-// 校准数据那张卡（起始页 01、「更多 → 校准数据」）：导入、哪些镜头和 ISO 校准过、替换、删除。
+// 校准数据那张卡（「更多 → 校准数据」）：现在用的是默认校准还是自己的、哪些镜头和 ISO 校准过、换成自己的、恢复默认。
+// 起始页不再放这张卡：没导入时用内置的默认校准（lib/default_calib.ts），第一步就是选照片和相机配方文件。
 
-import { UNIT_LABEL, unitLine } from '../lib/calib';
+import { UNIT_LABEL, unitLine, type UnitPack } from '../lib/calib';
+import { DEFAULT_LABEL, DEFAULT_NOTE } from '../lib/default_calib';
 import { deviceName } from '../lib/device';
 import type { Book } from './book';
 import { button, el } from './dom';
@@ -12,48 +14,66 @@ function tag(text: string, kind: 'warn' | 'ok'): HTMLElement {
   return node;
 }
 
-/** 按现在的状态画一次。导入、替换、删除后由调用方重画。 */
+/** 包里每个单元一行（选了相机配方文件后带上核对结果），再加一行没校准的镜头。 */
+function unitList(book: Book, units: UnitPack[]): HTMLElement {
+  const list = el('div', 'units');
+  for (const row of units) {
+    const state = book.dat ? book.unitState(row.unit) : null;
+    const line = el('p', 'unit', unitLine(row.unit));
+    line.dataset.unit = row.unit;
+    if (state?.state === 'invalid') {
+      line.append(el('span', 'bad', ` · ${state.message}`));
+      line.dataset.state = 'invalid';
+    } else line.dataset.state = state?.state ?? 'listed';
+    list.append(line);
+  }
+  const missing = (['jlaunch', 'qlaunch', 'l08firm'] as const).filter((unit) => !units.some((row) => row.unit === unit));
+  if (missing.length) list.append(el('p', 's', `${missing.map((unit) => UNIT_LABEL[unit]).join('、')} 没有校准数据，这些镜头拍的照片只显示中性转换。`));
+  return list;
+}
+
+/** 「换成自己的校准…」：就是原来的导入。 */
+function importButton(api: AppApi, book: Book, label: string, block: boolean): HTMLButtonElement {
+  const choose = button(block ? 'btn block' : 'btn', book.packBusy ? '正在核对校准数据…' : label);
+  choose.dataset.act = 'calib-import';
+  choose.disabled = book.packBusy;
+  choose.addEventListener('click', () => api.pickCalib());
+  return choose;
+}
+
+/** 按现在的状态画一次。导入、换成自己的、恢复默认、默认校准加载完后由调用方重画。 */
 function paint(card: HTMLElement, api: AppApi, book: Book): void {
   card.replaceChildren();
-  card.dataset.calib = book.pack ? 'ready' : 'none';
+  const pack = book.pack;
+  card.dataset.calib = pack ? pack.kind : book.loadingDefault ? 'loading' : 'none';
   const hd = el('div', 'hd');
-  if (!book.pack) {
-    hd.append(el('b', '', '导入校准数据'), el('span', 'dim', '只需一次'), tag('未导入', 'warn'));
+  if (pack?.kind === 'user') {
+    hd.append(el('b', '', '校准数据'), tag('已导入', 'ok'));
+    card.append(hd, el('p', '', '已导入：配方按校准数据预测。'), unitList(book, pack.units), el('p', 's', `来自「${pack.name}」`));
+    const acts = el('div', 'acts');
+    // 删掉自己导入的包就回到默认校准。
+    const restore = button('btn', '恢复默认校准');
+    restore.dataset.act = 'calib-restore-default';
+    restore.disabled = book.packBusy;
+    restore.addEventListener('click', () => void book.removePack());
+    acts.append(importButton(api, book, '换成自己的校准…', false), restore);
+    card.append(acts);
+  } else if (pack) {
+    hd.append(el('b', '', DEFAULT_LABEL));
+    card.append(hd, el('p', 's', DEFAULT_NOTE), unitList(book, pack.units), importButton(api, book, '换成自己的校准…', true));
+  } else if (book.loadingDefault) {
+    hd.append(el('b', '', '校准数据'));
+    card.append(hd, el('p', 'dim', '正在加载默认校准…'), importButton(api, book, '换成自己的校准…', true));
+  } else {
+    hd.append(el('b', '', '校准数据'), tag('未校准', 'warn'));
+    const why = el('p', '', `${book.defaultError ?? ''}配方只显示中性转换，和相机里的颜色不同。`);
+    why.dataset.state = 'default-failed';
     card.append(
       hd,
-      el('p', '', '还没导入：配方只显示中性转换，和相机里的颜色不同。'),
-      el('p', 's', `在 Mac 的 GXR Studio 里导出，用隔空投送发到这台 ${deviceName()}。`),
+      why,
+      el('p', 's', `也可以用自己的校准：在 Mac 的 GXR Studio 里导出，用隔空投送发到这台 ${deviceName()}。`),
+      importButton(api, book, '选择校准数据文件', true),
     );
-    const choose = button('btn block', book.packBusy ? '正在核对校准数据…' : '选择校准数据文件');
-    choose.disabled = book.packBusy;
-    choose.addEventListener('click', () => api.pickCalib());
-    card.append(choose);
-  } else {
-    hd.append(el('b', '', '校准数据'), tag('已导入', 'ok'));
-    card.append(hd, el('p', '', '已导入：配方按校准数据预测。'));
-    const list = el('div', 'units');
-    for (const row of book.pack.units) {
-      const state = book.dat ? book.unitState(row.unit) : null;
-      const line = el('p', 'unit', unitLine(row.unit));
-      line.dataset.unit = row.unit;
-      if (state?.state === 'invalid') {
-        line.append(el('span', 'bad', ` · ${state.message}`));
-        line.dataset.state = 'invalid';
-      } else line.dataset.state = state?.state ?? 'listed';
-      list.append(line);
-    }
-    const missing = (['jlaunch', 'qlaunch', 'l08firm'] as const).filter((unit) => !book.pack?.units.some((row) => row.unit === unit));
-    if (missing.length) list.append(el('p', 's', `${missing.map((unit) => UNIT_LABEL[unit]).join('、')} 没有校准数据，这些镜头拍的照片只显示中性转换。`));
-    card.append(list, el('p', 's', `来自「${book.pack.name}」`));
-    const acts = el('div', 'acts');
-    const replace = button('btn', book.packBusy ? '正在核对校准数据…' : '替换');
-    replace.disabled = book.packBusy;
-    replace.addEventListener('click', () => api.pickCalib());
-    const remove = button('btn', '删除');
-    remove.disabled = book.packBusy;
-    remove.addEventListener('click', () => void book.removePack());
-    acts.append(replace, remove);
-    card.append(acts);
   }
   if (book.packError) {
     const line = el('p', 'bad', book.packError);

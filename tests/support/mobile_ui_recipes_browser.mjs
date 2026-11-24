@@ -1,5 +1,6 @@
-// UI-M2 在无头 Chrome 里走一遍：导入校准数据、选照片（先不带相机配方文件，06d）、补选 GXRCE.DAT、
-// 配方卡画出来、点一张换配方、换片再回来选择还在、长按看原图、删掉校准数据（06c）、只有 JPG（06e）。
+// UI-M2 在无头 Chrome 里走一遍：选照片（先不带相机配方文件）、在「更多 → 校准数据」里导入校准数据、06d、补选 GXRCE.DAT、
+// 配方卡画出来、点一张换配方、换片再回来选择还在、长按看原图、恢复默认校准（06c）、只有 JPG（06e）。
+// 测试里内置的默认校准是关着的（GXR_MOBILE_DEFAULT_CALIB=off，等于下载不下来），所以恢复默认后是中性转换并写明原因。
 // 输出一行 JSON，里面有 UI 交给显卡的烘焙表的 sha256，Python 那边和桌面的逐字节比。
 
 import { pathToFileURL } from 'node:url';
@@ -104,26 +105,31 @@ try {
   await page.goto(url);
   await settle(page);
 
-  // 01：导入校准数据。先给一个压缩过的 zip，看到一行原因；再给对的。
-  await page.locator('input.calibpick').setInputFiles(manifest.deflated);
-  await page.waitForSelector('.calib [data-state="calib-error"]', { timeout: 60_000 });
-  const refused = await page.locator('.calib [data-state="calib-error"]').innerText();
-  await page.locator('input.calibpick').setInputFiles(manifest.pack);
-  await page.waitForSelector('.calib[data-calib="ready"]', { timeout: 60_000 });
-  await snap(page, '01-calibrated');
-  await page.locator('.start .calib[data-calib="ready"]').click();
-  await page.waitForSelector('.calib-sheet .calib[data-calib="ready"]', { timeout: 10_000 });
-  const calibCardText = await page.locator('.calib-sheet .calib').innerText();
-  await page.locator('.calib-sheet button', { hasText: '完成' }).click();
-  await page.waitForFunction(() => !document.querySelector('.calib-sheet'));
-  step('calibration', { refused, card: calibCardText });
-
-  // 02 → 03，没有相机配方文件（06d）。
+  // 01：起始页没有校准这一步，第一步就是选照片。
+  const startCards = await page.locator('.start .calib').count();
   await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.pairs);
   await page.waitForFunction(() => {
     const sub = document.querySelector('.nav small');
     return sub && !sub.textContent.includes('正在读取') && document.querySelector('.cell canvas');
   }, null, { timeout: 90_000 });
+  // 「更多 → 校准数据」：先给一个压缩过的 zip，看到一行原因；再给对的。
+  await page.waitForFunction(() => window.__gxrBook && !window.__gxrBook.loadingDefault, null, { timeout: 60_000 });
+  await page.getByRole('button', { name: '更多' }).click();
+  await page.locator('.lrow', { hasText: '校准数据' }).click();
+  await page.waitForSelector('.calib-sheet .calib[data-calib="none"]', { timeout: 10_000 });
+  const calibBefore = await page.locator('.calib-sheet .calib').innerText();
+  await page.locator('input.calibpick').setInputFiles(manifest.deflated);
+  await page.waitForSelector('.calib-sheet .calib [data-state="calib-error"]', { timeout: 60_000 });
+  const refused = await page.locator('.calib-sheet .calib [data-state="calib-error"]').innerText();
+  await page.locator('input.calibpick').setInputFiles(manifest.pack);
+  await page.waitForSelector('.calib-sheet .calib[data-calib="user"]', { timeout: 60_000 });
+  await snap(page, '01-calibrated');
+  const calibCardText = await page.locator('.calib-sheet .calib').innerText();
+  await page.locator('.calib-sheet button', { hasText: '完成' }).click();
+  await page.waitForFunction(() => !document.querySelector('.calib-sheet'));
+  step('calibration', { startCards, before: calibBefore, refused, card: calibCardText });
+
+  // 02 → 03，没有相机配方文件（06d）。
   await openFirst(page);
   const noDat = {
     state: await page.locator('.editor .strip[data-recipes]').getAttribute('data-state'),
@@ -294,12 +300,13 @@ try {
   await waitCards(page);
   step('looks-cleared', { beforeCalib, afterCalib, beforeDat, afterDat });
 
-  // 06c：删掉校准数据，配方还能选，但卡片和照片都是中性转换。
+  // 06c：恢复默认校准（删掉导入的包）。默认校准在测试里下载不下来：配方还能选，但卡片和照片都是中性转换，写明原因。
   await backToGrid(page);
   await page.getByRole('button', { name: '更多' }).click();
   await page.locator('.lrow', { hasText: '校准数据' }).click();
-  await page.waitForSelector('.calib-sheet .calib[data-calib="ready"]');
-  await page.locator('.calib-sheet .calib button', { hasText: '删除' }).click();
+  await page.waitForSelector('.calib-sheet .calib[data-calib="user"]');
+  await page.locator('.calib-sheet .calib button', { hasText: '恢复默认校准' }).click();
+  await page.waitForFunction(() => !window.__gxrBook.pack && !window.__gxrBook.loadingDefault && !window.__gxrBook.packBusy, null, { timeout: 60_000 });
   await page.waitForSelector('.calib-sheet .calib[data-calib="none"]');
   await page.locator('.calib-sheet button', { hasText: '完成' }).click();
   await openFirst(page);

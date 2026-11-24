@@ -6,7 +6,7 @@ import { neutralBake, NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
-import { bakeIn, calibCheck, importCalib, readDat, resolveRecipe, restoreCalib, warmCore } from '../core/api';
+import { bakeIn, calibCheck, importCalib, loadDefaultCalib, readDat, resolveRecipe, restoreCalib, warmCore } from '../core/api';
 import { deletePack, loadWatermark } from '../lib/idb';
 import { Book } from './book';
 import { lookCache } from './looks';
@@ -63,6 +63,7 @@ class App implements AppApi {
     calibCheck,
     deletePack,
     watermark: loadWatermark,
+    defaultCalib: loadDefaultCalib,
   });
   /** 用户导入的 .cube LUT 目录（只存 IndexedDB 与 Worker，页面按需拿字节）。 */
   private readonly lutBookStore = new LutBook();

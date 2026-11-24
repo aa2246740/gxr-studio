@@ -1,7 +1,6 @@
 import type { AppApi } from './model';
 import { deviceName } from '../lib/device';
 import { FONT_LICENCE_LABELS, FONT_LICENCES } from '../lib/font_assets';
-import { calibCard } from './calib_ui';
 import { button, el, icon, ICON } from './dom';
 
 function hero(): SVGSVGElement {
@@ -32,41 +31,11 @@ export function renderStart(host: HTMLElement, api: AppApi): void {
   const picture = el('div', 'hero');
   picture.append(hero());
   const heading = el('h1', '', '选照片，换配方，存到相册');
-  const lead = el('p', 'lead', `用读卡器把存储卡插到 ${dev}，再点下面的按钮，在「文件」里选照片。`);
+  const lead = el('p', 'lead', `用读卡器把存储卡插到 ${dev}，再点下面的按钮，在「文件」里选照片和相机配方文件。`);
   const priv = el('p', 'priv', `照片只在这次使用中保留，不会上传，也不会离开这台 ${dev}。`);
   priv.prepend(icon(ICON.lock));
 
-  const calib = calibCard(api);
-  const syncCalibTrigger = () => {
-    const ready = calib.dataset.calib === 'ready';
-    if (ready) {
-      calib.setAttribute('role', 'button');
-      calib.tabIndex = 0;
-    } else {
-      calib.removeAttribute('role');
-      calib.removeAttribute('tabindex');
-    }
-  };
-  syncCalibTrigger();
-  const offCalib = api.book().onChange(() => {
-    if (!calib.isConnected) {
-      offCalib();
-      return;
-    }
-    syncCalibTrigger();
-  });
-  calib.addEventListener('click', (event) => {
-    if (calib.dataset.calib !== 'ready') return;
-    if ((event.target as HTMLElement | null)?.closest('button')) return;
-    api.showCalib();
-  });
-  calib.addEventListener('keydown', (event) => {
-    if (calib.dataset.calib !== 'ready') return;
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    api.showCalib();
-  });
-
+  // 起始页不再有校准这一步：没导入时用内置的默认校准，校准数据放在「更多 → 校准数据」。
   const cta = el('div', 'cta');
   const pick = button('btn primary lg block', '从存储卡选照片');
   pick.addEventListener('click', () => api.addPhotos());
@@ -77,7 +46,7 @@ export function renderStart(host: HTMLElement, api: AppApi): void {
   helpBtn.addEventListener('click', () => api.showHelp());
   help.append(helpBtn);
 
-  body.append(picture, heading, lead, priv, calib, cta, help);
+  body.append(picture, heading, lead, priv, cta, help);
   screen.append(nav, body);
   host.append(screen);
 }

@@ -95,7 +95,8 @@ try {
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.app[data-core="1"]', { timeout: 60_000 });
   await page.locator('input.calibpick').setInputFiles(manifest.pack);
-  await page.waitForSelector('.calib[data-calib="ready"]', { timeout: 60_000 });
+  // 起始页没有校准卡了：等导入的包真的用上（不是内置的默认校准）。
+  await page.waitForFunction(() => window.__gxrBook?.pack?.kind === 'user' && !window.__gxrBook.packBusy, null, { timeout: 60_000 });
   await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.files);
   await page.waitForFunction(
     () => !document.querySelector('.nav small')?.textContent?.includes('正在读取') && document.querySelectorAll('.cell').length >= 1,

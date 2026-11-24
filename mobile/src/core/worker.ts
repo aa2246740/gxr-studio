@@ -281,6 +281,32 @@ async function calibRestore(id: number): Promise<void> {
   await checkZip(id, stored.zip, { name: stored.name, savedAt: stored.savedAt }, null);
 }
 
+/**
+ * 内置的默认校准：下载，先核对整个文件的 SHA-256 是记下的那一份，再和用户导入一样核对（不存 IndexedDB）。
+ * 下载不下来回 `detail: 'fetch'`，文件不对回 `detail: 'sha256'`，都不抛。
+ */
+async function calibDefault(id: number, args: { url: string; sha256: string }): Promise<void> {
+  let buffer: ArrayBuffer;
+  try {
+    const res = await fetch(args.url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // 先看声明的长度：不像校准包的大文件一个字节都不读。
+    if (Number(res.headers.get('content-length') ?? 0) > ZIP_LIMITS.bytes) {
+      ok(id, JSON.stringify({ ok: false, detail: 'sha256' }));
+      return;
+    }
+    buffer = await res.arrayBuffer();
+  } catch {
+    ok(id, JSON.stringify({ ok: false, detail: 'fetch' }));
+    return;
+  }
+  if (buffer.byteLength > ZIP_LIMITS.bytes || (await sha256Buffer(buffer)) !== args.sha256) {
+    ok(id, JSON.stringify({ ok: false, detail: 'sha256' }));
+    return;
+  }
+  await checkZip(id, buffer, {}, null);
+}
+
 function bake(id: number, args: BakeArgs): void {
   const made = color_bake(
     new Uint8Array(args.entry),
@@ -645,6 +671,7 @@ async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   else if (op === 'dat' && buffer) dat(id, buffer, req.resolve?.library ?? null);
   else if (op === 'calib-file' && file && meta) await calibFile(id, file, meta);
   else if (op === 'calib-restore') await calibRestore(id);
+  else if (op === 'calib-default' && req.defaultCalib) await calibDefault(id, req.defaultCalib);
   else if (op === 'bake' && args) bake(id, args);
   else if (op === 'resolve' && req.resolve) resolve(id, req.resolve);
   else if (op === 'camera-recipe' && req.cameraRecipe) cameraRecipe(id, req.cameraRecipe);

@@ -4,6 +4,8 @@
 
 不要读 `/Volumes/RICOHDCX`，不要写 `~/Pictures/GXR Studio`、`~/Pictures/GXR 导出` 或 `~/Library/Application Support/GXR Studio`。测试已经把这些路径保护起来了。
 
+公开仓库不放 DAT、固件、照片和理光派生的表或校准数据。唯一的例外是手机版内置的默认校准包 `mobile/public/calib/gxr-default-calib.zip`：机主 2026-11-24 决定公开，里面只有拟合参数（`ctx_*.npz` 的 d0、d1、输入系数，`ring_*.json` 的色相分区模型和清单），没有固件字节和原厂表。`scripts/private_bytes.py` 按路径和 SHA-256 只放行这一份（`PUBLIC_CALIB`），别的校准数据和 DAT 字节照样拦。换这份包要同时改 `mobile/src/lib/default_calib.ts` 和 `PUBLIC_CALIB` 里的 SHA-256。
+
 ## 环境
 
 需要 uv 和 Python 3.12–3.14（`.python-version` 是 3.14）。

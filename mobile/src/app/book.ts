@@ -5,6 +5,7 @@ import type { Engine } from '../../../frontend/src/index';
 import type { Bake, CalibPick, CalibRead, CalibRestored, DatRead, Resolved } from '../core/api';
 import type { BakeArgs, CalibCheckArgs } from '../core/protocol';
 import { modelIso, TEXT, UNIT_ISOS, type Unit, type UnitPack } from '../lib/calib';
+import { DEFAULT_LABEL, DEFAULT_TEXT } from '../lib/default_calib';
 import { deviceName } from '../lib/device';
 import { selection, selectionKey, unitIndex, type Card, type Listing } from '../lib/recipes';
 import { ZIP_LIMITS, type ZipFail } from '../lib/zip';
@@ -24,6 +25,8 @@ export interface Pack {
   units: UnitPack[];
   manifestSha256: string;
   files: Map<string, Uint8Array>;
+  /** `user`：用户导入的（存在 IndexedDB）；`default`：内置的默认校准（每次会话下载、核对一次，不存）。 */
+  kind: 'user' | 'default';
 }
 
 export interface Dat {
@@ -80,10 +83,17 @@ export interface BookIo {
   deletePack(at: number): Promise<boolean>;
   /** IndexedDB 里存下的最高版本（导入和删除都算）。新会话的版本从它之上开始。 */
   watermark(): Promise<number>;
+  /** 内置的默认校准包（下载和核对都在 Worker 里）。不给（测试里的假 io）就当没有默认校准。 */
+  defaultCalib?(): Promise<CalibRead>;
 }
 
 export class Book {
-  pack: Pack | null = null;
+  /** 用户导入的那份；没有时用内置的默认校准（`fallback`）。 */
+  private user: Pack | null = null;
+  private fallback: Pack | null = null;
+  /** 默认校准用不了的原因（下载不下来、核对没通过）。只在没有任何校准包时显示。 */
+  defaultError: string | null = null;
+  private defaultJob: Promise<void> | null = null;
   /** 最近一次导入失败的那一行。导入成功、删除后清掉。 */
   packError: string | null = null;
   packBusy = false;
@@ -115,6 +125,16 @@ export class Book {
   private engine: Engine | null = null;
 
   constructor(private readonly io: BookIo) {}
+
+  /** 现在用的校准包：用户导入的优先，没有就是默认校准；默认校准也用不了是 null（中性转换）。 */
+  get pack(): Pack | null {
+    return this.user ?? this.fallback;
+  }
+
+  /** 还在等默认校准（读回存下的包、下载、核对）：手上没有任何包，也还没有用不了的原因。 */
+  get loadingDefault(): boolean {
+    return !this.pack && this.io.defaultCalib !== undefined && this.defaultError === null;
+  }
 
   /** 相机配方文件和校准数据的组合版本；变了就说明旧的烘焙表（和用它画的小图）都作废了。 */
   generationId(): number {
@@ -178,14 +198,57 @@ export class Book {
   /** 打开页面时把上次导入的校准数据读回来，并像桌面每次用之前那样重新核对（在 Worker 里）。 */
   async restore(): Promise<void> {
     const seq = ++this.packSeq;
-    const read = await this.io.restoreCalib();
-    if (!read || seq !== this.packSeq || read.savedAt <= this.appliedAt) return;
-    this.stamp = Math.max(this.stamp, read.savedAt);
-    if (read.ok) {
-      this.appliedAt = read.savedAt;
-      this.commit(read, read.name, read.savedAt);
-    } else this.packError = this.failText(read);
+    try {
+      const read = await this.io.restoreCalib();
+      if (!read || seq !== this.packSeq || read.savedAt <= this.appliedAt) return;
+      this.stamp = Math.max(this.stamp, read.savedAt);
+      if (read.ok) {
+        this.appliedAt = read.savedAt;
+        this.commit(read, read.name, read.savedAt);
+      } else this.packError = this.failText(read);
+      this.changed();
+    } finally {
+      // 没有存下的包（或者读回来核对没过）：用默认校准。读 IndexedDB 出错也一样。
+      this.ensureDefault();
+    }
+  }
+
+  /** 没有用户的包时，确保默认校准在用或者正在下载。 */
+  private ensureDefault(): void {
+    if (!this.user) this.useDefault().catch(() => undefined);
+  }
+
+  /**
+   * 没有用户的包时用内置的默认校准。一次会话只下载、核对一次，成功后留在内存里，删除或恢复默认时直接用；
+   * 失败（没联网、文件不对）就是中性转换并写明原因，下一次要用默认校准时（删除、恢复默认）再试。不抛。
+   */
+  private useDefault(): Promise<void> {
+    const load = this.io.defaultCalib;
+    if (this.fallback || !load) return Promise.resolve();
+    if (!this.defaultJob) {
+      const job: Promise<void> = this.loadDefault(() => load.call(this.io)).finally(() => {
+        if (this.defaultJob === job) this.defaultJob = null;
+      });
+      this.defaultJob = job;
+    }
+    return this.defaultJob;
+  }
+
+  private async loadDefault(fetchDefault: () => Promise<CalibRead>): Promise<void> {
+    this.defaultError = null;
     this.changed();
+    try {
+      const read = await fetchDefault();
+      if (read.ok) {
+        this.fallback = { name: DEFAULT_LABEL, savedAt: 0, units: read.units, manifestSha256: read.manifestSha256, files: read.files, kind: 'default' };
+        // 默认校准每次会话都是同一份：晚到也照样留下；只有正在用它时（没有用户的包）才算换了校准。
+        if (!this.user) this.bump();
+      } else this.defaultError = read.detail === 'fetch' ? DEFAULT_TEXT.fetch : DEFAULT_TEXT.bad;
+    } catch {
+      this.defaultError = DEFAULT_TEXT.fetch;
+    } finally {
+      this.changed();
+    }
   }
 
   async importPack(file: File): Promise<boolean> {
@@ -233,6 +296,7 @@ export class Book {
         this.packBusy = false;
         this.changed();
       }
+      this.ensureDefault();
     }
   }
 
@@ -252,7 +316,7 @@ export class Book {
       if (seq !== this.packSeq) {
         if (wrote && at > this.appliedAt) {
           this.appliedAt = at;
-          this.pack = null;
+          this.user = null;
           this.bump();
           this.changed();
         }
@@ -260,7 +324,7 @@ export class Book {
       }
       if (!wrote) throw new Error('tombstone not written');
       this.appliedAt = Math.max(this.appliedAt, at);
-      this.pack = null;
+      this.user = null;
       this.packError = null;
       this.bump();
     } catch {
@@ -270,6 +334,8 @@ export class Book {
         this.packBusy = false;
         this.changed();
       }
+      // 删掉用户的包就回到默认校准（已经核对过的那份直接用，没有就现在下载）。
+      this.ensureDefault();
     }
   }
 
@@ -278,7 +344,7 @@ export class Book {
   }
 
   private commit(read: Extract<CalibRead, { ok: true }>, name: string, savedAt: number): void {
-    this.pack = { name, savedAt, units: read.units, manifestSha256: read.manifestSha256, files: read.files };
+    this.user = { name, savedAt, units: read.units, manifestSha256: read.manifestSha256, files: read.files, kind: 'user' };
     this.bump();
   }
 
@@ -367,7 +433,7 @@ export class Book {
    * 版本、单元、原厂 04 指纹、文件清单、SHA-256，再建模型），两个 ISO 分支各一次。核对完会通知界面。
    */
   unitState(unit: Unit): UnitState {
-    if (!this.pack) return { state: 'none' };
+    if (!this.pack) return this.loadingDefault ? { state: 'checking' } : { state: 'none' };
     const row = this.pack.units.find((u) => u.unit === unit);
     if (!row) return { state: 'missing', message: TEXT.unitMissing };
     if (!this.dat) return { state: 'checking' };

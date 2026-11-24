@@ -3,6 +3,7 @@
 import type { BakeMeta, RawLayout, Scene } from '../../../frontend/src/index';
 import type { UnitPack } from '../lib/calib';
 import type { CropState } from '../lib/crop';
+import { DEFAULT_CALIB_SHA256, defaultCalibUrl } from '../lib/default_calib';
 import type { PhotoMeta } from '../lib/exif';
 import type { FontKey } from '../lib/fonts';
 import type { FrameLayoutData, FrameMetaResult, StampLayoutData } from '../lib/frame_spec';
@@ -219,6 +220,16 @@ export async function restoreCalib(): Promise<CalibRestored> {
   const read = calibOf(json, buffers);
   if (read.none) return null;
   return { ...read, name: read.name ?? '', savedAt: read.savedAt ?? 0 };
+}
+
+/**
+ * 内置的默认校准包（mobile/public/calib/）：Worker 下载，先核对整个文件的 SHA-256，再和用户导入一样核对。
+ * 不存 IndexedDB。下载不下来时 `detail` 是 `'fetch'`。
+ */
+export async function loadDefaultCalib(): Promise<CalibRead> {
+  const url = defaultCalibUrl(import.meta.env.BASE_URL, location.href);
+  const { json, buffers } = await workers().request('calib-default', null, [], null, { defaultCalib: { url, sha256: DEFAULT_CALIB_SHA256 } });
+  return calibOf(json, buffers);
 }
 
 export interface Bake {
