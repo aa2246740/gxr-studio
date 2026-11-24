@@ -446,7 +446,7 @@ export class RecipeView {
       this.slots.push({ card, node, thumb, nameEl, sub });
     }
     this.bakeCtrl.observe(this.slots.map((s) => s.node), this.strip);
-    this.bakeCtrl.attachInput(this.panel, this.strip);
+    this.bakeCtrl.attachInput(this.panel.closest('.screen.editor') ?? this.panel, this.strip);
     this.paintThumbs();
     this.scheduleScrollActive(picked?.id ?? null);
   }
@@ -735,6 +735,7 @@ export class RecipeView {
       jobs.push({ id: card.id, item: card });
     }
     if (!jobs.length) return;
+    this.bakeCtrl.attachInput(this.panel.closest('.screen.editor') ?? this.panel, this.strip);
     if (this.strip.isConnected && !this.bakeCtrl.hasVisible()) this.bakeCtrl.syncVisible(this.slots.map((s) => s.node), this.strip);
     const isBusy = () => this.hooks.dragging() || exportPaused();
     this.bakeCtrl.start(jobs, {

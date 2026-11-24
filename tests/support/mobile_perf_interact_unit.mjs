@@ -174,6 +174,7 @@ test('1. RecipeView: visible cards first, bounded concurrency, tap pre-empts que
 
   const { RecipeView } = await import('../../mobile/src/app/recipe_view.ts');
   const { setExportPaused } = await import('../../mobile/src/app/export_pause.ts');
+  const { shelves: shelvesOf } = await import('../../mobile/src/lib/recipes.ts');
   setExportPaused(false);
 
   const controls = [{ name: 'amount', label: '强度', default: 5, min: 1, max: 9, levels: [1, 3, 5, 7, 9] }];
@@ -212,6 +213,9 @@ test('1. RecipeView: visible cards first, bounded concurrency, tap pre-empts que
     pack: { kind: 'default', name: 'default', savedAt: 0, units: [{ unit: 'jlaunch' }], manifestSha256: 'x', files: new Map() },
     onChange: () => () => {},
     unitState: () => ({ state: 'ready' }),
+    usableDatFor() { return this.dat; },
+    unitStateFor(_p, unit) { return this.unitState(unit, this.dat); },
+    shelvesFor(_p, unit) { return this.dat ? shelvesOf(this.dat.listing, unit) : null; },
     bakeKey: (card) => (readyKeys.has(`k:${card.id}`) ? `k:${card.id}` : null),
     ready: (key) => readyKeys.has(key),
     gpuKey: (key) => (readyKeys.has(key) ? `gpu:${key}` : null),

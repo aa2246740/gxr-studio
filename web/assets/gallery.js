@@ -492,14 +492,15 @@ const EAGER_THUMBS = 16;
 
 function syncDaySizes(wrap) {
   if (!wrap) return;
-  const min = parseFloat(wrap.style.getPropertyValue?.('--cell') ?? wrap.style['--cell']) || storedSize();
+  const min = parseFloat(wrap.style.getPropertyValue?.('--cell')) || storedSize();
   const avail = Math.max(min, gridW > 0 ? gridW : (wrap.clientWidth ? wrap.clientWidth - 32 : (window.innerWidth || 1380) - 292));
   const cols = Math.max(1, Math.floor((avail + 4) / (min + 4)));
   const rowH = ((avail - (cols - 1) * 4) / cols) * (2 / 3);
   for (const day of wrap.children) {
     if (!day.classList.contains('day')) continue;
     const rows = Math.ceil(Math.max(1, day.lastElementChild?.children.length || 0) / cols);
-    day.style.setProperty('--day-h', `${Math.round(48 + rows * rowH + (rows - 1) * 4)}px`);
+    const next = `${Math.round(48 + rows * rowH + (rows - 1) * 4)}px`;
+    if (day.style.getPropertyValue?.('--day-h') !== next) day.style.setProperty('--day-h', next);
   }
 }
 

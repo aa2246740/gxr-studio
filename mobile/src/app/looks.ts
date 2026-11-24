@@ -157,17 +157,24 @@ export function coreWorkerCount(cores?: number): number {
 }
 
 /**
+ * 现行 core/pool.ts 按严格轮询分派 Worker，静默离屏并发上限先钉在 2（保留一半空闲 Worker 避免点击撞车）；
+ * 待 perf-startup 合入最闲路由（pickSlot）后再按需调高。
+ */
+export const QUIET_IDLE_BAKE_CAP = 2;
+
+/**
  * 配方卡可见优先与点击抢占调度器：
  * - 按实际 Worker 数量计算后台并发上限（N >= 2 时始终至少预留 1 个空闲 Worker 给用户点击）；
+ * - 跨 cancel() 保持真实的在途 running 计数，只在实际任务结束（resolve/reject）时递减；
  * - 用户主动点击选卡或调旋钮时立即抢占并暂停派发新的后台任务，直到所点配方落到舞台；
- * - 离屏卡片在无用户交互的空闲期按同上限并行烘焙，一旦检测到用户输入立即回落至并发 1。
+ * - 离屏卡片在无用户交互的空闲期按 min(QUIET_IDLE_BAKE_CAP, bgLimit) 并行烘焙，一旦检测到编辑器任意输入立即回落至并发 1。
  */
 export class CardBakeController<T> {
   private readonly workers: number;
   private gen = 0;
   private pending: Array<BakeJob<T>> = [];
   private hooks: CardBakeHooks<T> | null = null;
-  private inFlight = 0;
+  private running = 0;
   private idleMode = false;
   private idleHandle: { kind: 'idle' | 'timer'; id: number } | null = null;
   private waitVisTimer = 0;
@@ -180,6 +187,8 @@ export class CardBakeController<T> {
   private tapWaiters: Array<() => void> = [];
   private readonly visibleIds = new Set<string>();
   private visObserver: IntersectionObserver | null = null;
+  private inputTarget: EventTarget | null = null;
+  private inputStrip: EventTarget | null = null;
   private inputDetach: (() => void) | null = null;
   private ioReady = false;
 
@@ -187,27 +196,31 @@ export class CardBakeController<T> {
     this.workers = Math.max(1, Math.floor(workerCount ?? coreWorkerCount()));
   }
 
-  attachInput(panel: EventTarget | null, strip?: EventTarget | null): void {
+  attachInput(target: EventTarget | null, strip?: EventTarget | null): void {
+    const nextStrip = strip ?? null;
+    if (this.inputDetach && this.inputTarget === target && this.inputStrip === nextStrip) return;
     this.detachInput();
     const onInput = (): void => this.noteInput();
     const opts = { passive: true } as AddEventListenerOptions;
-    const panelEvents = ['pointerdown', 'touchstart', 'wheel', 'keydown'];
-    if (panel) {
-      for (const ev of panelEvents) panel.addEventListener(ev, onInput, opts);
+    const events = ['pointerdown', 'touchstart', 'wheel', 'keydown'];
+    if (target) {
+      for (const ev of events) target.addEventListener(ev, onInput, opts);
     }
-    if (strip) strip.addEventListener('scroll', onInput, opts);
+    if (nextStrip) nextStrip.addEventListener('scroll', onInput, opts);
+    this.inputTarget = target;
+    this.inputStrip = nextStrip;
     this.inputDetach = () => {
-      if (panel) {
-        for (const ev of panelEvents) panel.removeEventListener(ev, onInput, opts);
+      if (target) {
+        for (const ev of events) target.removeEventListener(ev, onInput, opts);
       }
-      if (strip) strip.removeEventListener('scroll', onInput, opts);
+      if (nextStrip) nextStrip.removeEventListener('scroll', onInput, opts);
     };
   }
 
   noteInput(cooldownMs = 1200): void {
     const until = Date.now() + cooldownMs;
     if (until > this.quietUntil) this.quietUntil = until;
-    if (this.inFlight >= 1) this.clearIdle();
+    if (this.running >= 1) this.clearIdle();
     if (this.quietTimer) clearTimeout(this.quietTimer);
     this.quietTimer = setTimeout(() => {
       this.quietTimer = 0;
@@ -348,7 +361,6 @@ export class CardBakeController<T> {
     this.gen += 1;
     this.pending = [];
     this.hooks = null;
-    this.inFlight = 0;
     this.idleMode = false;
     this.visFallback = false;
     this.clearIdle();
@@ -378,6 +390,8 @@ export class CardBakeController<T> {
   private detachInput(): void {
     this.inputDetach?.();
     this.inputDetach = null;
+    this.inputTarget = null;
+    this.inputStrip = null;
   }
 
   private bgLimit(): number {
@@ -388,7 +402,8 @@ export class CardBakeController<T> {
 
   private currentIdleLimit(): number {
     const limit = this.bgLimit();
-    return Date.now() >= this.quietUntil ? limit : Math.min(1, limit);
+    if (Date.now() < this.quietUntil) return Math.min(1, limit);
+    return Math.min(QUIET_IDLE_BAKE_CAP, limit);
   }
 
   private flushTapWaiters(): void {
@@ -460,15 +475,13 @@ export class CardBakeController<T> {
   private launch(job: BakeJob<T>): void {
     const hooks = this.hooks;
     if (!hooks) return;
-    const gen = this.gen;
-    this.inFlight += 1;
+    this.running += 1;
     void hooks
       .run(job.item)
       .catch(() => undefined)
       .finally(() => {
-        if (gen !== this.gen) return;
-        this.inFlight = Math.max(0, this.inFlight - 1);
-        this.pump();
+        this.running = Math.max(0, this.running - 1);
+        if (this.hooks && this.pending.length > 0) this.pump();
       });
   }
 
@@ -493,7 +506,7 @@ export class CardBakeController<T> {
       return;
     }
     const limit = this.bgLimit();
-    while (this.inFlight < limit) {
+    while (this.running < limit) {
       if (!hooks.isAlive() || this.paused(hooks)) return;
       const next = this.takeNext(true);
       if (!next) break;
@@ -501,7 +514,7 @@ export class CardBakeController<T> {
       this.clearIdle();
       this.launch(next);
     }
-    if (this.pending.length > 0 && this.stageCardId === '' && (this.inFlight === 0 || (this.idleMode && this.inFlight < this.currentIdleLimit()))) {
+    if (this.pending.length > 0 && this.stageCardId === '' && (this.running === 0 || (this.idleMode && this.running < this.currentIdleLimit()))) {
       this.scheduleIdle();
     }
   }
@@ -522,7 +535,7 @@ export class CardBakeController<T> {
     }
     this.idleMode = true;
     const limit = this.currentIdleLimit();
-    while (this.inFlight < limit) {
+    while (this.running < limit) {
       if (!hooks.isAlive() || this.paused(hooks)) return;
       const next = this.takeNext(false);
       if (!next) break;

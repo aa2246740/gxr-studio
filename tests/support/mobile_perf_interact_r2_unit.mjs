@@ -1,4 +1,4 @@
-// perf-interact Round 2 单元测试（F1 并发按 Worker 数预留点击槽、F2 离屏空闲并发与输入回落、F3 按组高度估算、F4 去重 GPU 槽位上传与旋转保焦）。
+// perf-interact Round 2/3 单元测试（F1 并发按 Worker 数预留点击槽、N1 严格轮询池与静默上限 2、N2 跨 cancel 真实运行计数、F2/N3 舞台/工具栏输入回落、F3/N4 按组高度估算与去重写入、F4 去重 GPU 槽位与旋转保焦）。
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -73,7 +73,8 @@ function makePhoto(id) {
   };
 }
 
-async function makeRecipeFixture(cores) {
+/** 严格轮询 N-worker 模拟池（与 main 分支 core/pool.ts:59 一致），支持 resolve + bake 两步或单步派发。 */
+async function makeRecipeFixture(cores, { twoStep = false } = {}) {
   setupEnv();
   const origNav = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { hardwareConcurrency: cores } });
@@ -91,6 +92,7 @@ async function makeRecipeFixture(cores) {
 
   const { RecipeView } = await import('../../mobile/src/app/recipe_view.ts');
   const { setExportPaused } = await import('../../mobile/src/app/export_pause.ts');
+  const { shelves: shelvesOf } = await import('../../mobile/src/lib/recipes.ts');
   setExportPaused(false);
 
   const workerCount = Math.min(4, Math.max(1, cores - 1));
@@ -109,27 +111,58 @@ async function makeRecipeFixture(cores) {
     library: null,
   };
 
-  // N-worker 模拟池：每个 worker 一次只跑 1 个 bake，有空闲 worker 立即执行，否则排队等待
-  const active = new Map();
-  const waitQueue = [];
+  // 严格轮询：每个 Worker 维护各自 FIFO 队列，next 严格按 (next++ % workerCount) 轮转
+  const workerQueues = Array.from({ length: workerCount }, () => []);
+  let nextSlot = 0;
   const pendingByCard = new Map();
   const readyKeys = new Set();
-  const startedImmediately = new Map();
+  const queueDepthOnDispatch = new Map();
+  const activeCards = () => workerQueues.filter((q) => q.length > 0).map((q) => q[0].cardId);
+  const totalInPool = () => workerQueues.reduce((sum, q) => sum + q.length, 0);
+  let peakBgCount = 0;
+  let stageCard = 'builtin:4';
 
-  const pumpPool = () => {
-    while (active.size < workerCount && waitQueue.length > 0) {
-      const next = waitQueue.shift();
-      active.set(next.cardId, next);
+  const recordPeakBg = () => {
+    let bg = 0;
+    for (const q of workerQueues) {
+      for (const job of q) {
+        if (job.cardId !== stageCard) bg += 1;
+      }
     }
+    peakBgCount = Math.max(peakBgCount, bg);
   };
+
+  const enqueueOnPool = (cardId, op) => {
+    const slot = nextSlot % workerCount;
+    nextSlot += 1;
+    const q = workerQueues[slot];
+    const ahead = q.length;
+    const d = makeDeferred();
+    const job = { cardId, op, slot, d };
+    q.push(job);
+    if (op === 'bake') queueDepthOnDispatch.set(cardId, ahead);
+    recordPeakBg();
+    return { job, ahead };
+  };
+
+  const finishOp = (cardId, op = 'bake') => {
+    for (const q of workerQueues) {
+      if (q.length > 0 && q[0].cardId === cardId && q[0].op === op) {
+        const done = q.shift();
+        if (op === 'bake') {
+          pendingByCard.delete(cardId);
+          readyKeys.add(`k:${cardId}`);
+        }
+        done.d.resolve(`k:${cardId}`);
+        return true;
+      }
+    }
+    return false;
+  };
+
   const finishBake = (cardId) => {
-    const job = active.get(cardId);
-    assert.ok(job, `card ${cardId} is not actively running on a worker (active=${[...active.keys()].join(',')})`);
-    active.delete(cardId);
-    pendingByCard.delete(cardId);
-    readyKeys.add(`k:${cardId}`);
-    job.d.resolve(`k:${cardId}`);
-    pumpPool();
+    const ok = finishOp(cardId, 'bake');
+    assert.ok(ok, `card ${cardId} is not at head of any round-robin worker (heads=${activeCards().join(',')})`);
   };
 
   const book = {
@@ -137,111 +170,242 @@ async function makeRecipeFixture(cores) {
     pack: { kind: 'default', name: 'default', savedAt: 0, units: [{ unit: 'jlaunch' }], manifestSha256: 'x', files: new Map() },
     onChange: () => () => {},
     unitState: () => ({ state: 'ready' }),
+    usableDatFor() { return this.dat; },
+    unitStateFor(_p, unit) { return this.unitState(unit, this.dat); },
+    shelvesFor(_p, unit) { return this.dat ? shelvesOf(this.dat.listing, unit) : null; },
     bakeKey: (card) => (readyKeys.has(`k:${card.id}`) ? `k:${card.id}` : null),
     ready: (key) => readyKeys.has(key),
     gpuKey: (key) => (readyKeys.has(key) ? `gpu:${key}` : null),
     pin: () => {},
     bake(card) {
       const existing = pendingByCard.get(card.id);
-      if (existing) return existing.promise;
-      const d = makeDeferred();
-      pendingByCard.set(card.id, d);
-      const job = { cardId: card.id, d };
-      if (active.size < workerCount) {
-        active.set(card.id, job);
-        startedImmediately.set(card.id, true);
-      } else {
-        waitQueue.push(job);
-        startedImmediately.set(card.id, false);
+      if (existing) return existing;
+      if (twoStep) {
+        const resSlot = nextSlot % workerCount;
+        nextSlot += 1;
+        const resolveBehind = workerQueues[resSlot].length;
+        const p = Promise.resolve().then(() => {
+          const { job, ahead } = enqueueOnPool(card.id, 'bake');
+          queueDepthOnDispatch.set(card.id, resolveBehind + ahead);
+          return job.d.promise;
+        });
+        pendingByCard.set(card.id, p);
+        return p;
       }
-      return d.promise;
+      const { job } = enqueueOnPool(card.id, 'bake');
+      pendingByCard.set(card.id, job.d.promise);
+      return job.d.promise;
     },
   };
 
   const photo = makePhoto(`p_${cores}`);
   const api = { book: () => book, photo: (id) => (id === photo.id ? photo : undefined), session: () => 1, pickDat: () => {}, pickCalib: () => {} };
   const engine = { thumb: async () => ({ w: 8, h: 6, data: new Uint8Array(8 * 6 * 4) }) };
+
+  // 按真实编辑器结构挂载：.app > .screen.editor > (.stage + .band + .toolbar)
   const appShell = document.createElement('div');
   appShell.className = 'app';
+  const screen = document.createElement('div');
+  screen.className = 'screen editor';
+  const stage = document.createElement('div');
+  stage.className = 'stage';
+  const band = document.createElement('div');
+  band.className = 'band';
+  const toolbar = document.createElement('div');
+  toolbar.className = 'toolbar';
+  screen.append(stage, band, toolbar);
+  appShell.append(screen);
   document.body.append(appShell);
+
   const rv = new RecipeView(api, engine, photo, {
     mode: () => 'raw', look: () => {}, dragging: () => false, recipeTab: () => true,
     geometry: async () => ({ geometry: { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null }, cropped: false }),
   });
-  appShell.append(rv.panelEl());
-  if (ioCallback && observed.length) {
-    ioCallback(observed.map((target, idx) => ({ target, isIntersecting: idx < 4 })));
-  }
+  band.append(rv.panelEl());
+  const setVisibleIndices = (indices) => {
+    const set = new Set(indices);
+    if (ioCallback && observed.length) {
+      ioCallback(observed.map((target, idx) => ({ target, isIntersecting: set.has(idx) })));
+    }
+  };
+  setVisibleIndices([0, 1, 2, 3]);
+
   const restore = () => {
     rv.destroy();
     if (origNav) Object.defineProperty(globalThis, 'navigator', origNav);
     else delete globalThis.navigator;
   };
-  return { rv, workerCount, active, waitQueue, startedImmediately, idleQueue, finishBake, restore };
+  return {
+    rv, screen, stage, toolbar, workerCount, workerQueues,
+    activeCards, totalInPool, queueDepthOnDispatch, idleQueue,
+    finishBake, setVisibleIndices,
+    setStageCard: (id) => { stageCard = id; },
+    getPeakBgCount: () => peakBgCount,
+    resetPeakBgCount: () => { peakBgCount = 0; },
+    restore,
+  };
 }
 
-test('R2-1 (F1): with N workers (2, 3, 4), a tap during background baking starts within 1 bake slot', async () => {
+test('R3-1 (F1+N1): strict round-robin pool keeps free worker on N=2..4 and caps quiet idle at 2 without tap regression', async () => {
+  const { QUIET_IDLE_BAKE_CAP } = await import('../../mobile/src/app/looks.ts');
+  assert.equal(QUIET_IDLE_BAKE_CAP, 2, 'QUIET_IDLE_BAKE_CAP must be named constant 2 while pool.ts is round-robin');
+
+  // 1) N=2, 3, 4 严格轮询池：初始打开期间至少留 1 个空闲 Worker，点选离屏卡在 1 个 bake 槽内直接启动（ahead === 0）
   for (const cores of [3, 4, 8]) {
     const fx = await makeRecipeFixture(cores);
     try {
       fx.rv.start(`raw:p_${cores}`);
       await tick(6);
       assert.ok(
-        fx.active.size <= fx.workerCount - 1,
-        `N=${fx.workerCount} workers: expected <= ${fx.workerCount - 1} active during initial bake so 1 worker stays free, got ${fx.active.size} (${[...fx.active.keys()].join(',')})`,
+        fx.totalInPool() <= fx.workerCount - 1,
+        `N=${fx.workerCount} workers: expected <= ${fx.workerCount - 1} in pool during initial bake, got ${fx.totalInPool()}`,
       );
       const tapNode = fx.rv.stripEl().querySelector('.rc[data-card="look:look_8"]');
       assert.ok(tapNode, 'tap target must exist');
+      fx.setStageCard('look:look_8');
       tapNode.click();
       await tick(3);
       assert.equal(
-        fx.startedImmediately.get('look:look_8'),
-        true,
-        `N=${fx.workerCount} workers: tapped card queued behind background bake instead of starting within 1 bake slot`,
+        fx.queueDepthOnDispatch.get('look:look_8'),
+        0,
+        `N=${fx.workerCount} workers: tap queued behind background on strict round-robin pool (ahead=${fx.queueDepthOnDispatch.get('look:look_8')})`,
       );
-      assert.ok(fx.active.has('look:look_8'), `N=${fx.workerCount} workers: tapped card must be running immediately on a worker`);
       fx.finishBake('look:look_8');
       await tick(4);
     } finally {
       fx.restore();
     }
   }
+
+  // 2) N=4 严格轮询池（含 resolve + bake 两步）：静默离屏并发上限为 2（留 2 个空闲 Worker），
+  //    点选未烘卡时 resolve 与 bake 均落到空闲 Worker（ahead === 0，对比 7507c7f 无回归；6fa193e 并发 3 时必撞车）
+  const fx4 = await makeRecipeFixture(8, { twoStep: true });
+  try {
+    fx4.rv.start('raw:p_8');
+    await tick(6);
+    for (let guard = 0; guard < 12; guard += 1) {
+      const vis = fx4.activeCards().filter((id) => ['builtin:1', 'builtin:2', 'builtin:3', 'builtin:4'].includes(id));
+      if (!vis.length) break;
+      for (const id of vis) fx4.finishBake(id);
+      await tick(6);
+    }
+    assert.ok(fx4.idleQueue.length > 0, 'off-screen cards must schedule idle work');
+    fx4.idleQueue.shift()();
+    await tick(6);
+    assert.equal(fx4.totalInPool(), 2, `quiet 4-worker idle concurrency must be capped at 2, got ${fx4.totalInPool()}`);
+
+    const coldTap = fx4.rv.stripEl().querySelector('.rc[data-card="look:look_12"]');
+    assert.ok(coldTap, 'cold off-screen tap target must exist');
+    fx4.setStageCard('look:look_12');
+    coldTap.click();
+    await tick(4);
+    assert.equal(
+      fx4.queueDepthOnDispatch.get('look:look_12'),
+      0,
+      `quiet idle tap regressed on 4-worker strict round-robin pool (ahead=${fx4.queueDepthOnDispatch.get('look:look_12')})`,
+    );
+    fx4.finishBake('look:look_12');
+  } finally {
+    fx4.restore();
+  }
 });
 
-test('R2-2 (F2): off-screen idle bakes scale to F1 limit when quiet and drop back to 1 on user input', async () => {
-  const fx = await makeRecipeFixture(8); // 4 workers -> F1 limit = 3 when stage is idle
+test('R3-2 (F2+N3): stage pinch/pan and toolbar taps trigger idle concurrency drop-back to 1', async () => {
+  for (const [label, targetKey, evType] of [
+    ['stage pinch/pan (pointerdown)', 'stage', 'pointerdown'],
+    ['stage wheel zoom', 'stage', 'wheel'],
+    ['toolbar tap', 'toolbar', 'pointerdown'],
+  ]) {
+    const fx = await makeRecipeFixture(8);
+    try {
+      fx.rv.start('raw:p_8');
+      await tick(6);
+      for (let guard = 0; guard < 12; guard += 1) {
+        const vis = fx.activeCards().filter((id) => ['builtin:1', 'builtin:2', 'builtin:3', 'builtin:4'].includes(id));
+        if (!vis.length) break;
+        for (const id of vis) fx.finishBake(id);
+        await tick(6);
+      }
+      assert.ok(fx.idleQueue.length > 0);
+      fx.idleQueue.shift()();
+      await tick(6);
+      assert.equal(fx.totalInPool(), 2, `${label}: quiet idle should start at cap 2`);
+
+      fx[targetKey].dispatchEvent(new Event(evType, { bubbles: true }));
+      for (const id of fx.activeCards()) fx.finishBake(id);
+      await tick(6);
+      if (fx.idleQueue.length > 0) {
+        fx.idleQueue.shift()();
+        await tick(6);
+      }
+      assert.ok(fx.totalInPool() <= 1, `${label}: idle concurrency must drop back to <= 1, got ${fx.totalInPool()}`);
+    } finally {
+      fx.restore();
+    }
+  }
+});
+
+test('R3-3 (N2): scroll, tap, and quick second tap never exceed background concurrency cap across cancel()', async () => {
+  const fx = await makeRecipeFixture(8); // 4 workers -> max background cap = 3 (stage idle) / 2 (stage baking)
   try {
     fx.rv.start('raw:p_8');
     await tick(6);
-    for (let guard = 0; guard < 12; guard += 1) {
-      const vis = [...fx.active.keys()].filter((id) => ['builtin:1', 'builtin:2', 'builtin:3', 'builtin:4'].includes(id));
-      if (!vis.length) break;
-      for (const id of vis) fx.finishBake(id);
-      await tick(6);
-    }
-    assert.ok(fx.idleQueue.length > 0, 'off-screen cards must schedule idle work');
-    fx.idleQueue.shift()();
+    fx.finishBake('builtin:4');
     await tick(6);
-    assert.equal(fx.active.size, 3, `quiet 4-worker off-screen idle concurrency must reach F1 limit 3, got ${fx.active.size}`);
+    fx.resetPeakBgCount();
 
-    // 用户输入后立即回落至并发 1
-    fx.rv.panelEl().dispatchEvent(new Event('pointerdown', { bubbles: true }));
-    for (const id of [...fx.active.keys()]) fx.finishBake(id);
-    await tick(6);
-    if (fx.idleQueue.length > 0) {
-      fx.idleQueue.shift()();
+    // 滚动到新可见区间，同时触发同 token 的 refresh()（内部 cancel + start）模拟旧代仍在 Worker 运行
+    fx.setVisibleIndices([4, 5, 6, 7]);
+    await tick(4);
+    fx.rv.refresh();
+    await tick(4);
+
+    // 第一次点击
+    const tap1 = fx.rv.stripEl().querySelector('.rc[data-card="look:look_7"]');
+    fx.setStageCard('look:look_7');
+    tap1.click();
+    await tick(4);
+    fx.rv.refresh();
+    await tick(4);
+    assert.ok(fx.getPeakBgCount() <= 3, `after scroll + tap1 + refresh, peakBg=${fx.getPeakBgCount()} exceeded cap 3`);
+    fx.finishBake('look:look_7');
+    await tick(4);
+
+    // 紧接着第二次快速点击 + 再滚一页 + refresh
+    fx.setVisibleIndices([8, 9, 10, 11]);
+    const tap2 = fx.rv.stripEl().querySelector('.rc[data-card="look:look_11"]');
+    fx.setStageCard('look:look_11');
+    tap2.click();
+    await tick(4);
+    fx.rv.refresh();
+    await tick(4);
+    assert.ok(fx.getPeakBgCount() <= 3, `after quick second tap + refresh, peakBg=${fx.getPeakBgCount()} exceeded cap 3`);
+
+    // 排空旧代与两次点击后，剩余卡片必须继续推进且在途后台数始终不超过上限 3
+    let finishedLook11 = false;
+    for (let guard = 0; guard < 30; guard += 1) {
+      const heads = fx.activeCards();
+      if (!heads.length) break;
+      for (const id of heads) {
+        if (id === 'look:look_11') finishedLook11 = true;
+        fx.finishBake(id);
+      }
       await tick(6);
     }
-    assert.ok(fx.active.size <= 1, `after user input off-screen idle concurrency must drop back to <= 1, got ${fx.active.size}`);
+    assert.equal(finishedLook11, true, 'quick second tap look:look_11 must complete');
+    assert.ok(fx.getPeakBgCount() <= 3, `peak background bakes after drain exceeded cap 3: ${fx.getPeakBgCount()}`);
   } finally {
     fx.restore();
   }
 });
 
-test('R2-3 (F3+F4): dynamic --day-h CSS, single gpuKey upload in renderCardThumb, and rotation preserves focus', async () => {
+test('R3-4 (F3+F4+N4): dynamic --day-h skips unchanged writes, no dead style[--cell], single gpuKey, focus preserved', async () => {
   setupEnv();
   const appCss = readFileSync(new URL('../../web/assets/app.css', import.meta.url), 'utf8');
-  assert.match(appCss, /contain-intrinsic-block-size:\s*auto\s+var\(--day-h/, 'app.css must use per-group var(--day-h) for contain-intrinsic-block-size');
+  assert.match(appCss, /contain-intrinsic-block-size:\s*auto\s+var\(--day-h/, 'app.css must use per-group var(--day-h)');
+  const galleryJs = readFileSync(new URL('../../web/assets/gallery.js', import.meta.url), 'utf8');
+  assert.ok(!galleryJs.includes("style['--cell']"), 'gallery.js must not keep dead wrap.style["--cell"] fallback');
+  assert.match(galleryJs, /getPropertyValue\?\.\('--day-h'\)\s*!==/, 'syncDaySizes must skip unchanged --day-h writes');
 
   const { CardBakeController, renderCardThumb, lookCache } = await import('../../mobile/src/app/looks.ts');
   lookCache.clear();
@@ -250,24 +414,19 @@ test('R2-3 (F3+F4): dynamic --day-h CSS, single gpuKey upload in renderCardThumb
   const photo = makePhoto('p_f4a');
   await renderCardThumb({
     engine: { thumb: async () => ({ w: 8, h: 6, data: new Uint8Array(8 * 6 * 4) }) },
-    source: 'raw:p_f4a',
-    photo,
-    version: photo.version,
-    cardId: 'builtin:2',
+    source: 'raw:p_f4a', photo, version: photo.version, cardId: 'builtin:2',
     geometry: async () => ({ straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null }),
     adjust: { exposure_ev: 0, wb: { warm: 0, tint: 0 }, contrast: 0, highlight: 0, shadow: 0, black_point: 0, saturation: 0, vibrance: 0, vignette: 0 },
-    alive: () => true,
-    isBusy: () => false,
+    alive: () => true, isBusy: () => false,
     bakeCtrl: new CardBakeController(),
     bakeKey: () => 'k:cached',
     ready: () => { readyCalls += 1; return true; },
     gpuKey: () => { gpuKeyCalls += 1; return 'gpu:slot0'; },
     bake: async () => 'k:cached',
-    onError: () => {},
-    onPainted: () => {},
+    onError: () => {}, onPainted: () => {},
   });
-  assert.equal(readyCalls, 0, `renderCardThumb must not call ready(), called ${readyCalls} times`);
-  assert.equal(gpuKeyCalls, 1, `renderCardThumb must call gpuKey() once for a cached bake, called ${gpuKeyCalls} times`);
+  assert.equal(readyCalls, 0);
+  assert.equal(gpuKeyCalls, 1);
 
   const { syncEditorBarOrder } = await import('../../mobile/src/app/editor_hist.ts');
   const origRemove = TestNode.prototype.remove;
@@ -291,22 +450,22 @@ test('R2-3 (F3+F4): dynamic --day-h CSS, single gpuKey upload in renderCardThumb
     barBtn.focus();
     syncEditorBarOrder(screen, band, bar, true);
     assert.strictEqual(bar.nextElementSibling, band);
-    assert.strictEqual(document.activeElement, barBtn, 'rotating to landscape must preserve focus inside toolbar');
+    assert.strictEqual(document.activeElement, barBtn);
 
     bandBtn.focus();
     syncEditorBarOrder(screen, band, bar, false);
     assert.strictEqual(band.nextElementSibling, bar);
-    assert.strictEqual(document.activeElement, bandBtn, 'rotating to portrait must preserve focus inside band');
+    assert.strictEqual(document.activeElement, bandBtn);
 
     bandBtn.focus();
     syncEditorBarOrder(screen, band, bar, true);
     assert.strictEqual(bar.nextElementSibling, band);
-    assert.strictEqual(document.activeElement, bandBtn, 'rotating to landscape must preserve focus inside band');
+    assert.strictEqual(document.activeElement, bandBtn);
 
     barBtn.focus();
     syncEditorBarOrder(screen, band, bar, false);
     assert.strictEqual(band.nextElementSibling, bar);
-    assert.strictEqual(document.activeElement, barBtn, 'rotating to portrait must preserve focus inside toolbar');
+    assert.strictEqual(document.activeElement, barBtn);
   } finally {
     TestNode.prototype.remove = origRemove;
   }

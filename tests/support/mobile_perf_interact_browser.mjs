@@ -352,10 +352,23 @@ async function frame(page, n = 2) {
         const day2CisBefore = days[2] ? getComputedStyle(days[2]).containIntrinsicBlockSize : null;
         const sizeSlider = document.querySelector('#libbar input.size');
         let day2HAfterResize = 0;
+        let redundantWrites = -1;
         if (sizeSlider) {
           sizeSlider.value = '320';
           sizeSlider.dispatchEvent(new Event('input', { bubbles: true }));
           day2HAfterResize = days[2] ? parseFloat(days[2].style.getPropertyValue('--day-h')) || 0 : 0;
+          // N4: 同值再次触发 syncDaySizes 时不得重复写入未变的 --day-h
+          redundantWrites = 0;
+          const origSet = CSSStyleDeclaration.prototype.setProperty;
+          CSSStyleDeclaration.prototype.setProperty = function (name, ...rest) {
+            if (name === '--day-h') redundantWrites += 1;
+            return origSet.call(this, name, ...rest);
+          };
+          try {
+            sizeSlider.dispatchEvent(new Event('input', { bubbles: true }));
+          } finally {
+            CSSStyleDeclaration.prototype.setProperty = origSet;
+          }
         }
         return {
           ok: true,
@@ -369,6 +382,7 @@ async function frame(page, n = 2) {
           day2H,
           day2CisBefore,
           day2HAfterResize,
+          redundantWrites,
         };
       } finally {
         window.fetch = realFetch;
@@ -383,6 +397,7 @@ async function frame(page, n = 2) {
       desktopGallery.day1H > 100 && desktopGallery.day2H > desktopGallery.day1H * 3 && desktopGallery.day2HAfterResize > desktopGallery.day2H,
       `per-day --day-h estimate missing or not scaling with photo count / thumb size: ${JSON.stringify(desktopGallery)}`,
     );
+    check(desktopGallery.redundantWrites === 0, `syncDaySizes wrote unchanged --day-h ${desktopGallery.redundantWrites} times`);
 
     // 桌面标志重命名弹窗：IME Enter（isComposing / keyCode 229）绝不触发 PUT，正常 Enter 才提交
     await page.reload({ waitUntil: 'domcontentloaded' });
