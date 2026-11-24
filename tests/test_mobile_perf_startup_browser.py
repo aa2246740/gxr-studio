@@ -11,11 +11,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,7 @@ pytestmark = pytest.mark.browser_serial
 REPO = Path(__file__).resolve().parents[1]
 DIST = REPO / "mobile" / "dist"
 DRIVER = REPO / "tests" / "support" / "mobile_perf_startup_browser.mjs"
+DRIVER_R2 = REPO / "tests" / "support" / "mobile_perf_startup_r2_browser.mjs"
 
 
 def _prereq() -> None:
@@ -42,13 +45,19 @@ def _prereq() -> None:
     _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
 
 
-def _run_driver(mode: str, manifest: dict[str, Any], tmp_path: Path, timeout: int = 180) -> dict[str, Any]:
+def _run_driver(
+    mode: str,
+    manifest: dict[str, Any],
+    tmp_path: Path,
+    timeout: int = 180,
+    driver: Path = DRIVER,
+) -> dict[str, Any]:
     out_path = tmp_path / f"{mode}-report.json"
     manifest_path = tmp_path / f"{mode}-manifest.json"
     payload = {**manifest, "out": str(out_path)}
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
     proc = subprocess.run(
-        ["node", str(DRIVER), str(RUNTIME), mode, str(manifest_path)],
+        ["node", str(driver), str(RUNTIME), mode, str(manifest_path)],
         cwd=REPO,
         env={**os.environ, "HOME": str(REAL_HOME)},
         check=False,
@@ -60,6 +69,53 @@ def _run_driver(mode: str, manifest: dict[str, Any], tmp_path: Path, timeout: in
     assert out_path.is_file(), f"{mode} driver did not write report"
     data: dict[str, Any] = json.loads(out_path.read_text(encoding="utf-8"))
     return data
+
+
+def _build_real_v2_dist(tmp_path: Path) -> Path:
+    """在临时目录中真实运行一次 Vite 生产构建，改变 grid 分包哈希、HTML 标记与默认校准包 SHA。"""
+    v2_root = tmp_path / "v2_repo"
+    v2_mobile = v2_root / "mobile"
+    v2_mobile.mkdir(parents=True, exist_ok=True)
+    for rel in ("src", "public"):
+        shutil.copytree(REPO / "mobile" / rel, v2_mobile / rel)
+    for name in ("index.html", "dev.html", "package.json", "tsconfig.json", "vite.config.ts"):
+        shutil.copy2(REPO / "mobile" / name, v2_mobile / name)
+    (v2_mobile / "node_modules").symlink_to(REPO / "mobile" / "node_modules", target_is_directory=True)
+    (v2_root / "frontend").symlink_to(REPO / "frontend", target_is_directory=True)
+    (v2_root / "src").symlink_to(REPO / "src", target_is_directory=True)
+
+    grid_ts = v2_mobile / "src" / "app" / "grid.ts"
+    grid_ts.write_text(grid_ts.read_text(encoding="utf-8") + "\nvoid 'sw-test-v2-grid';\n", encoding="utf-8")
+
+    index_html = v2_mobile / "index.html"
+    index_html.write_text(
+        index_html.read_text(encoding="utf-8").replace("<html ", '<html data-sw-test-build="v2" ', 1),
+        encoding="utf-8",
+    )
+
+    pack = v2_mobile / "public" / "calib" / "gxr-default-calib.zip"
+    old_sha = hashlib.sha256(pack.read_bytes()).hexdigest()
+    with zipfile.ZipFile(pack, "a") as zf:
+        zf.comment = b"sw-test-v2-calib"
+    new_sha = hashlib.sha256(pack.read_bytes()).hexdigest()
+    assert new_sha != old_sha
+    calib_ts = v2_mobile / "src" / "lib" / "default_calib.ts"
+    calib_src = calib_ts.read_text(encoding="utf-8")
+    assert old_sha in calib_src
+    calib_ts.write_text(calib_src.replace(old_sha, new_sha), encoding="utf-8")
+
+    vite_bin = REPO / "mobile" / "node_modules" / "vite" / "bin" / "vite.js"
+    proc = subprocess.run(
+        ["node", str(vite_bin), "build"],
+        cwd=v2_mobile,
+        env={**os.environ, "HOME": str(REAL_HOME)},
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, f"v2 vite build failed: {proc.stdout[-800:]}\n{proc.stderr[-800:]}"
+    return v2_mobile / "dist"
 
 
 def _make_synthetic_photo_pair(dest: Path) -> list[str]:
@@ -82,11 +138,12 @@ def _make_synthetic_lut(dest: Path) -> str:
 
 
 def _build_v2_dist(src_dist: Path, dst_dist: Path) -> None:
-    """复制 dist 并模拟新构建版本：新 HTML 标记 + 新缓存版本号的 sw.js。"""
+    """复制 dist 并模拟新构建版本：新 HTML 标记 + 新缓存版本号的 sw.js 与 data-gxr-build。"""
     shutil.copytree(src_dist, dst_dist)
     index_path = dst_dist / "index.html"
     html = index_path.read_text(encoding="utf-8")
     html = html.replace("<html ", '<html data-sw-test-build="v2" ', 1)
+    html = re.sub(r"(gxr-studio-v1-[0-9a-f]+)", r"\1-v2", html, count=1)
     index_path.write_text(html, encoding="utf-8")
     sw_path = dst_dist / "sw.js"
     if sw_path.is_file():
@@ -199,7 +256,7 @@ def test_service_worker_cache_privacy_and_version_upgrade(tmp_path: Path) -> Non
     for url in cached_urls:
         low = url.lower()
         assert not any(bad in low for bad in forbidden_substrings), f"forbidden entry cached by SW: {url}"
-        assert low.endswith("/index.html") or "/assets/" in low or "/calib/gxr-default-calib.zip" in low, f"unexpected URL cached by SW: {url}"
+        assert low.endswith("/") or "/assets/" in low or "/calib/gxr-default-calib.zip?v=" in low, f"unexpected URL cached by SW: {url}"
 
     # 新构建版本生效：无弹窗，下次打开即用 v2，且旧缓存被删除
     assert report["dialogs"] == [], f"SW update must not show any prompt: {report['dialogs']}"
@@ -207,3 +264,142 @@ def test_service_worker_cache_privacy_and_version_upgrade(tmp_path: Path) -> Non
     v2_names = report["cacheAuditV2"]["names"]
     assert v1_name not in v2_names, f"old cache {v1_name} was not deleted on activate: {v2_names}"
     assert len(v2_names) == 1, f"expected 1 new versioned cache after upgrade, got {v2_names}"
+
+
+def test_sw_offline_first_visit_import_edit_export(tmp_path: Path) -> None:
+    """在线访问一次开始页后断网，必须能完整走完导入 -> 编辑 -> 导出；关键预缓存失败时安装必须中止。"""
+    _prereq()
+    photos = _make_synthetic_photo_pair(tmp_path / "offline_photos")
+    report = _run_driver(
+        "offline-full-flow",
+        {"distDir": str(DIST), "photoFiles": photos},
+        tmp_path,
+        timeout=240,
+        driver=DRIVER_R2,
+    )
+    assert report["pageErrors"] == [], f"pageErrors: {report['pageErrors']}"
+    assert report["failedInstallState"]["hasActive"] is False, (
+        f"SW activated despite critical precache 500 error: {report['failedInstallState']}"
+    )
+    assert report["failedInstallState"]["controlled"] is False
+    precached = report["precachedEntries"]
+    for prefix in (
+        "/assets/grid-",
+        "/assets/editor-",
+        "/assets/export_ui-",
+        "/assets/export_worker-",
+        "/assets/thumb-",
+        "/assets/worker-",
+        "/assets/gxr_wasm_bg-",
+    ):
+        assert any(entry.startswith(prefix) for entry in precached), f"critical chunk/worker {prefix} missing from precache: {precached}"
+    assert report["thumbDrawn"] is True, f"offline first import failed: {report['offlineNetAttempts']}"
+    assert report["stageReady"] is True, "offline editor stage failed to render"
+    assert report["exportReady"] is True, "offline export failed to complete"
+
+
+def test_sw_open_old_tab_survives_v2_deploy_with_new_chunk_hashes(tmp_path: Path) -> None:
+    """部署真实 V2 后，仍打开的 V1 标签页首次导入与进编辑不能 404；关闭 V1 后再清理旧缓存。"""
+    _prereq()
+    v2_dist = _build_real_v2_dist(tmp_path)
+    photos = _make_synthetic_photo_pair(tmp_path / "old_tab_photos")
+    report = _run_driver(
+        "open-old-tab",
+        {"distV1": str(DIST), "distV2": str(v2_dist), "photoFiles": photos},
+        tmp_path,
+        timeout=240,
+        driver=DRIVER_R2,
+    )
+    assert report["pageErrors"] == [], f"pageErrors: {report['pageErrors']}"
+    assert report["gridA"] != report["gridB"], "real V2 build must produce a different grid chunk hash"
+    assert report["cacheA"] != report["cacheB"]
+    assert report["newDocBuild"] == "v2"
+    assert report["oldDocBuild"] is None
+    assert report["oldTabThumb"] is True, f"V1 tab failed to import after V2 deploy: {report}"
+    assert report["oldTabEditor"] is True, f"V1 tab failed to open editor after V2 deploy: {report}"
+    assert report["oldGrid404"] is False, f"V1 tab hit 404 on old grid chunk: {report}"
+    assert report["cacheB"] in report["cachesAfterOldClosed"]
+    assert report["cacheA"] not in report["cachesAfterOldClosed"], (
+        f"V1 cache lingered after V1 tab closed and V2 reloaded: {report['cachesAfterOldClosed']}"
+    )
+
+
+def test_sw_versioned_default_calib_zip_updates_across_builds(tmp_path: Path) -> None:
+    """更新默认校准包与 SHA 后，V2 在 SW 切换前后都必须拿到 V2 ZIP 且通过应用层核对。"""
+    _prereq()
+    v2_dist = _build_real_v2_dist(tmp_path)
+    photos = _make_synthetic_photo_pair(tmp_path / "calib_photos")
+    report = _run_driver(
+        "calib-update",
+        {"distV1": str(DIST), "distV2": str(v2_dist), "photoFiles": photos},
+        tmp_path,
+        timeout=240,
+        driver=DRIVER_R2,
+    )
+    assert report["pageErrors"] == [], f"pageErrors: {report['pageErrors']}"
+    assert report["hashA"] != report["hashB"]
+    assert report["v1Sha"] == report["hashA"]
+    assert report["shaBeforeSwSwitch"] == report["hashB"], (
+        f"V2 received stale calib before SW switch: got {report['shaBeforeSwSwitch'][:12]}, expected {report['hashB'][:12]}"
+    )
+    assert report["calibFailedBefore"] == 0, "V2 default calibration SHA check failed in UI"
+    assert report["shaAfterSwSwitch"] == report["hashB"], (
+        f"V2 received stale calib after SW switch: got {report['shaAfterSwSwitch'][:12]}, expected {report['hashB'][:12]}"
+    )
+
+
+def test_sw_index_html_redirect_to_root_online_and_offline(tmp_path: Path) -> None:
+    """服务端将 /index.html 跳转到 / 时，在线与离线导航均不得触发 redirected 响应错误。"""
+    _prereq()
+    report = _run_driver(
+        "index-redirect",
+        {"distDir": str(DIST)},
+        tmp_path,
+        timeout=180,
+        driver=DRIVER_R2,
+    )
+    assert report["pageErrors"] == [], f"pageErrors: {report['pageErrors']}"
+    assert report["cacheInspect"]["rootCached"] is True, f"scope root HTML not cached: {report['cacheInspect']}"
+    assert report["cacheInspect"]["rootRedirected"] is False, f"cached root HTML must not be redirected: {report['cacheInspect']}"
+    assert report["cacheInspect"]["indexCachedRedirected"] is not True, (
+        f"must never cache a redirected /index.html response: {report['cacheInspect']}"
+    )
+    assert report["onlineIndexResult"]["ok"] is True, f"online /index.html failed: {report['onlineIndexResult']}"
+    assert report["onlineIndexResult"]["pathname"] == "/"
+    assert report["offlineRootResult"]["ok"] is True, f"offline / failed: {report['offlineRootResult']}"
+    assert report["offlineIndexResult"]["ok"] is True, f"offline /index.html failed: {report['offlineIndexResult']}"
+
+
+def test_worker_recovers_after_wasm_init_failure_on_same_worker(tmp_path: Path) -> None:
+    """单次 WASM 初始化失败后，同一 Worker 收到有效模块必须能恢复成功。"""
+    _prereq()
+    report = _run_driver(
+        "worker-wasm-retry",
+        {"distDir": str(DIST)},
+        tmp_path,
+        timeout=180,
+        driver=DRIVER_R2,
+    )
+    assert report["firstOk"] is False, f"expected injected first failure, got {report}"
+    assert report["secondOk"] is True, f"same worker stayed stuck after first WASM failure: {report}"
+
+
+def test_pool_replaces_failed_worker_slot_after_onerror(tmp_path: Path) -> None:
+    """Worker 槽位永久加载失败后必须拒绝该槽位在途请求并丢弃坏实例，下次请求新建 Worker 恢复。"""
+    _prereq()
+    report = _run_driver(
+        "pool-slot-recovery",
+        {"repoDir": str(REPO)},
+        tmp_path,
+        timeout=60,
+        driver=DRIVER_R2,
+    )
+    single = report["singleSummary"]
+    assert single["firstResult"] == "rejected"
+    assert single["retryResult"] == "resolved", f"single-slot pool hung on failed worker: {single}"
+    assert single["workersCreated"] == 2
+    assert single["messagesToFailedWorker"] == 1
+    assert single["failedWorkerTerminated"] is True
+    iso = report["isolationSummary"]
+    assert iso["slot0Result"] == "rejected"
+    assert iso["slot1Result"] == "resolved", f"slot 0 failure broke healthy slot 1: {iso}"
