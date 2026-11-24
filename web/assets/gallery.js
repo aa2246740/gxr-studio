@@ -27,6 +27,8 @@ let loadSeq = 0;
 let selectionRevision = 0;
 let undoFilterToast = null;
 let libraryPairs = 0;
+let gridRo = null;
+let gridW = 0;
 
 export function pairTag(p) {
   if (p.has_raw && p.has_jpg) return h('span', { class: 'badge pair tag' }, 'RAW+JPG');
@@ -79,14 +81,14 @@ export async function renderGallery(container, isCurrent = () => true) {
   galleryCurrent = isCurrent;
   root = container;
   const grid = h('div', {
-    class: `grid${storedFull() ? ' show-full' : ''}`,
-    id: 'grid-wrap',
-    role: 'listbox',
-    'aria-multiselectable': 'true',
-    'aria-label': '照片',
-    onkeydown: onGridKey,
+    class: `grid${storedFull() ? ' show-full' : ''}`, id: 'grid-wrap', role: 'listbox',
+    'aria-multiselectable': 'true', 'aria-label': '照片', onkeydown: onGridKey,
   });
   grid.style.setProperty('--cell', `${storedSize()}px`);
+  gridRo?.disconnect();
+  gridW = 0;
+  gridRo = typeof ResizeObserver === 'function' ? new ResizeObserver(([e]) => { gridW = e?.contentRect.width || 0; syncDaySizes(grid); }) : null;
+  gridRo?.observe(grid);
   root.replaceChildren(
     h('div', { class: 'library' },
       h('aside', { class: 'sidebar', id: 'dates', 'aria-label': '筛选' }),
@@ -305,19 +307,13 @@ function renderLibbar() {
     : (state.galleryDate ? fmtDate(state.galleryDate) : '全部照片');
   const count = h('span', { class: 'faint num', id: 'lib-count' }, libCountText());
   const size = h('input', {
-    type: 'range',
-    class: 'size',
-    min: SIZES.min,
-    max: SIZES.max,
-    step: 4,
-    value: storedSize(),
-    'aria-label': '缩略图大小',
-    title: '缩略图大小',
+    type: 'range', class: 'size', min: SIZES.min, max: SIZES.max, step: 4, value: storedSize(),
+    'aria-label': '缩略图大小', title: '缩略图大小',
     oninput: (e) => {
-      document.getElementById('grid-wrap')?.style.setProperty('--cell', `${e.target.value}px`);
-      try {
-        localStorage.setItem(SIZE_KEY, e.target.value);
-      } catch { /* 隐私模式 */ }
+      const wrap = document.getElementById('grid-wrap');
+      wrap?.style.setProperty('--cell', `${e.target.value}px`);
+      syncDaySizes(wrap);
+      try { localStorage.setItem(SIZE_KEY, e.target.value); } catch { /* 隐私模式 */ }
     },
   });
   const full = h('button', {
@@ -482,12 +478,30 @@ function renderGrid({ incremental = false } = {}) {
   wrap.classList.toggle('single-day', state.galleryDate !== ALL);
   if (incremental) {
     const unit = state.galleryFilter === 'halfframe' ? '对' : '张';
-    patchDayGrid(wrap, vis, { h, createCell: cell, syncCell, fmtDate, countOn, unit });
+    const idxById = new Map(vis.map((p, i) => [p.id, i]));
+    patchDayGrid(wrap, vis, { h, createCell: (p) => cell(p, idxById.get(p.id) ?? EAGER_THUMBS), syncCell, fmtDate, countOn, unit });
+    syncDaySizes(wrap);
   } else {
     wrap.replaceChildren();
     appendCells(vis);
   }
   renderSelBar();
+}
+
+const EAGER_THUMBS = 16;
+
+function syncDaySizes(wrap) {
+  if (!wrap) return;
+  const min = parseFloat(wrap.style.getPropertyValue?.('--cell')) || storedSize();
+  const avail = Math.max(min, gridW > 0 ? gridW : (wrap.clientWidth ? wrap.clientWidth - 32 : (window.innerWidth || 1380) - 292));
+  const cols = Math.max(1, Math.floor((avail + 4) / (min + 4)));
+  const rowH = ((avail - (cols - 1) * 4) / cols) * (2 / 3);
+  for (const day of wrap.children) {
+    if (!day.classList.contains('day')) continue;
+    const rows = Math.ceil(Math.max(1, day.lastElementChild?.children.length || 0) / cols);
+    const next = `${Math.round(48 + rows * rowH + (rows - 1) * 4)}px`;
+    if (day.style.getPropertyValue?.('--day-h') !== next) day.style.setProperty('--day-h', next);
+  }
 }
 
 // 按日期分组往网格末尾加：和最后一组同一天就接着放，不同就新开一组
@@ -496,6 +510,7 @@ function appendCells(list) {
   if (!wrap) return;
   let group = wrap.lastElementChild && wrap.lastElementChild.classList.contains('day') ? wrap.lastElementChild : null;
   const unit = state.galleryFilter === 'halfframe' ? '对' : '张';
+  let index = wrap.querySelectorAll('.cell').length;
   for (const p of list) {
     if (!group || group.dataset.date !== String(p.date)) {
       const hid = `day-${p.date || 'unknown'}`;
@@ -505,8 +520,9 @@ function appendCells(list) {
       group.dataset.date = String(p.date);
       wrap.append(group);
     }
-    group.lastElementChild.append(cell(p));
+    group.lastElementChild.append(cell(p, index++));
   }
+  syncDaySizes(wrap);
 }
 
 function countOn(date) {
@@ -517,37 +533,27 @@ function countOn(date) {
   return d ? d.count : state.photos.filter((p) => p.date === date).length;
 }
 
-function cell(p) {
+function cell(p, index = EAGER_THUMBS) {
   const selected = isPhotoSelected(state.selection, p);
   const pair = isPairSecond(p);
-  const img = h('img', { src: p.thumb_url, alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' });
+  const eager = index < EAGER_THUMBS;
+  const img = h('img', { loading: eager ? 'eager' : 'lazy', ...(eager ? { fetchpriority: 'high' } : {}), decoding: 'async', draggable: 'false', alt: '', src: p.thumb_url });
   // 缩略图到了再淡入（.ready），之前是同色的空格子，不闪白
   const ready = () => img.classList.add('ready');
   if (img.complete && img.naturalWidth) ready();
-  else {
-    img.addEventListener('load', ready, { once: true });
-    img.addEventListener('error', () => img.classList.add('ready', 'broken'), { once: true });
-  }
+  else { img.addEventListener('load', ready, { once: true }); img.addEventListener('error', () => img.classList.add('ready', 'broken'), { once: true }); }
   const badges = [];
   const hfBadge = halfframeBadge(h, icon, p);
   if (hfBadge) badges.push(hfBadge);
   if (!p.has_raw || !p.has_jpg) badges.push(pairTag(p));
-  const el = h(
-    'div',
-    {
-      class: `cell${pair ? ' pair' : ''}${p.id === focusId ? ' focus' : ''}`,
-      role: 'option',
-      tabindex: p.id === focusId ? 0 : -1,
-      'aria-selected': String(selected),
-      'aria-label': `${p.name}，${fmtTime(p.captured_at) || '时间未知'}`,
-      title: `${p.name} · ${fmtTime(p.captured_at)}${p.date_source === 'mtime' ? '（使用文件修改日期）' : ''}`,
-      onclick: (e) => onCellClick(e, p.id),
-    },
-    img,
-    h('span', { class: 'ck', 'aria-hidden': 'true', title: '选择' }, icon('check')),
-    h('span', { class: 'b' }, badges),
-    p.sidecar_rev > 0 ? h('span', { class: 'e', title: '编辑过', 'aria-label': '编辑过' }, icon('pencil')) : null,
-  );
+  const el = h('div', {
+    class: `cell${pair ? ' pair' : ''}${p.id === focusId ? ' focus' : ''}`, role: 'option',
+    tabindex: p.id === focusId ? 0 : -1, 'aria-selected': String(selected),
+    'aria-label': `${p.name}，${fmtTime(p.captured_at) || '时间未知'}`,
+    title: `${p.name} · ${fmtTime(p.captured_at)}${p.date_source === 'mtime' ? '（使用文件修改日期）' : ''}`,
+    onclick: (e) => onCellClick(e, p.id),
+  }, img, h('span', { class: 'ck', 'aria-hidden': 'true', title: '选择' }, icon('check')), h('span', { class: 'b' }, badges),
+  p.sidecar_rev > 0 ? h('span', { class: 'e', title: '编辑过', 'aria-label': '编辑过' }, icon('pencil')) : null);
   el.dataset.id = p.id;
   return el;
 }

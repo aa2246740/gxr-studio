@@ -164,10 +164,12 @@ h1, h2, p { margin: 0; }
 .start .lead { max-width: 340px; margin: 0 auto; }
 .start .lead, .help-note { text-align: center; color: var(--text-2); font-size: 15px; line-height: 22px; }
 .priv { display: flex; justify-content: center; gap: 6px; color: var(--text-3); font-size: 13px; line-height: 18px; }
-.calib .hd { display: flex; align-items: center; gap: 8px; }
-.calib .hd b { font: 600 16px/22px var(--font-ui); }
-.calib .btn { margin-top: 12px; }
-.start .cta { margin-top: auto; }
+.calib .hd, .camfiles .hd { display: flex; align-items: center; gap: 8px; }
+.calib .hd b, .camfiles .hd b { font: 600 16px/22px var(--font-ui); }
+.calib .btn, .camfiles .btn { margin-top: 12px; }
+.start .cta { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+.start-status { text-align: center; color: var(--accent-text); font: 500 13px/18px var(--font-ui); }
+.start-err { text-align: center; }
 .help { display: flex; justify-content: center; }
 
 .gscroll { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; }
@@ -705,10 +707,11 @@ svg.curve .curve-point { stroke: #111; stroke-width: 1.5; }
 
 /* 配方（微调、筛选、状态说明）和校准数据 */
 .tag.ok { color: var(--accent-text); background: var(--accent-weak); }
-.calib .acts { display: flex; gap: 10px; }
-.calib .acts .btn { flex: 1; }
+.calib .acts, .camfiles .acts { display: flex; gap: 10px; }
+.calib .acts .btn, .camfiles .acts .btn { flex: 1; }
 .calib p.unit { color: var(--text-1); font: 500 14px/20px var(--font-num); }
-.calib p.bad { margin-top: 10px; color: var(--danger-text); }
+.calib p.bad, .camfiles p.bad { margin-top: 10px; color: var(--danger-text); }
+.calib-sheet { max-height: 86%; overflow-y: auto; }
 .calib-sheet .card { margin-top: 12px; }
 .calib-sheet .hd, .ask-sheet .hd { display: flex; align-items: center; justify-content: space-between; }
 .ms .card + .card { margin-top: 10px; }
@@ -733,7 +736,7 @@ svg.curve .curve-point { stroke: #111; stroke-width: 1.5; }
 .recipe-info-body { display: flex; flex-direction: column; gap: 10px; }
 .recipe-info-body .bn { margin: 0; }
 .hdr-note .why { flex: 1; color: var(--text-2); }
-.hdr-note .why b { color: var(--warn-text); font-weight: 500; }
+.hdr-note .why b { color: var(--text-1); font-weight: 500; }
 .small { font-size: 13px; line-height: 18px; }
 .path { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 12px; padding: 12px; border-radius: 12px; background: var(--surface-panel); box-shadow: inset 0 0 0 1px var(--line-subtle); font-size: 15px; }
 .path .fic { color: var(--accent-text); display: inline-flex; }

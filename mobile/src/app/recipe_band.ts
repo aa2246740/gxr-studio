@@ -20,6 +20,7 @@ import { registerSheet } from './sheet_lifecycle';
 
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
 const WARN = 'M12 4l9 16H3zM12 10v4M12 17h.01';
+const INFO = 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18M12 11v5M12 8h.01';
 const PLUS = 'M12 5v14M5 12h14';
 const FILE = 'M7 3h7l4 4v14H7zM14 3v4h4';
 
@@ -111,22 +112,25 @@ export function recipeStatusSpec(
   if (!scene.raw) {
     return { label: diptych ? '半格双联' : '配方需要 RAW', tone: 'warn', action: 'jpg-info' };
   }
+  if (scene.camError) {
+    return { label: '拍摄配方', tone: 'warn', cameraRecipeError: scene.camError.code, action: 'status-sheet' };
+  }
   if (!scene.dat) {
     return { label: '选配方文件', tone: 'warn', action: 'ask-dat' };
   }
   const calibrated = scene.state.state === 'ready';
   const off = calibrated && crossed(scene.photoUnit, scene.unit, scene.iso);
-  if (scene.camError) {
-    return { label: '拍摄配方', tone: 'warn', cameraRecipeError: scene.camError.code, action: 'status-sheet' };
-  }
   if (scene.adopted?.levelsUnknown) {
     return { label: '档位未标', tone: 'dim', cameraRecipeNote: 'levels-unknown', action: 'status-sheet' };
   }
   if (!calibrated) {
     return { label: '未校准', tone: 'warn', stateAttr: 'no-calibration', action: 'status-sheet' };
   }
-  if (off || hasDatError) {
-    return { label: '未校准', tone: 'warn', stateAttr: 'uncalibrated', action: 'status-sheet' };
+  if (hasDatError) {
+    return { label: '配方文件异常', tone: 'warn', stateAttr: 'uncalibrated', action: 'status-sheet' };
+  }
+  if (off) {
+    return { label: '校准范围外（推算）', tone: 'dim', stateAttr: 'uncalibrated', action: 'status-sheet' };
   }
   return null;
 }
@@ -140,7 +144,7 @@ export function makeRecipeStatusTile(spec: RecipeStatusSpec, onClick: () => void
   if (spec.cameraRecipeNote) tile.dataset.cameraRecipeNote = spec.cameraRecipeNote;
   tile.setAttribute('aria-label', `配方状态：${spec.label}`);
   const box = el('div', 'th filter-th');
-  box.append(icon(WARN), el('span', 'status-lab', spec.label));
+  box.append(icon(spec.tone === 'warn' ? WARN : INFO), el('span', 'status-lab', spec.label));
   tile.append(box);
   tile.addEventListener('click', onClick);
   return tile;
@@ -279,7 +283,7 @@ export function buildStatusBlock(scene: RecipeStatusScene, pickCalib: () => void
     line.dataset.state = off ? 'uncalibrated' : 'calibrated';
     if (off) {
       const why = el('span', 'why');
-      why.append(el('b', '', '未校准：'), document.createTextNode(uncalibratedReason(scene.photoUnit, scene.unit, scene.iso)));
+      why.append(el('b', '', '校准范围外（推算）：'), document.createTextNode(uncalibratedReason(scene.photoUnit, scene.unit, scene.iso)));
       line.append(why);
     } else if (book.pack?.kind === 'default') {
       // 内置的默认校准：写明来自作者的样机，想更准可以换成自己的。
@@ -341,7 +345,11 @@ export function openRecipeStatusSheet(
     note.dataset.cameraRecipeNote = 'levels-unknown';
     nodes.push(note);
   }
-  nodes.push(buildStatusBlock(scene, pickCalib, book));
+  if (scene.camError?.code === 'camera_recipe_catalog_missing' && scene.state.state === 'checking') {
+    nodes.push(datFileBox('换上拍摄这张照片所用存储卡上的相机配方文件后即可生成预测。', pickDat));
+  } else {
+    nodes.push(buildStatusBlock(scene, pickCalib, book));
+  }
   if (book.datNote) nodes.push(el('p', 'faint small', book.datNote));
   openRecipeInfoSheet(shell, '配方状态', nodes);
 }
@@ -350,12 +358,12 @@ function askLeadNodes(datError: string | null): HTMLElement[] {
   return datError
     ? [el('p', 'lead', datError)]
     : [
-        el('p', 'lead', '配方要用存储卡上的相机配方文件，这次没有和照片一起选上。'),
-        el('p', 'lead', '每张卡选一次就行。没选之前，照片只显示中性转换。'),
+        el('p', 'lead', '配方要用存储卡最外层的相机配方文件（GXRCE.DAT 和 GXRFX.BIN）。'),
+        el('p', 'lead', '选一次就会记住，以后只选照片就行。'),
       ];
 }
 
-export function openAskDatSheet(shell: HTMLElement, book: Book, pickDat: () => void): AskSheetHandle {
+export function openAskDatSheet(shell: HTMLElement, book: Book, pickDat: () => void, hasJpg = false): AskSheetHandle {
   shell.querySelector('.ask-scrim')?.remove();
   shell.querySelector('.ask-sheet')?.remove();
 
@@ -385,7 +393,8 @@ export function openAskDatSheet(shell: HTMLElement, book: Book, pickDat: () => v
     close();
     pickDat();
   });
-  const later = button('btn lg ghost block', '先不用，只看中性转换');
+  const later = button('btn lg ghost block', hasJpg ? '先不用，继续看相机 JPG' : '先不用，只看中性转换');
+  later.dataset.act = 'ask-later';
   later.addEventListener('click', close);
   scrim.addEventListener('click', close);
   const leads = el('div', 'ask-leads');
@@ -507,13 +516,14 @@ export function buildIpadRecipeMeta(
   diptych: boolean,
   datError: string | null,
   onStatusClick: (action: RecipeStatusSpec['action']) => void,
+  fallbackLabel = '中性转换',
 ): HTMLElement {
   const wrap = el('div', 'ipad-recipe-meta');
   const head = el('div', 'rmeta');
   if (!scene.raw) {
     head.append(el('b', 'rname dim', diptych ? '半格双联' : '相机 JPG'));
   } else if (!scene.dat) {
-    head.append(el('b', 'rname dim', '未选配方文件'));
+    head.append(el('b', 'rname dim', fallbackLabel));
   } else {
     head.append(el('b', 'rname', targetName));
     if (targetTag) head.append(el('span', 'tag neutral-tag', targetTag));
@@ -527,7 +537,7 @@ export function buildIpadRecipeMeta(
     if (spec.stateAttr) btn.dataset.state = spec.stateAttr;
     if (spec.cameraRecipeError) btn.dataset.cameraRecipeError = spec.cameraRecipeError;
     if (spec.cameraRecipeNote) btn.dataset.cameraRecipeNote = spec.cameraRecipeNote;
-    btn.prepend(icon(WARN));
+    btn.prepend(icon(spec.tone === 'warn' ? WARN : INFO));
     btn.addEventListener('click', () => onStatusClick(spec.action));
     wrap.append(btn);
   }

@@ -224,6 +224,7 @@ export function openLogoSheet(
         saveBtn.addEventListener('click', () => void doRename());
         input.addEventListener('keydown', (e) => {
           if (e.key === 'Enter') {
+            if (e.isComposing || e.keyCode === 229) return;
             e.preventDefault();
             void doRename();
           } else if (e.key === 'Escape') {

@@ -381,7 +381,11 @@ export function openManageDialog(view, setFrame) {
           }
         };
         input.addEventListener('keydown', (e) => {
-          if (e.key === 'Enter') { e.preventDefault(); saveRename(); }
+          if (e.key === 'Enter') {
+            if (e.isComposing || e.keyCode === 229) return;
+            e.preventDefault();
+            saveRename();
+          }
           if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); editingId = null; renderRows(); }
         });
         const row = h(

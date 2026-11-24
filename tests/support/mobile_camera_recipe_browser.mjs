@@ -337,6 +337,10 @@ async function runWrongGen(page) {
     { timeout: 120_000 },
   );
   await openPhoto(page, manifest.file1);
+  // 库不匹配时主动弹出一次提示，收起后再核对状态瓷砖与详情面板。
+  const mismatchLater = page.locator('.ask-sheet[data-state="camfiles-mismatch"] [data-act="mismatch-later"]');
+  await mismatchLater.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
+  if (await mismatchLater.isVisible().catch(() => false)) await mismatchLater.click();
   await page.locator('.editor .toolbar [data-tool="recipe"]').click();
   await page.waitForSelector('.editor .recipe-head .rname');
   await page.waitForTimeout(400);

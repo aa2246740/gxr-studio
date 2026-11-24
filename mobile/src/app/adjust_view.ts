@@ -7,6 +7,8 @@ import { markControlDragEnd } from './drag_guard';
 import { zeroKnobs, type Knobs, type Photo } from './model';
 
 const HIST_ICON = 'M4 19V11M9 19V6M14 19V13M19 19V8M3 19h18';
+const ADJUST_NO_GPU_REASON = '无显卡预览，暂不能调整';
+const ADJUST_REASON_ID = 'adj-disabled-reason';
 
 export const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number; step: number }> = [
   { key: 'exposure_ev', label: '曝光', min: -5, max: 5, step: 0.1 },
@@ -63,7 +65,8 @@ export class AdjustView {
   private ipadLabEl: HTMLElement | null = null;
   private ipadValEl: HTMLElement | null = null;
   private histBtn: HTMLButtonElement | null = null;
-  private chipsEl: HTMLElement | null = null;
+  private disabledNoteEl: HTMLElement | null = null;
+  private readonly chipByKey = new Map<keyof Knobs, HTMLButtonElement>();
   private committed = 0;
   private readonly host: AdjustHost;
   private readonly head: HTMLElement;
@@ -93,8 +96,14 @@ export class AdjustView {
   }
 
   setDisabled(disabled: boolean): void {
-    if (this.input) this.input.disabled = disabled;
+    this.panel.dataset.disabled = disabled ? '1' : '0';
+    if (this.input) {
+      this.input.disabled = disabled;
+      if (disabled) this.input.setAttribute('aria-describedby', ADJUST_REASON_ID);
+      else this.input.removeAttribute('aria-describedby');
+    }
     if (this.histBtn) this.histBtn.disabled = disabled;
+    if (this.disabledNoteEl) this.disabledNoteEl.hidden = !disabled;
   }
 
   syncHistBtn(): void {
@@ -111,7 +120,8 @@ export class AdjustView {
     this.ipadLabEl = null;
     this.ipadValEl = null;
     this.histBtn = null;
-    this.chipsEl = null;
+    this.disabledNoteEl = null;
+    this.chipByKey.clear();
   }
 
   private resetAll(): void {
@@ -134,7 +144,7 @@ export class AdjustView {
     const panel = el('div', 'panel adjust');
     const row = el('div', 'adjust-row');
     const chips = el('div', 'chips');
-    this.chipsEl = chips;
+    this.chipByKey.clear();
 
     for (const spec of SLIDERS) {
       const chip = button('chip', spec.label);
@@ -142,9 +152,10 @@ export class AdjustView {
       if (spec.key === this.key) chip.classList.add('on');
       chip.addEventListener('click', () => {
         this.key = spec.key;
-        for (const item of chips.querySelectorAll('.chip[data-key]')) item.classList.toggle('on', item === chip);
+        for (const item of this.chipByKey.values()) item.classList.toggle('on', item === chip);
         this.showKnob();
       });
+      this.chipByKey.set(spec.key, chip);
       chips.append(chip);
     }
 
@@ -180,7 +191,12 @@ export class AdjustView {
     this.input.dataset.key = 'exposure_ev';
     const slider = el('div', 'slider');
     slider.append(this.input);
-    big.append(l1, slider);
+    const reason = el('p', 'adj-disabled-note', ADJUST_NO_GPU_REASON);
+    reason.id = ADJUST_REASON_ID;
+    reason.dataset.adjustDisabledReason = '1';
+    reason.hidden = true;
+    this.disabledNoteEl = reason;
+    big.append(l1, slider, reason);
 
     const hintRow = el('div', 'adj-hint');
     const hintReset = button('fbtn', '全部重置');
@@ -254,10 +270,9 @@ export class AdjustView {
 
   private paintChipDots(): void {
     const photo = this.host.photo();
-    if (!photo || !this.chipsEl) return;
-    for (const node of this.chipsEl.querySelectorAll<HTMLElement>('.chip[data-key]')) {
-      const key = node.dataset.key as keyof Knobs | undefined;
-      if (key) node.classList.toggle('edited', photo.knobs[key] !== 0);
+    if (!photo) return;
+    for (const [key, node] of this.chipByKey) {
+      node.classList.toggle('edited', photo.knobs[key] !== 0);
     }
   }
 

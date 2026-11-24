@@ -7,7 +7,7 @@ import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
 import { bakeIn, calibCheck, importCalib, loadDefaultCalib, readDat, resolveRecipe, restoreCalib, warmCore } from '../core/api';
-import { deletePack, loadWatermark } from '../lib/idb';
+import { camFilesIo, deletePack, loadWatermark } from '../lib/idb';
 import { Book } from './book';
 import { lookCache } from './looks';
 import { showCalibSheet } from './calib_ui';
@@ -32,9 +32,6 @@ class App implements AppApi {
   private sortOrder: Order = loadOrder();
   private gapMinutes: GapMinutes = loadGap();
   private ignoredCount = 0;
-  private dat: File | null = null;
-  private bin: File | null = null;
-  private datCount = 0;
   private generation = 0;
   private screen: 'start' | 'grid' | 'editor' = 'start';
   private grid: GridView | null = null;
@@ -64,6 +61,7 @@ class App implements AppApi {
     deletePack,
     watermark: loadWatermark,
     defaultCalib: loadDefaultCalib,
+    ...camFilesIo,
   });
   /** 用户导入的 .cube LUT 目录（只存 IndexedDB 与 Worker，页面按需拿字节）。 */
   private readonly lutBookStore = new LutBook();
@@ -226,7 +224,7 @@ class App implements AppApi {
   }
 
   hasDat(): boolean {
-    return this.dat !== null;
+    return this.recipeBook.dat !== null;
   }
 
   book(): Book {
@@ -420,10 +418,7 @@ class App implements AppApi {
     this.closeEditor();
     for (const photo of this.byId.values()) releaseBitmaps(photo);
     this.byId.clear();
-    this.dat = null;
-    this.bin = null;
-    this.datCount = 0;
-    this.recipeBook.clearDat();
+    this.recipeBook.clearSessionCamFiles();
     this.ignoredCount = 0;
     this.warm = null;
     this.showStart();
@@ -507,15 +502,11 @@ class App implements AppApi {
   private ingest(files: File[]): void {
     const classified = classify(files.map((file) => ({ name: file.name, lastModified: file.lastModified })));
     this.ignoredCount += classified.ignored;
-    if (classified.binIndex !== null) this.bin = files[classified.binIndex];
-    if (classified.datIndex !== null) {
-      this.dat = files[classified.datIndex];
-      this.datCount = classified.datCount;
-    }
-    // 只补了 BIN、而且已经有一份 DAT（读上了或没读上）：用存着的 DAT 再读一次。只选了 DAT 时留着先前的 BIN。
-    if (this.dat && (classified.datIndex !== null || classified.binIndex !== null)) {
-      void this.recipeBook.setDat(this.dat, this.datCount, this.bin);
-    }
+    this.recipeBook.ingestCamFiles(
+      classified.datIndex !== null ? files[classified.datIndex] : null,
+      classified.datCount,
+      classified.binIndex !== null ? files[classified.binIndex] : null,
+    );
     const generation = this.generation;
     for (const item of classified.photos) {
       const id = item.stem.toLowerCase();
@@ -665,7 +656,7 @@ class App implements AppApi {
   }
 
   private afterRead(photo: Photo): void {
-    if (this.screen === 'grid') this.grid?.refresh();
+    if (this.screen === 'grid') this.grid?.update(photo.id);
     if (photo.status === 'bad' && this.screen === 'grid') this.grid?.showUnreadable(photo.id);
   }
 

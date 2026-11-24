@@ -1,4 +1,5 @@
 import type { AppApi } from './model';
+import { camFilesRememberedLabel } from '../lib/camfiles';
 import { deviceName } from '../lib/device';
 import { FONT_LICENCE_LABELS, FONT_LICENCES } from '../lib/font_assets';
 import { button, el, icon, ICON } from './dom';
@@ -16,6 +17,68 @@ function hero(): SVGSVGElement {
   return svg;
 }
 
+function paintStartBody(screen: HTMLElement, body: HTMLElement, api: AppApi): void {
+  const dev = deviceName();
+  const book = api.book();
+  const dat = book.dat;
+  screen.dataset.camfiles = dat ? 'remembered' : 'none';
+
+  body.replaceChildren();
+  const picture = el('div', 'hero');
+  picture.append(hero());
+  const heading = el('h1', '', '选照片，换配方，存到相册');
+  const lead = el(
+    'p',
+    'lead',
+    dat
+      ? `用读卡器把存储卡插到 ${dev}，在「文件」里选照片。`
+      : '先选一次相机配方文件（存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN），以后每次只选照片。',
+  );
+  const priv = el(
+    'p',
+    'priv',
+    dat
+      ? `照片只在这次使用中保留，不会上传，也不会离开这台 ${dev}。`
+      : `照片和相机配方文件只留在这台 ${dev}，不会上传。`,
+  );
+  priv.prepend(icon(ICON.lock));
+
+  const cta = el('div', 'cta start-cta');
+  if (dat) {
+    const status = el('p', 'start-status', `相机配方文件${camFilesRememberedLabel(dat.generation)}`);
+    status.dataset.state = 'camfiles-remembered';
+    const pick = button('btn primary lg block', '从存储卡选照片');
+    pick.dataset.act = 'pick-photos';
+    pick.addEventListener('click', () => api.addPhotos());
+    cta.append(pick);
+    body.append(picture, heading, lead, status, priv, cta);
+  } else {
+    const pickFiles = button('btn primary lg block', book.datBusy ? '正在读取相机配方文件…' : '选相机配方文件');
+    pickFiles.dataset.act = 'pick-camfiles';
+    pickFiles.disabled = book.datBusy;
+    pickFiles.addEventListener('click', () => api.pickDat());
+    const pickPhotos = button('btn lg block', '选照片');
+    pickPhotos.dataset.act = 'pick-photos';
+    pickPhotos.addEventListener('click', () => api.addPhotos());
+    cta.append(pickFiles, pickPhotos);
+    body.append(picture, heading, lead, priv);
+    if (book.datError) {
+      const err = el('p', 'bad small start-err', book.datError);
+      err.dataset.state = 'start-dat-error';
+      err.setAttribute('role', 'status');
+      body.append(err);
+    }
+    body.append(cta);
+  }
+
+  const help = el('div', 'help');
+  const helpBtn = button('lnk', `怎么把卡插到 ${dev}`);
+  helpBtn.prepend(icon(ICON.help));
+  helpBtn.addEventListener('click', () => api.showHelp());
+  help.append(helpBtn);
+  body.append(help);
+}
+
 export function renderStart(host: HTMLElement, api: AppApi): void {
   host.replaceChildren();
   const screen = el('section', 'screen');
@@ -26,37 +89,27 @@ export function renderStart(host: HTMLElement, api: AppApi): void {
   title.append(brand);
   nav.append(el('span', 'nb'), title, el('span', 'nb'));
 
-  const dev = deviceName();
   const body = el('div', 'start');
-  const picture = el('div', 'hero');
-  picture.append(hero());
-  const heading = el('h1', '', '选照片，换配方，存到相册');
-  const lead = el('p', 'lead', `用读卡器把存储卡插到 ${dev}，再点下面的按钮，在「文件」里选照片和相机配方文件。`);
-  const priv = el('p', 'priv', `照片只在这次使用中保留，不会上传，也不会离开这台 ${dev}。`);
-  priv.prepend(icon(ICON.lock));
-
-  // 起始页不再有校准这一步：没导入时用内置的默认校准，校准数据放在「更多 → 校准数据」。
-  const cta = el('div', 'cta');
-  const pick = button('btn primary lg block', '从存储卡选照片');
-  pick.addEventListener('click', () => api.addPhotos());
-  cta.append(pick);
-  const help = el('div', 'help');
-  const helpBtn = button('lnk', `怎么把卡插到 ${dev}`);
-  helpBtn.prepend(icon(ICON.help));
-  helpBtn.addEventListener('click', () => api.showHelp());
-  help.append(helpBtn);
-
-  body.append(picture, heading, lead, priv, cta, help);
   screen.append(nav, body);
   host.append(screen);
+  paintStartBody(screen, body, api);
+
+  const book = api.book();
+  const off = book.onChange(() => {
+    if (!screen.isConnected) {
+      off();
+      return;
+    }
+    paintStartBody(screen, body, api);
+  });
 }
 
 function helpSteps(dev: string): Array<[string, string]> {
   return [
     ['把存储卡放进读卡器', '用带 USB-C 接口的读卡器。卡面朝向读卡器上标的方向。'],
     [`把读卡器插到 ${dev} 底部`, '插好后不用等，不会有任何弹窗。'],
-    ['回到这里，点「从存储卡选照片」', '在「文件」里找到存储卡，打开 DCIM 文件夹，选要用的照片。'],
-    ['需要配方时，再选相机配方文件', '文件名是 GXRCE.DAT，在存储卡最外层，和 DCIM 并排。选照片时一起选上也行；没选的话，之后会提示你补选。'],
+    ['首次使用，先选相机配方文件', '在「文件」里找到存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN（和 DCIM 并排）。选一次就会记住，和照片一起选也行。'],
+    ['再选照片', '打开 DCIM 文件夹选要用的照片；以后每次只需选照片。没选配方文件也能先看相机 JPG。'],
   ];
 }
 

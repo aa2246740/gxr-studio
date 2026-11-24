@@ -46,6 +46,8 @@ export interface EditorMediaCallbacks {
 export class EditorMedia {
   private wantNeighbor = '';
   private sharpening: Promise<void> = Promise.resolve();
+  private loadingRaw: { id: string; version: number } | null = null;
+  private offBook: (() => void) | null = null;
   private readonly cb: EditorMediaCallbacks;
 
   constructor(cb: EditorMediaCallbacks) {
@@ -54,6 +56,27 @@ export class EditorMedia {
 
   reset(): void {
     this.wantNeighbor = '';
+    this.loadingRaw = null;
+    this.offBook?.();
+    this.offBook = null;
+  }
+
+  private watchBook(): void {
+    if (this.offBook) return;
+    const api = this.cb.api();
+    this.offBook = api.book().onChange(() => {
+      const cur = this.cb.photo();
+      if (!cur || !cur.dng || !cur.jpg || cur.diptych || cur.choice !== null) return;
+      const hasDat = api.book().dat !== null;
+      const mode = this.cb.mode();
+      // 补选相机配方文件后从相机 JPG 切到 RAW；忘掉配方文件且未显式选配方时切回相机 JPG。
+      if (hasDat && mode === 'jpg') {
+        if (this.loadingRaw?.id === cur.id && this.loadingRaw.version === cur.version) return;
+        void this.load(cur).catch(() => undefined);
+      } else if (!hasDat && mode === 'raw') {
+        void this.load(cur).catch(() => undefined);
+      }
+    });
   }
 
   sharpeningPromise(): Promise<void> {
@@ -97,14 +120,18 @@ export class EditorMedia {
   }
 
   async load(photo: Photo): Promise<void> {
+    this.watchBook();
     const token = this.cb.nextToken();
     const version = photo.version;
     const api = this.cb.api();
     const session = api.session();
     const engine = this.cb.engine();
 
-    if (!photo.dng) {
-      this.showStillPhoto(photo, photo.jpg ? '相机 JPG' : '只有 RAW', token);
+    // 没有相机配方文件时，带相机 JPG 的照片默认直接显示相机 JPG（不弹补选表）；纯 RAW 仍显示中性转换。
+    const useCameraJpg = !photo.dng || (!!photo.jpg && !photo.diptych && !api.book().dat && !photo.choice);
+    if (useCameraJpg) {
+      this.loadingRaw = null;
+      this.showStillPhoto(photo, photo.jpg ? '相机 JPG' : '只有 RAW', token, !!photo.jpg && !!engine);
       if (engine && photo.bitmap) {
         const key = `jpg:${photo.id}`;
         engine.addJpg(key, photo.bitmap);
@@ -125,8 +152,10 @@ export class EditorMedia {
         this.cb.onMediaReady();
         this.cb.syncFloatHistPos();
       }
+      if (photo.dng) this.cb.refreshRecipes();
       return;
     }
+    this.loadingRaw = { id: photo.id, version };
 
     const key = `raw:${photo.id}`;
     if (engine && photo.cached === version && engine.hasSource(key)) {
@@ -225,8 +254,9 @@ export class EditorMedia {
     if (!this.cb.same(token, photo, version, session)) return;
     const frame = engine.frame();
     if (frame) this.cb.shell().dataset.frame = '1';
-    if (!this.cb.lookCaption()) this.cb.setLookCaption('中性转换');
-    if (!this.cb.isCropActive() && !this.cb.caption()) this.cb.setLabel(this.cb.lookCaption());
+    this.loadingRaw = null;
+    if (!this.cb.lookCaption() || this.cb.lookCaption() === '相机 JPG') this.cb.setLookCaption('中性转换');
+    if (!this.cb.isCropActive() && (!this.cb.caption() || this.cb.caption() === '相机 JPG')) this.cb.setLabel(this.cb.lookCaption());
     this.cb.cropStage()?.syncLoaded();
     this.cb.startRecipes(key);
     this.cb.startLuts(key);
@@ -240,7 +270,7 @@ export class EditorMedia {
     this.cb.syncFloatHistPos();
   }
 
-  private showStillPhoto(photo: Photo, label: string, token: number): void {
+  private showStillPhoto(photo: Photo, label: string, token: number, fullJpg = false): void {
     this.cb.setMode('still');
     this.cb.setLookCaption(label);
     if (!this.cb.isCropActive()) this.cb.setLabel(label);
@@ -252,16 +282,15 @@ export class EditorMedia {
     if (ph) ph.hidden = !!photo.bitmap || !!photo.jpg;
     this.cb.onMediaReady();
     this.cb.syncFloatHistPos();
-    this.sharpening = this.sharpen(photo, token);
+    this.sharpening = this.sharpen(photo, token, fullJpg);
   }
 
-  private async sharpen(photo: Photo, token: number): Promise<void> {
+  private async sharpen(photo: Photo, token: number, fullJpg: boolean): Promise<void> {
     const api = this.cb.api();
     const engine = this.cb.engine();
     const version = photo.version;
     const session = api.session();
     const alive = () => this.cb.same(token, photo, version, session);
-    const fullJpg = !photo.dng && !!photo.jpg && !!engine;
     const width = fullJpg
       ? Number.POSITIVE_INFINITY
       : Math.min(2048, Math.round((this.cb.host().clientWidth || 390) * (window.devicePixelRatio || 1)));

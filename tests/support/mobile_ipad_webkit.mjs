@@ -570,8 +570,7 @@ try {
 
   // D6（iPad 首屏 + 帮助表）：无「iPhone」，全部显示「iPad」
   await auditVisibleDeviceCopy(page, 'ipad-start', 'iPad', [
-    '用读卡器把存储卡插到 iPad',
-    '也不会离开这台 iPad',
+    '照片和相机配方文件只留在这台 iPad',
     '怎么把卡插到 iPad',
   ]);
   await page.locator('.start .help .lnk').tap();
@@ -726,8 +725,7 @@ try {
     await phonePage.waitForSelector('.start .cta .btn', { timeout: 30_000 });
     await auditStartLayout(phonePage, 'phone-portrait-390x844', { width: 390, height: 844, layout: 'phone-portrait', ipad: false, safe: PHONE_PORT_SAFE });
     await auditVisibleDeviceCopy(phonePage, 'iphone-start', 'iPhone', [
-      '用读卡器把存储卡插到 iPhone',
-      '也不会离开这台 iPhone',
+      '照片和相机配方文件只留在这台 iPhone',
       '怎么把卡插到 iPhone',
     ]);
     await phonePage.locator('.start .help .lnk').tap();
@@ -740,7 +738,7 @@ try {
     await setSafeArea(phonePage, PHONE_LAND_SAFE);
     await phonePage.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'phone-landscape', null, { timeout: 10_000 });
     await frame(phonePage, 3);
-    await auditVisibleDeviceCopy(phonePage, 'iphone-landscape-start', 'iPhone', ['用读卡器把存储卡插到 iPhone']);
+    await auditVisibleDeviceCopy(phonePage, 'iphone-landscape-start', 'iPhone', ['照片和相机配方文件只留在这台 iPhone']);
   } finally {
     await phoneCtx.close();
   }
