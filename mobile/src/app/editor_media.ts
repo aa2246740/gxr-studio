@@ -131,7 +131,7 @@ export class EditorMedia {
     const useCameraJpg = !photo.dng || (!!photo.jpg && !photo.diptych && !api.book().dat && !photo.choice);
     if (useCameraJpg) {
       this.loadingRaw = null;
-      this.showStillPhoto(photo, photo.jpg ? '相机 JPG' : '只有 RAW', token);
+      this.showStillPhoto(photo, photo.jpg ? '相机 JPG' : '只有 RAW', token, !!photo.jpg && !!engine);
       if (engine && photo.bitmap) {
         const key = `jpg:${photo.id}`;
         engine.addJpg(key, photo.bitmap);
@@ -270,7 +270,7 @@ export class EditorMedia {
     this.cb.syncFloatHistPos();
   }
 
-  private showStillPhoto(photo: Photo, label: string, token: number): void {
+  private showStillPhoto(photo: Photo, label: string, token: number, fullJpg = false): void {
     this.cb.setMode('still');
     this.cb.setLookCaption(label);
     if (!this.cb.isCropActive()) this.cb.setLabel(label);
@@ -282,16 +282,15 @@ export class EditorMedia {
     if (ph) ph.hidden = !!photo.bitmap || !!photo.jpg;
     this.cb.onMediaReady();
     this.cb.syncFloatHistPos();
-    this.sharpening = this.sharpen(photo, token);
+    this.sharpening = this.sharpen(photo, token, fullJpg);
   }
 
-  private async sharpen(photo: Photo, token: number): Promise<void> {
+  private async sharpen(photo: Photo, token: number, fullJpg: boolean): Promise<void> {
     const api = this.cb.api();
     const engine = this.cb.engine();
     const version = photo.version;
     const session = api.session();
     const alive = () => this.cb.same(token, photo, version, session);
-    const fullJpg = this.cb.mode() === 'jpg' && !!photo.jpg && !!engine;
     const width = fullJpg
       ? Number.POSITIVE_INFINITY
       : Math.min(2048, Math.round((this.cb.host().clientWidth || 390) * (window.devicePixelRatio || 1)));
