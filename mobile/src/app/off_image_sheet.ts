@@ -6,6 +6,7 @@ import { buildRequest, usedLogoId } from '../lib/export_request';
 import { fontsNeeded } from '../lib/fonts';
 import { button, el } from './dom';
 import { adoptCameraRecipe, cardsFor, requestPhoto } from './export_request_prep';
+import { CALIB_WAIT_MS } from './export_calib_wait';
 import { ensureFontPack } from './font_loader';
 import { logoStore } from './logo_store';
 import { ensureCameraRecipes, needsCameraRecipe, type AppApi, type Photo } from './model';
@@ -40,6 +41,9 @@ function formatSize(bytes: number): string {
 /** 用短命 ExportCore 把当前照片按当前编辑渲染为 SDR JPEG，立刻释放导出 WASM 内存。 */
 async function renderPhotoSdr(api: AppApi, photo: Photo, cancelled: () => boolean): Promise<ArrayBuffer> {
   const book = api.book();
+  // 默认校准还在路上时先等它落定（和照片导出同一个截止时间，最多几秒），不然关机图会是中性转换。
+  await book.calibSettled(CALIB_WAIT_MS);
+  if (cancelled()) throw new Error('已取消');
   const dat = book.dat;
   const lutBook = api.lutBook();
   if (needsCameraRecipe(photo, dat, { checkMissingDat: true })) {

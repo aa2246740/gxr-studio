@@ -1,5 +1,6 @@
 import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type TimeGroup, type VRow } from '../lib/group';
 import { UNIT_LABEL } from '../lib/calib';
+import { DEFAULT_LABEL } from '../lib/default_calib';
 import { deviceName } from '../lib/device';
 import { groupsPresent } from '../lib/paste';
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
@@ -12,9 +13,11 @@ import { groupBody, openConfirm, pasteBar, pickBody, PASTE_ICON } from './paste_
 const GAPS: GapMinutes[] = [1, 3, 5, 10];
 
 function calibDetail(api: AppApi): string {
-  const pack = api.book().pack;
-  if (!pack) return '还没导入校准数据';
-  return `已导入：${pack.units.map((row) => UNIT_LABEL[row.unit]).join('、')}`;
+  const book = api.book();
+  const pack = book.pack;
+  if (pack?.kind === 'default') return DEFAULT_LABEL;
+  if (pack) return `已导入：${pack.units.map((row) => UNIT_LABEL[row.unit]).join('、')}`;
+  return book.loadingDefault ? '正在加载默认校准…' : '未校准';
 }
 
 export class GridView {

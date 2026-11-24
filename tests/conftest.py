@@ -2,7 +2,9 @@
 
 - 任何测试都不能碰 /Volumes 下的真实卷（用户的卡就插在读卡器里）：`forbid_volumes` 在读写、列目录时直接抛错；
 - 默认图库 `~/Pictures/GXR Studio`、导出目录、应用数据目录都被保护（写入即拒绝），测试一律用临时目录；
-- 全程禁止联网（M1 验收 8）。
+- 全程禁止联网（M1 验收 8）；
+- 手机开发服务器默认不发内置的默认校准包（`GXR_MOBILE_DEFAULT_CALIB=off`，等于默认校准下载不下来），没导入校准时
+  照旧是中性转换；测默认校准的用例（test_mobile_default_calib.py）自己把它打开或换成别的文件。
 """
 
 from __future__ import annotations
@@ -75,6 +77,7 @@ def _isolated_env(tmp_path, monkeypatch):
         "GXR_STUDIO_SENTRY_RELEASE",
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GXR_MOBILE_DEFAULT_CALIB", "off")
     audit.network_attempts(clear=True)
     yield
     assert audit.network_attempts(clear=True) == [], "测试期间出现了联网尝试"

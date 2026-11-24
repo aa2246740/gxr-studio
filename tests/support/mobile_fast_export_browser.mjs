@@ -115,10 +115,10 @@ async function runTapCountViewport(width, height) {
   await settle(page);
   await page.evaluate(() => localStorage.clear());
 
-  // Import calibration pack and verify collapsed 1-line start card
+  // Import calibration pack. The start screen has no calibration card any more (default calibration; 更多 → 校准数据).
   await page.locator('input.calibpick').setInputFiles(manifest.pack);
-  await page.waitForSelector('.start .calib[data-calib="ready"]', { timeout: 60_000 });
-  const startCalibBox = await page.locator('.start .calib[data-calib="ready"]').boundingBox();
+  await page.waitForFunction(() => window.__gxrBook?.pack?.kind === 'user' && !window.__gxrBook.packBusy, null, { timeout: 60_000 });
+  const startCalibBox = (await page.locator('.start .calib').count()) ? await page.locator('.start .calib').boundingBox() : null;
   const startUnitsVisible = await page.locator('.start .calib .units').isVisible().catch(() => false);
   const startActsVisible = await page.locator('.start .calib .acts').isVisible().catch(() => false);
 
@@ -249,22 +249,25 @@ async function runDetailedAcceptances() {
   await settle(page);
   await page.evaluate(() => localStorage.clear());
 
-  // 1) Start screen calibration collapse + tap opens full sheet
+  // 1) Start screen has no calibration step any more; the full panel is in 更多 → 校准数据 (opened from the grid ⋯ below).
   await page.locator('input.calibpick').setInputFiles(manifest.pack);
-  await page.waitForSelector('.start .calib[data-calib="ready"]', { timeout: 60_000 });
+  await page.waitForFunction(() => window.__gxrBook?.pack?.kind === 'user' && !window.__gxrBook.packBusy, null, { timeout: 60_000 });
+  const startCards = await page.locator('.start .calib').count();
   const startCollapsed = {
-    height: Math.round((await page.locator('.start .calib[data-calib="ready"]').boundingBox())?.height ?? 0),
+    cards: startCards,
+    height: startCards ? Math.round((await page.locator('.start .calib').boundingBox())?.height ?? 0) : 0,
     unitsVisible: await page.locator('.start .calib .units').isVisible().catch(() => false),
     actsVisible: await page.locator('.start .calib .acts').isVisible().catch(() => false),
   };
-  await visibleTap(page, page.locator('.start .calib[data-calib="ready"]'), 'collapsed calib card');
-  await page.waitForSelector('.calib-sheet .calib[data-calib="ready"]', { timeout: 10_000 });
-  startCollapsed.sheetOpens = await page.locator('.calib-sheet .calib .acts').isVisible();
-  await visibleTap(page, page.locator('.calib-sheet .nb', { hasText: '完成' }), 'close calib sheet');
 
   // 2) Grid calm-down checks (with 1-photo solo group included)
   await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.gridFiles);
   await waitGridReady(page, manifest.gridCount);
+  await visibleTap(page, page.locator('.nav button[aria-label="更多"]'), 'grid more');
+  await visibleTap(page, page.locator('.ms .lrow', { hasText: '校准数据' }), 'grid more calibration');
+  await page.waitForSelector('.calib-sheet .calib[data-calib="user"]', { timeout: 10_000 });
+  startCollapsed.sheetOpens = await page.locator('.calib-sheet .calib .acts').isVisible();
+  await visibleTap(page, page.locator('.calib-sheet .nb', { hasText: '完成' }), 'close calib sheet');
   const soloRowInfo = await page.evaluate((soloId) => {
     const cell = document.querySelector(`.cell[data-id="${soloId}"]`);
     const row = cell?.closest('.cells');

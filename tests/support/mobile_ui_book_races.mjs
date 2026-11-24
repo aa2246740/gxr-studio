@@ -261,7 +261,8 @@ IDBObjectStore.prototype.put = function (...args) {
       };
       book.dat = { name: 'GXRCE.DAT', read: { summary: '{}', listing: '{}', entries: new Uint8Array(24 * 552), bytes: new ArrayBuffer(8) }, generation: 158, listing: { units: [] } };
       const pair = { ctx: 'c', ring: 'r' };
-      book.pack = { name: 'p', savedAt: 1, manifestSha256: 'x', units: [{ unit: 'jlaunch' }], files: new Map([['c', new Uint8Array(1)], ['r', new Uint8Array(1)]]) };
+      // `pack` 只读（用户导入的包优先，没有用默认校准）：直接放进用户导入的那一份。
+      book.user = { name: 'p', savedAt: 1, manifestSha256: 'x', units: [{ unit: 'jlaunch' }], files: new Map([['c', new Uint8Array(1)], ['r', new Uint8Array(1)]]), kind: 'user' };
       book.picks.set('jlaunch', { generation: book.generationId(), names: { 200: pair, 1600: pair } });
       const card = (i) => ({ id: `builtin:${i}`, kind: 'builtin', name: String(i), desc: null, slot: 1, recipeId: null, number: '01', controls: [{ name: 'amount', label: 'Amt', min: 0, max: 99, default: i, cap_lower: false, cap_upper: false, amount_step: 1, levels: [i] }] });
       const first = await book.bake(card(0), 'jlaunch', 200);

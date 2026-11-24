@@ -515,11 +515,12 @@ async function auditStartLayout(page, label, vp) {
   });
   summary.d7[label] = info;
   check(!info.hscroll, `D7 ${label}: horizontal page scroll detected on first screen`);
-  check(Boolean(info.start && info.calib && info.ctaBtn), `D7 ${label}: start screen elements missing`);
-  if (!info.start || !info.calib || !info.ctaBtn) return;
+  check(Boolean(info.start && info.ctaBtn), `D7 ${label}: start screen elements missing`);
+  // 起始页没有校准这一步了（没导入时用内置的默认校准，校准数据在「更多」里）。
+  check(info.calib === null, `D7 ${label}: start screen still shows a calibration card`);
+  if (!info.start || !info.ctaBtn) return;
   if (vp.ipad) {
     check(info.start.w <= 720 && info.start.w >= 500, `D7 ${label}: .start width ${info.start.w} pt outside 500..720 pt`);
-    check(info.calib.w <= 720, `D7 ${label}: .calib width ${info.calib.w} pt exceeds 720 pt`);
     check(info.ctaBtn.w <= 720, `D7 ${label}: primary CTA width ${info.ctaBtn.w} pt exceeds 720 pt`);
     const centerOff = Math.abs((info.start.left + info.start.right) / 2 - info.vw / 2);
     check(centerOff <= 2.0, `D7 ${label}: .start not centred (offset ${centerOff.toFixed(1)} pt)`);
@@ -561,7 +562,7 @@ page.on('pageerror', (err) => pageErrors.push(redact(err.message)));
 try {
   await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.app[data-core="1"]', { timeout: 60_000 });
-  await page.waitForSelector('.start .calib', { timeout: 30_000 });
+  await page.waitForSelector('.start .cta .btn', { timeout: 30_000 });
 
   // D7：iPad 横屏与竖屏首屏内容限宽 <= 720 pt 且居中
   await auditStartLayout(page, 'ipad-landscape-1376x1032', { width: 1376, height: 1032, layout: 'ipad-landscape', ipad: true, safe: IPAD_SAFE });
@@ -571,7 +572,6 @@ try {
   await auditVisibleDeviceCopy(page, 'ipad-start', 'iPad', [
     '用读卡器把存储卡插到 iPad',
     '也不会离开这台 iPad',
-    '用隔空投送发到这台 iPad',
     '怎么把卡插到 iPad',
   ]);
   await page.locator('.start .help .lnk').tap();
@@ -581,9 +581,6 @@ try {
   await page.locator('.ms .hd .nb').tap();
   await page.waitForFunction(() => !document.querySelector('.ms'), null, { timeout: 10_000 });
   await frame(page, 2);
-
-  await page.locator('input.calibpick').setInputFiles(manifest.pack);
-  await page.waitForSelector('.calib[data-calib="ready"]', { timeout: 60_000 });
 
   await page.locator('input.filepick:not(.calibpick)').first().setInputFiles(manifest.files);
   await page.waitForFunction(
@@ -601,7 +598,15 @@ try {
   await page.waitForSelector('.ms', { timeout: 10_000 });
   await frame(page, 2);
   await auditVisibleDeviceCopy(page, 'ipad-grid-menu', 'iPad', ['怎么把卡插到 iPad']);
-  await page.locator('.ms .hd .nb').tap();
+  // 校准数据在「更多」里：先看还没有校准时的那张卡（测试里内置的默认校准是关着的），再在这里换成自己的校准。
+  await page.locator('.ms .lrow', { hasText: '校准数据' }).tap();
+  await page.waitForSelector('.calib-sheet .calib[data-calib="none"]', { timeout: 10_000 });
+  await frame(page, 2);
+  await auditVisibleDeviceCopy(page, 'ipad-calib-sheet', 'iPad', ['用隔空投送发到这台 iPad']);
+  await page.locator('input.calibpick').setInputFiles(manifest.pack);
+  await page.waitForFunction(() => window.__gxrBook?.pack?.kind === 'user' && !window.__gxrBook.packBusy, null, { timeout: 60_000 });
+  await page.waitForSelector('.calib-sheet .calib[data-calib="user"]', { timeout: 10_000 });
+  await page.locator('.calib-sheet .hd .nb').tap();
   await page.waitForFunction(() => !document.querySelector('.ms'), null, { timeout: 10_000 });
   await frame(page, 2);
 
@@ -718,12 +723,11 @@ try {
   try {
     await phonePage.goto(`${base}/`, { waitUntil: 'domcontentloaded' });
     await phonePage.waitForSelector('.app[data-core="1"]', { timeout: 60_000 });
-    await phonePage.waitForSelector('.start .calib', { timeout: 30_000 });
+    await phonePage.waitForSelector('.start .cta .btn', { timeout: 30_000 });
     await auditStartLayout(phonePage, 'phone-portrait-390x844', { width: 390, height: 844, layout: 'phone-portrait', ipad: false, safe: PHONE_PORT_SAFE });
     await auditVisibleDeviceCopy(phonePage, 'iphone-start', 'iPhone', [
       '用读卡器把存储卡插到 iPhone',
       '也不会离开这台 iPhone',
-      '用隔空投送发到这台 iPhone',
       '怎么把卡插到 iPhone',
     ]);
     await phonePage.locator('.start .help .lnk').tap();

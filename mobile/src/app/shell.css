@@ -167,10 +167,6 @@ h1, h2, p { margin: 0; }
 .calib .hd { display: flex; align-items: center; gap: 8px; }
 .calib .hd b { font: 600 16px/22px var(--font-ui); }
 .calib .btn { margin-top: 12px; }
-.start .calib[data-calib="ready"] { padding: 11px 14px; cursor: pointer; }
-.start .calib[data-calib="ready"] > p:not([data-state="calib-error"]),
-.start .calib[data-calib="ready"] > .units,
-.start .calib[data-calib="ready"] > .acts { display: none; }
 .start .cta { margin-top: auto; }
 .help { display: flex; justify-content: center; }
 

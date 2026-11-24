@@ -1,6 +1,7 @@
 // 配方与 LUT 共用的 128pt 单带辅件：带首「配方 | LUT」切换键、配方筛选工作表、状态说明与 06d 缺文件弹层。
 
 import { crossed, uncalibratedReason, type Unit } from '../lib/calib';
+import { DEFAULT_LABEL, DEFAULT_NOTE } from '../lib/default_calib';
 import { deviceName } from '../lib/device';
 import {
   CAMERA_RECIPE_LEVELS_UNKNOWN,
@@ -270,7 +271,7 @@ export function datFileBox(message: string, pickDat: () => void): HTMLElement {
   return box;
 }
 
-export function buildStatusBlock(scene: RecipeStatusScene, pickCalib: () => void): HTMLElement {
+export function buildStatusBlock(scene: RecipeStatusScene, pickCalib: () => void, book: Book): HTMLElement {
   const state = scene.state;
   const off = state.state === 'ready' && crossed(scene.photoUnit, scene.unit, scene.iso);
   if (state.state === 'ready') {
@@ -280,6 +281,14 @@ export function buildStatusBlock(scene: RecipeStatusScene, pickCalib: () => void
       const why = el('span', 'why');
       why.append(el('b', '', '未校准：'), document.createTextNode(uncalibratedReason(scene.photoUnit, scene.unit, scene.iso)));
       line.append(why);
+    } else if (book.pack?.kind === 'default') {
+      // 内置的默认校准：写明来自作者的样机，想更准可以换成自己的。
+      const ok = el('span', 'ok');
+      ok.append(icon(CHECK));
+      const text = el('span');
+      text.append(el('b', '', DEFAULT_LABEL), el('br'), el('small', 'faint', DEFAULT_NOTE));
+      line.dataset.calib = 'default';
+      line.append(ok, text);
     } else {
       const ok = el('span', 'ok');
       ok.append(icon(CHECK));
@@ -294,7 +303,11 @@ export function buildStatusBlock(scene: RecipeStatusScene, pickCalib: () => void
   const mark = el('span', 'warn');
   mark.append(icon(WARN));
   const text = el('div', 'tx');
-  if (state.state === 'none') {
+  if (state.state === 'none' && book.defaultError) {
+    // 默认校准下载不下来或核对没通过：写明原因。
+    banner.dataset.reason = 'default';
+    text.append(el('b', '', '未校准：'), document.createTextNode(`${book.defaultError}现在所有配方都只显示中性转换，和相机里的颜色不同。导出也一样。`));
+  } else if (state.state === 'none') {
     text.append(el('b', '', '还没导入校准数据。'), document.createTextNode('现在所有配方都只显示中性转换，和相机里的颜色不同。导出也一样。'));
   } else {
     text.append(el('b', '', state.message), document.createTextNode(' 这张照片的配方只显示中性转换，和相机里的颜色不同。'));
@@ -328,7 +341,7 @@ export function openRecipeStatusSheet(
     note.dataset.cameraRecipeNote = 'levels-unknown';
     nodes.push(note);
   }
-  nodes.push(buildStatusBlock(scene, pickCalib));
+  nodes.push(buildStatusBlock(scene, pickCalib, book));
   if (book.datNote) nodes.push(el('p', 'faint small', book.datNote));
   openRecipeInfoSheet(shell, '配方状态', nodes);
 }

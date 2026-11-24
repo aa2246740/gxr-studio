@@ -8,6 +8,10 @@
   （源码里的短字面量不算：文本文件只看开头和长编码串）；
 - R3 `encoded-blob`：≥ 512 个字符的连续 hex 或 base64，解码后命中 R1/R2；
 - R4 `registered-sha`：文件 SHA-256 等于已登记的理光文件（设计 §3.2；有 `src/gxr_studio/kit/releases.json` 时也读它）；
+- R5 `calib-pack`：校准数据（理光派生的拟合参数）：整个文件是 schema 为 `gxr-studio/calib/…`、`gxr-studio/calib-pack/…`
+  或 `gxr-sector-model/…` 的 JSON，或者是名为 `d0.npy`、`d1.npy`、`input_coefficients.npy`、`stock.npy`、`S_eff.npy`
+  的数组（npz 里的成员也算）。唯一的例外是机主 2026-11-24 决定公开的默认校准包：`PUBLIC_CALIB` 记的路径上、SHA-256
+  一字不差的那一个文件（sdist 里同一路径的成员也算）。换了字节、换了路径都照样拦；R1–R4 对它照查；
 - R0 `unchecked`：没有完整检查到的内容，一律算失败，并写明哪个成员没查：归档或编码套得太深、成员太大、展开或解码
   总量超限、归档或压缩流读不出来或没有正常结束（gzip/bzip2/xz/zstd 每一段都要解完）、认得出但解不开的格式（7z、rar）。
 
@@ -55,6 +59,11 @@ KNOWN_SHA256 = frozenset(
         "9e03675d6e8a26a214816c773949b9eb5cf0c055c73821c91223cb0ac2ea69ce",  # diag147a
     }
 )
+# 机主 2026-11-24 决定公开的默认校准包（只有拟合参数：ctx_*.npz、ring_*.json 和清单，没有固件字节和原厂表）。
+# 只放行这个路径上的这一份字节；mobile/src/lib/default_calib.ts 记着同一个 SHA-256。
+PUBLIC_CALIB = ("mobile/public/calib/gxr-default-calib.zip", "0bac0fe18613794fa39715e80c0067701e5718a985beb568af23c1848764f0da")
+CALIB_SCHEMAS = ("gxr-studio/calib/", "gxr-studio/calib-pack/", "gxr-sector-model/")
+CALIB_ARRAYS = frozenset({"d0.npy", "d1.npy", "input_coefficients.npy", "stock.npy", "S_eff.npy"})
 MAGIC_HEAD = b"GXRCE001"
 MAGIC_ANY = re.compile(rb"GXRLB003|GXRCL002|GXUI124\x00|GXUI140\x00|GXRRV201|GXDP\x00[\x01-\x0f]\x00\x40")
 HEX_RUN = re.compile(rb"[0-9A-Fa-f]{512,}")
@@ -116,6 +125,39 @@ def _magic(data: bytes, binary: bool) -> str | None:
     if binary and MAGIC_ANY.search(data):
         return "R2 ricoh-magic"
     return None
+
+
+def public_calib(name: str, data: bytes) -> bool:
+    """是不是那份公开的默认校准包：显示名是它的仓库路径（`--tracked`、指定路径）、`staged:路径`（提交前），或 sdist 里
+    同一路径的成员（`dist/包.tar.gz!<gzip>!包-版本/路径`），而且 SHA-256 一字不差。"""
+    path, sha = PUBLIC_CALIB
+    if hashlib.sha256(data).hexdigest() != sha:
+        return False
+    if name in (path, f"staged:{path}"):
+        return True
+    parts = name.split("!")
+    return (
+        len(parts) == 3
+        and parts[0].startswith("dist/")
+        and parts[0].endswith(".tar.gz")
+        and parts[1] == "<gzip>"
+        and "/" in parts[2]
+        and parts[2].split("/", 1)[1] == path
+    )
+
+
+def _calib(name: str, data: bytes, binary: bool) -> str | None:
+    """R5：校准数组（按名字，npz 里的成员也算），或整个文件是带校准 schema 的 JSON 对象。源码里的字面量不算。"""
+    if name.rsplit("!", 1)[-1].rsplit("/", 1)[-1] in CALIB_ARRAYS:
+        return "R5 calib-pack"
+    if binary or not data.lstrip()[:1] == b"{":
+        return None
+    try:
+        doc = json.loads(data)
+    except ValueError:
+        return None
+    schema = doc.get("schema") if isinstance(doc, dict) else None
+    return "R5 calib-pack" if isinstance(schema, str) and schema.startswith(CALIB_SCHEMAS) else None
 
 
 def _decode_candidates(run: bytes) -> Iterator[bytes]:
@@ -347,12 +389,18 @@ def _prefixed_zip(data: bytes) -> bool:
 
 
 def scan_bytes(
-    name: str, data: bytes, shas: frozenset[str] | None = None, depth: int = 0, budget: Budget | None = None
+    name: str,
+    data: bytes,
+    shas: frozenset[str] | None = None,
+    depth: int = 0,
+    budget: Budget | None = None,
+    calib_ok: bool = False,
 ) -> list[tuple[str, str]]:
     """-> [(路径, 规则)]。归档里的成员写成 `归档!成员`，编码串解出来的内容写成 `名字!<encoded>`。
-    任何没有完整检查到的内容都报 `R0 unchecked`，不当作没有命中。"""
+    任何没有完整检查到的内容都报 `R0 unchecked`，不当作没有命中。`calib_ok` 只在公开的默认校准包里面为真（不报 R5）。"""
     shas = known_shas() if shas is None else shas
     budget = budget or Budget(MAX_EXPANDED)
+    calib_ok = calib_ok or public_calib(name, data)
     hits: list[tuple[str, str]] = []
     if hashlib.sha256(data).hexdigest() in shas:
         hits.append((name, "R4 registered-sha"))
@@ -360,8 +408,11 @@ def scan_bytes(
     if members is None:
         binary = _is_binary(data)
         rule = _magic(data, binary)
+        calib = None if calib_ok else _calib(name, data, binary)
         if rule:
             hits.append((name, rule))
+        elif calib:
+            hits.append((name, calib))
         else:
             hits += _scan_encoded(name, data, shas, depth, budget)
         return hits
@@ -374,7 +425,7 @@ def scan_bytes(
         if body is None:
             hits.append((f"{name}!{member}", f"R0 unchecked: {why}"))
         else:
-            hits += scan_bytes(f"{name}!{member}", body, shas, depth + 1, budget)
+            hits += scan_bytes(f"{name}!{member}", body, shas, depth + 1, budget, calib_ok)
     return hits
 
 

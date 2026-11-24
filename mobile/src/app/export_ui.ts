@@ -15,6 +15,7 @@ import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type
 import { estimatePeak, type BatchFonts } from './export_budget';
 import { mountExportSheet, type OpenedExportSheet } from './export_options';
 import { setExportPaused } from './export_pause';
+import { calibGate } from './export_calib_wait';
 import { basePhotoId, ExportQueueState, type ExportOptions } from './export_queue';
 import {
   mountExportDock,
@@ -119,6 +120,8 @@ export class ExportFlow {
   private readonly queue = new ExportQueueState<Photo>();
   /** 下载兜底的对象 URL 全记在这里，重画、交出、清空、新的一批和批次结束时统一撤销（Sol r1 P2-03）。 */
   private readonly urls = new Set<string>();
+  /** 默认校准还在路上时，开始导出前先等它落定（最多几秒，见 export_calib_wait.ts）。 */
+  private readonly whenCalib = calibGate(() => this.app.book(), () => this.app.session());
 
   constructor(
     private readonly shell: HTMLElement,
@@ -150,18 +153,19 @@ export class ExportFlow {
 
   /** 编辑器单点「存到相册」：直接按记住的选项开始导出，不先弹导出选项表；已在导出/排队/待存中的照片不重复发起。 */
   startQuick(ids: string[], onStart?: () => void): boolean {
-    const ordered = this.orderedPhotos(ids);
-    if (!ordered.length) return false;
+    if (!this.orderedPhotos(ids).length) return false;
     this.closeSheet();
-    const photos = this.queue.filterQuickPhotos(ordered, this.batch);
-    if (!photos.length) {
-      this.paint();
-      return true;
-    }
-    onStart?.();
-    const hdr = hdrAvailable(photos) && loadExportHdr();
-    const halfframe = photos.some((p) => Boolean(p.diptych)) ? loadExportHalfframe() : 'diptych';
-    this.start(photos, { size: loadExportSize(), quality: loadExportQuality(), hdr, halfframe });
+    this.whenCalib(() => {
+      const photos = this.queue.filterQuickPhotos(this.orderedPhotos(ids), this.batch);
+      if (!photos.length) {
+        this.paint();
+        return;
+      }
+      onStart?.();
+      const hdr = hdrAvailable(photos) && loadExportHdr();
+      const halfframe = photos.some((p) => Boolean(p.diptych)) ? loadExportHalfframe() : 'diptych';
+      this.start(photos, { size: loadExportSize(), quality: loadExportQuality(), hdr, halfframe });
+    });
     return true;
   }
 
@@ -214,7 +218,7 @@ export class ExportFlow {
         cardsFor,
         requestPhoto,
         isBatchClosed: () => !this.batch || this.batch.phase === 'closed',
-        onStart: (picked, options) => this.start(picked, options),
+        onStart: (picked, options) => this.whenCalib(() => this.start(picked, options)),
         onClose: () => this.closeSheet(),
       },
       photos,

@@ -268,7 +268,8 @@ def _desktop_bakes(
 
 
 def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
-    """UI-M2：导入校准数据、06d、补选 DAT、配方卡、点卡换配方、换片保留、06c、06e，以及烘焙表和桌面逐字节相同。"""
+    """UI-M2：在「更多 → 校准数据」里导入校准数据、06d、补选 DAT、配方卡、点卡换配方、换片保留、恢复默认（06c）、06e，
+    以及烘焙表和桌面逐字节相同。测试里内置的默认校准关着（conftest），恢复默认后是中性转换并写明原因。"""
     import zipfile
 
     from gxr_studio.camdata import calib_export, store
@@ -324,9 +325,11 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     steps = {row["name"]: row for row in report["steps"]}
 
     cal = steps["calibration"]
+    assert cal["startCards"] == 0, "the start screen has no calibration step"
+    assert "未校准" in cal["before"] and "默认校准没有下载下来" in cal["before"], cal["before"]
     assert "压缩" in cal["refused"]
     assert "50mm · ISO 200、1600" in cal["card"] and "28mm · ISO 200" in cal["card"] and "MOUNT · ISO 200" in cal["card"]
-    assert "替换" in cal["card"] and "删除" in cal["card"]
+    assert "换成自己的校准…" in cal["card"] and "恢复默认校准" in cal["card"]
 
     nodat = steps["no-recipe-file"]
     assert nodat["state"] == "no-recipe-file" and nodat["locked"] == 8
@@ -375,7 +378,7 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     assert nocal["label"] == "中性转换" and nocal["key"] == "dev-neutral"
     assert set(nocal["subs"][:8]) == {"中性转换"}
     assert nocal["on"] == "builtin:1"
-    assert "还没导入校准数据" in nocal["banner"] and nocal["tag"] == "未校准"
+    assert "未校准" in nocal["banner"] and "默认校准没有下载下来" in nocal["banner"] and nocal["tag"] == "未校准"
 
     jpg = steps["jpg-only"]
     assert jpg["label"] == "相机 JPG" and jpg["disabled"] == jpg["cards"] > 0
