@@ -43,6 +43,7 @@ class App implements AppApi {
   private editor: EditorView | null = null;
   private openSeq = 0;
   private editorOpening: Promise<void> = Promise.resolve();
+  private editorWarmed = false;
   private engine: Engine | null = null;
   private engineSettled = false;
   private engineLoad: Promise<Engine | null> | null = null;
@@ -475,8 +476,6 @@ class App implements AppApi {
     if (switched) this.resetPerf();
     this.screen = 'grid';
     void this.ensureEngine().catch(() => undefined);
-    void this.ensureExporter().catch(() => undefined);
-    void this.lazy.loadEditor().catch(() => undefined);
     if (this.grid && !remount && !switched) {
       this.grid.refresh();
       this.syncDock();
@@ -487,6 +486,7 @@ class App implements AppApi {
       this.grid = new this.lazy.gridCtor(this.view, this);
       this.grid.show();
       this.syncDock();
+      this.maybeWarmAfterFirstThumb();
       return;
     }
     const seq = ++this.gridSeq;
@@ -499,8 +499,29 @@ class App implements AppApi {
         for (const badId of this.pendingUnreadable.splice(0)) this.grid.showUnreadable(badId);
         if (this.cardIsOut) this.cardChanged();
         this.syncDock();
+        this.maybeWarmAfterFirstThumb();
       })
       .catch((err) => this.reportEngine(err));
+  }
+
+  /** 等首张缩略图上屏后再在空闲时预热编辑与导出分包，不和首图导入抢主线程。 */
+  private maybeWarmAfterFirstThumb(): void {
+    if (this.editorWarmed || !this.grid || this.screen !== 'grid') return;
+    let hasReady = false;
+    for (const photo of this.byId.values()) {
+      if (photo.status === 'ready') {
+        hasReady = true;
+        break;
+      }
+    }
+    if (!hasReady) return;
+    this.editorWarmed = true;
+    afterFirstPaint(() => {
+      void this.lazy.loadEditor().catch(() => undefined);
+      scheduleIdle(() => {
+        void this.ensureExporter().catch(() => undefined);
+      });
+    });
   }
 
   private resetPerf(): void {
@@ -678,6 +699,7 @@ class App implements AppApi {
     }
     photo.status = reply.bad ? 'bad' : 'ready';
     this.afterRead(photo);
+    if (photo.status === 'ready') this.maybeWarmAfterFirstThumb();
   }
 
   private drop(reply: Reply): void {

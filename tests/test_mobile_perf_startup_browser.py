@@ -403,3 +403,21 @@ def test_pool_replaces_failed_worker_slot_after_onerror(tmp_path: Path) -> None:
     iso = report["isolationSummary"]
     assert iso["slot0Result"] == "rejected"
     assert iso["slot1Result"] == "resolved", f"slot 0 failure broke healthy slot 1: {iso}"
+
+
+def test_first_thumb_does_not_prewarm_editor_during_import(tmp_path: Path) -> None:
+    """首次导入缩略图尚未画出前，不得在主线程提前预热约 200 KB 的 editor 分包。"""
+    _prereq()
+    photos = _make_synthetic_photo_pair(tmp_path / "thumb_prewarm_photos")
+    report = _run_driver(
+        "import-before-prewarm",
+        {"distDir": str(DIST), "photoFiles": photos},
+        tmp_path,
+        timeout=180,
+        driver=DRIVER_R2,
+    )
+    assert report["pageErrors"] == [], f"pageErrors: {report['pageErrors']}"
+    before = set(report["trace"]["resourcesAtFirstThumb"] or [])
+    editor_path = f"/assets/{report['editorChunk']}"
+    assert editor_path not in before, f"editor chunk prewarmed before first thumbnail drew: {before}"
+    assert editor_path in set(report["resourcesAfterOpen"]), "editor chunk did not load when opening photo"

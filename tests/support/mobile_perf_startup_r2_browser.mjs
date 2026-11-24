@@ -618,6 +618,58 @@ async function runPoolSlotRecovery() {
   return { singleSummary, isolationSummary: { slot0Result, slot1Result } };
 }
 
+async function runImportBeforePrewarm() {
+  const assets = fs.readdirSync(path.join(manifest.distDir, 'assets'));
+  const editorChunk = assets.find((f) => /^editor-.*\.js$/.test(f));
+  const exportChunk = assets.find((f) => /^export_ui-.*\.js$/.test(f));
+  const server = await startServer(manifest.distDir);
+  const browser = await launchBrowser();
+  try {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const pageErrors = [];
+    const page = await ctx.newPage();
+    page.on('pageerror', (e) => pageErrors.push(e.message));
+    await page.addInitScript(() => {
+      window.__FIRST_THUMB_TRACE__ = { drawnAt: null, resourcesAtFirstThumb: null };
+      const check = () => {
+        if (window.__FIRST_THUMB_TRACE__.drawnAt !== null) return;
+        const c = document.querySelector('.cell canvas[data-drawn]');
+        if (c) {
+          window.__FIRST_THUMB_TRACE__.drawnAt = performance.now();
+          window.__FIRST_THUMB_TRACE__.resourcesAtFirstThumb = performance
+            .getEntriesByType('resource')
+            .map((e) => new URL(e.name, location.href).pathname);
+        }
+      };
+      new MutationObserver(check).observe(document, { childList: true, subtree: true, attributes: true });
+    });
+    await page.goto(`${server.url}/?sw=0`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.locator('.app[data-screen="start"] .start button.btn.primary').waitFor({ state: 'visible', timeout: 20000 });
+    await page.waitForTimeout(300);
+    server.resetLog();
+    await page.locator('input.filepick:not(.calibpick)').first().setInputFiles(manifest.photoFiles);
+    await page.waitForFunction(() => window.__FIRST_THUMB_TRACE__?.drawnAt !== null, null, { timeout: 20000 });
+    const trace = await page.evaluate(() => window.__FIRST_THUMB_TRACE__);
+    // 打开编辑器验证按需/延后预热正常工作
+    await page.locator('.cell').first().click();
+    await page.locator('.editor .stage').waitFor({ state: 'visible', timeout: 20000 });
+    const resourcesAfterOpen = await page.evaluate(() =>
+      performance.getEntriesByType('resource').map((e) => new URL(e.name, location.href).pathname),
+    );
+    await ctx.close();
+    return {
+      editorChunk,
+      exportChunk,
+      trace,
+      resourcesAfterOpen,
+      pageErrors,
+    };
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+}
+
 let output;
 if (mode === 'offline-full-flow') output = await runOfflineFullFlow();
 else if (mode === 'open-old-tab') output = await runOpenOldTab();
@@ -625,6 +677,7 @@ else if (mode === 'calib-update') output = await runCalibUpdate();
 else if (mode === 'index-redirect') output = await runIndexRedirect();
 else if (mode === 'worker-wasm-retry') output = await runWorkerWasmRetry();
 else if (mode === 'pool-slot-recovery') output = await runPoolSlotRecovery();
+else if (mode === 'import-before-prewarm') output = await runImportBeforePrewarm();
 else throw new Error(`unknown mode: ${mode}`);
 
 fs.writeFileSync(manifest.out, JSON.stringify(output, null, 2));
