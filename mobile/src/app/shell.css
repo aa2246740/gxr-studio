@@ -167,7 +167,9 @@ h1, h2, p { margin: 0; }
 .calib .hd, .camfiles .hd { display: flex; align-items: center; gap: 8px; }
 .calib .hd b, .camfiles .hd b { font: 600 16px/22px var(--font-ui); }
 .calib .btn, .camfiles .btn { margin-top: 12px; }
-.start .cta { margin-top: auto; }
+.start .cta { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+.start-status { text-align: center; color: var(--accent-text); font: 500 13px/18px var(--font-ui); }
+.start-err { text-align: center; }
 .help { display: flex; justify-content: center; }
 
 .gscroll { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; }

@@ -350,8 +350,8 @@ function askLeadNodes(datError: string | null): HTMLElement[] {
   return datError
     ? [el('p', 'lead', datError)]
     : [
-        el('p', 'lead', '配方要用存储卡上的相机配方文件，这次没有和照片一起选上。'),
-        el('p', 'lead', '每张卡选一次就行。没选之前，照片只显示中性转换。'),
+        el('p', 'lead', '配方要用存储卡最外层的相机配方文件（GXRCE.DAT 和 GXRFX.BIN）。'),
+        el('p', 'lead', '选一次就会记住，以后只选照片就行。'),
       ];
 }
 
