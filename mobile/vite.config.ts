@@ -234,11 +234,26 @@ function buildId(command: string): string {
   }
 }
 
+/** 生产构建把 main.ts 对 ./app/boot 的动态导入改为静态导入，消除首屏 main -> boot 串行往返；dev 模式保持动态导入，不污染 dev.html。 */
+function prodStaticBoot(): Plugin {
+  const mainFile = path.resolve(root, 'src', 'main.ts');
+  return {
+    name: 'gxr-prod-static-boot',
+    apply: 'build',
+    enforce: 'pre',
+    transform(code, id) {
+      if (path.resolve(id.split('?')[0]) !== mainFile) return null;
+      const needle = "const { bootApp } = await import('./app/boot');";
+      if (!code.includes(needle)) return null;
+      return `import { bootApp } from './app/boot';\n${code.replace(needle, '')}`;
+    },
+  };
+}
+
 /** 生产构建时生成带内容哈希与精确白名单的 dist/sw.js；开发服务器不启用。 */
 function serviceWorkerBuild(): Plugin {
   const PRECACHE_PREFIXES = [
     'assets/main-',
-    'assets/boot-',
     'assets/rolldown-runtime-',
     'assets/worker-',
     'assets/gxr_wasm_bg-',
@@ -251,32 +266,15 @@ function serviceWorkerBuild(): Plugin {
       const outDir = options.dir ? path.resolve(options.dir) : path.resolve(root, 'dist');
       const assetsDir = path.join(outDir, 'assets');
       const template = fs.readFileSync(path.join(root, 'src', 'sw.js'), 'utf8');
-      const indexPath = path.join(outDir, 'index.html');
-      let indexHtml = fs.readFileSync(indexPath, 'utf8');
+      const indexHtml = fs.readFileSync(path.join(outDir, 'index.html'), 'utf8');
+      const entryMatch = indexHtml.match(/assets\/main-[^"']+\.js/);
+      const entryScript = entryMatch ? entryMatch[0] : '';
 
       const allowed = fs
         .readdirSync(assetsDir)
         .filter((name) => !name.startsWith('dev-'))
         .map((name) => `assets/${name}`)
         .sort();
-
-      // 给生产入口页补上开始页核心分包的并行预加载，避免 main -> boot -> css 串行往返。
-      const bootJs = allowed.find((name) => /^assets\/boot-[^/]+\.js$/.test(name));
-      const bootCss = allowed.find((name) => /^assets\/boot-[^/]+\.css$/.test(name));
-      const preloadTags: string[] = [];
-      if (bootJs && !indexHtml.includes(bootJs)) {
-        preloadTags.push(`    <link rel="modulepreload" crossorigin href="/${bootJs}">`);
-      }
-      if (bootCss && !indexHtml.includes(bootCss)) {
-        preloadTags.push(`    <link rel="stylesheet" crossorigin href="/${bootCss}">`);
-      }
-      if (preloadTags.length > 0 && indexHtml.includes('</head>')) {
-        indexHtml = indexHtml.replace('  </head>', `${preloadTags.join('\n')}\n  </head>`);
-        fs.writeFileSync(indexPath, indexHtml, 'utf8');
-      }
-
-      const entryMatch = indexHtml.match(/assets\/main-[^"']+\.js/);
-      const entryScript = entryMatch ? entryMatch[0] : '';
 
       const precache = [
         'index.html',
@@ -310,9 +308,8 @@ function serviceWorkerBuild(): Plugin {
 }
 
 const BOOT_CHUNK_RE =
-  /(?:^|[\\/])(?:mobile[\\/]src[\\/](?:app[\\/](?:boot(?:_lazy|_shots)?|dom|export_pause|start|book|lut_book|lut_gpu|calib_ui|looks|model|queue|layout|shell\.css)|core[\\/](?:api|pool|protocol)|ui[\\/]perf|wasm-pkg[\\/]|lib[\\/](?!lut_table\.ts$|frame_render\.ts$|font_loader\.ts$))|src[\\/]gxr_studio[\\/]assets[\\/]fonts[\\/])/;
+  /(?:^|[\\/])(?:mobile[\\/]src[\\/](?:main\.ts$|app[\\/](?:boot(?:_lazy|_shots)?|dom|export_pause|start|book|lut_book|lut_gpu|calib_ui|looks|model|queue|layout|shell\.css)|core[\\/](?:api|pool|protocol)|ui[\\/]perf|wasm-pkg[\\/]|lib[\\/](?!lut_table\.ts$|frame_render\.ts$|font_loader\.ts$))|src[\\/]gxr_studio[\\/]assets[\\/]fonts[\\/])/;
 const ENGINE_CHUNK_RE = /(?:^|[\\/])frontend[\\/]src[\\/]/;
-const ROLLDOWN_RUNTIME_RE = /rolldown[:/]runtime/;
 
 export default defineConfig(({ command }) => ({
   root,
@@ -336,10 +333,13 @@ export default defineConfig(({ command }) => ({
         codeSplitting: {
           groups: [
             {
-              name: 'boot',
+              name: 'main',
               priority: 30,
               includeDependenciesRecursively: false,
-              test: (id) => BOOT_CHUNK_RE.test(id) || ROLLDOWN_RUNTIME_RE.test(id),
+              test: (id) =>
+                BOOT_CHUNK_RE.test(id) ||
+                id.includes('vite/modulepreload-polyfill') ||
+                id.includes('vite/preload-helper'),
             },
             {
               name: 'engine',
@@ -351,5 +351,5 @@ export default defineConfig(({ command }) => ({
       },
     },
   },
-  plugins: [devSamples(), defaultCalibSwitch(), serviceWorkerBuild()],
+  plugins: [prodStaticBoot(), devSamples(), defaultCalibSwitch(), serviceWorkerBuild()],
 }));

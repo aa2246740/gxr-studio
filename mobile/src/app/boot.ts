@@ -752,12 +752,13 @@ class App implements AppApi {
 }
 
 export async function bootApp(root: HTMLElement, pageErrors: string[]): Promise<void> {
+  const warming = warmCore();
   const dom = createBootDom(root);
   const perfOn = new URLSearchParams(location.search).get('perf') === '1';
   const app = new App(dom.shell, dom.view, dom.picker, dom.calibPicker, dom.lutPicker, dom.perf, perfOn, pageErrors);
   bindPickers(dom, app);
-  // 开始页先渲染可交互；Worker 预热与 WebGPU / 编辑器分包延后到首屏之后，不阻塞开始页。
+  // 开始页先渲染可交互；Worker 预热在后台并行，WebGPU 与编辑器分包延后到首屏之后。
   app.start();
-  await warmCore().finally(() => { dom.shell.dataset.core = '1'; });
+  await warming.finally(() => { dom.shell.dataset.core = '1'; });
   if (import.meta.env.DEV) await app.runDevShot();
 }
