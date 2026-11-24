@@ -233,24 +233,60 @@ fn check_shape(a: &[f32], b: &[f32], h: usize, w: usize) -> Result<(), CoreError
     Ok(())
 }
 
+fn spectrum(a: &[f32], h: usize, w: usize, trig: Trig) -> Result<Vec<Cx<f32>>, CoreError> {
+    let mut freq = complex(a)?;
+    fft2(&mut freq, h, w, false, trig)?;
+    Ok(freq)
+}
+
 /// The float32 plane `np.real(np.fft.ifft2(f / (np.abs(f) + 1e-9)))` with
 /// `f = np.fft.fft2(a) * np.conj(np.fft.fft2(b))`.
-fn plane(a: &[f32], b: &[f32], h: usize, w: usize, trig: Trig) -> Result<Vec<f32>, CoreError> {
-    check_shape(a, b, h, w)?;
-    let mut fa = complex(a)?;
-    let mut fb = complex(b)?;
-    fft2(&mut fa, h, w, false, trig)?;
-    fft2(&mut fb, h, w, false, trig)?;
+fn correlate(
+    fa: &[Cx<f32>],
+    b: &[f32],
+    h: usize,
+    w: usize,
+    trig: Trig,
+) -> Result<Vec<f32>, CoreError> {
+    let mut fb = spectrum(b, h, w, trig)?;
     // NEP 50: the Python float 1e-9 is cast to float32 and added in float32.
     let eps = 1e-9_f64 as f32;
-    for (x, &y) in fa.iter_mut().zip(&fb) {
-        let f = cmul(*x, Cx::new(y.r, -y.i));
-        *x = cdiv(f, cabs(f) + eps, 0.0);
+    for (&x, y) in fa.iter().zip(&mut fb) {
+        let f = cmul(x, Cx::new(y.r, -y.i));
+        *y = cdiv(f, cabs(f) + eps, 0.0);
     }
-    fft2(&mut fa, h, w, true, trig)?;
-    let mut out = alloc::with_capacity(fa.len())?;
-    out.extend(fa.iter().map(|v| v.r));
+    fft2(&mut fb, h, w, true, trig)?;
+    let mut out = alloc::with_capacity(fb.len())?;
+    out.extend(fb.iter().map(|v| v.r));
     Ok(out)
+}
+
+fn plane(a: &[f32], b: &[f32], h: usize, w: usize, trig: Trig) -> Result<Vec<f32>, CoreError> {
+    check_shape(a, b, h, w)?;
+    correlate(&spectrum(a, h, w, trig)?, b, h, w, trig)
+}
+
+/// Alignment compares several RAW scales against a single normalized SDR grid.
+pub(crate) struct PhaseReference {
+    freq: Vec<Cx<f32>>,
+    h: usize,
+    w: usize,
+}
+
+impl PhaseReference {
+    pub(crate) fn new(a: &[f32], h: usize, w: usize) -> Result<Self, CoreError> {
+        check_shape(a, a, h, w)?;
+        let freq = spectrum(a, h, w, Trig::CORRECT)?;
+        Ok(Self { freq, h, w })
+    }
+
+    pub(crate) fn shift(&self, b: &[f32]) -> Result<(i64, i64), CoreError> {
+        if b.len() != self.freq.len() {
+            return Err(unsupported("bad_input", "FFT 形状对不上"));
+        }
+        let pc = correlate(&self.freq, b, self.h, self.w, Trig::CORRECT)?;
+        Ok(peak(&pc, self.h, self.w))
+    }
 }
 
 /// Port of gxr_studio/hdr/gain.py:177 `_phase_shift`: the peak of the phase-correlation

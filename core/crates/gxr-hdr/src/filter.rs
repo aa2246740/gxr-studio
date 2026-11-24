@@ -73,9 +73,16 @@ fn to_i64(v: usize) -> i64 {
 }
 
 fn ext(line: &[f64], index: i64) -> f64 {
+    #[cfg(test)]
+    EXT_CALLS.with(|count| count.set(count.get() + 1));
     // `reflect` stays inside `0 .. n`, so the index is valid.
     let i = usize::try_from(reflect(index, to_i64(line.len()))).unwrap_or(0);
     line[i]
+}
+
+#[cfg(test)]
+thread_local! {
+    static EXT_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Port of scipy `_gaussian_kernel1d(sigma, 0, radius)` with
@@ -117,6 +124,22 @@ pub fn gaussian_kernel(sigma: f64) -> Result<Vec<f64>, CoreError> {
     Ok(phi)
 }
 
+#[inline]
+fn gaussian_block<const N: usize>(samples: &[f64], kernel: &[f64], out: &mut [f64; N]) {
+    let r = kernel.len() / 2;
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = samples[r + i] * kernel[r];
+    }
+    // Independent outputs share the loop over taps. Each still adds from the outside in.
+    for (j, &weight) in kernel[..r].iter().enumerate() {
+        let left = &samples[j..][..N];
+        let right = &samples[2 * r - j..][..N];
+        for ((slot, &a), &b) in out.iter_mut().zip(left).zip(right) {
+            *slot += (a + b) * weight;
+        }
+    }
+}
+
 /// Port of `ndimage.gaussian_filter(plane, sigma)` (all other arguments default).
 ///
 /// scipy skips an axis whose sigma is not above `1e-15`; then the plane is copied.
@@ -137,18 +160,30 @@ pub fn gaussian_filter<T: Real>(
         return Ok(Vec::new());
     }
     let r = k.len() / 2;
-    let run = |line: &[f64], out: &mut [f64]| {
-        for (i, slot) in out.iter_mut().enumerate() {
-            let c = to_i64(i);
-            let mut t = line[i] * k[r];
-            for j in (1..=r).rev() {
-                let jj = to_i64(j);
-                t += (ext(line, c - jj) + ext(line, c + jj)) * k[r - j];
-            }
-            *slot = t;
+    let pad_len = h.max(w).checked_add(2 * r).ok_or_else(size::too_big)?;
+    let mut padded = size::filled(pad_len, 0.0)?;
+    let mut run = |line: &[f64], out: &mut [f64]| {
+        let padded = &mut padded[..line.len() + 2 * r];
+        let (left, rest) = padded.split_at_mut(r);
+        let (interior, right) = rest.split_at_mut(line.len());
+        for (i, slot) in left.iter_mut().enumerate() {
+            *slot = ext(line, to_i64(i) - to_i64(r));
+        }
+        interior.copy_from_slice(line);
+        for (i, slot) in right.iter_mut().enumerate() {
+            *slot = ext(line, to_i64(line.len()) + to_i64(i));
+        }
+        const LANES: usize = 4;
+        let (blocks, tail) = out.as_chunks_mut::<LANES>();
+        for (i, block) in blocks.iter_mut().enumerate() {
+            gaussian_block(&padded[i * LANES..], &k, block);
+        }
+        let start = blocks.len() * LANES;
+        for (i, slot) in tail.iter_mut().enumerate() {
+            gaussian_block(&padded[start + i..], &k, std::array::from_mut(slot));
         }
     };
-    let first = per_line(src, h, w, 0, run);
+    let first = per_line(src, h, w, 0, &mut run);
     Ok(per_line(&first, h, w, 1, run))
 }
 
@@ -253,5 +288,19 @@ mod tests {
         assert_eq!(k.len(), 5);
         assert_eq!(k[2], 0.6638183293849666);
         assert_eq!(gaussian_kernel(8.0).unwrap().len(), 65);
+    }
+
+    #[test]
+    fn gaussian_reflects_only_line_padding() {
+        let (h, w, radius) = (71, 77, 32);
+        EXT_CALLS.with(|count| count.set(0));
+        let out = gaussian_filter(&vec![1.0f32; h * w], h, w, 8.0).unwrap();
+        assert_eq!(out, vec![1.0; h * w]);
+        let calls = EXT_CALLS.with(std::cell::Cell::get);
+        let limit = 2 * radius * (h + w);
+        assert!(
+            calls <= limit,
+            "{calls} reflected lookups for a limit of {limit}"
+        );
     }
 }
