@@ -97,6 +97,9 @@ export class FilmstripView {
 
     this.clear();
 
+    const cellOrder = entries.filter((item) => item.kind === 'cell' && item.photoId);
+    const curCellIdx = Math.max(0, cellOrder.findIndex((item) => item.photoId === this.currentId));
+    let cellIdx = 0;
     let firstHeader = true;
     for (const item of entries) {
       if (item.kind === 'header') {
@@ -116,7 +119,9 @@ export class FilmstripView {
       const photo = this.api.photo(id);
       if (!photo) continue;
       const active = id === this.currentId;
-      const cls = `cell${active ? ' cur' : ''}${item.soloSep ? ' solo-sep' : ''}`;
+      const offscreen = Math.abs(cellIdx - curCellIdx) > 8;
+      cellIdx += 1;
+      const cls = `cell${active ? ' cur' : ''}${item.soloSep ? ' solo-sep' : ''}${offscreen ? ' cv-auto' : ''}`;
       const btn = button(cls, '');
       btn.dataset.photoId = id;
       const pos = indexById.get(id);
@@ -133,14 +138,15 @@ export class FilmstripView {
   }
 
   private drawThumb(btn: HTMLElement, photo: Photo): HTMLCanvasElement | null {
-    if (!photo.bitmap) {
+    const bmp = photo.bitmap;
+    if (!bmp || bmp.width <= 0 || bmp.height <= 0) {
       btn.append(el('span', 'raw', photo.dng ? 'RAW' : 'JPG'));
       return null;
     }
     const cv = document.createElement('canvas');
-    cv.width = photo.bitmap.width;
-    cv.height = photo.bitmap.height;
-    cv.getContext('2d')?.drawImage(photo.bitmap, 0, 0);
+    cv.width = bmp.width;
+    cv.height = bmp.height;
+    cv.getContext('2d')?.drawImage(bmp, 0, 0);
     btn.append(cv);
     return cv;
   }

@@ -482,7 +482,8 @@ function renderGrid({ incremental = false } = {}) {
   wrap.classList.toggle('single-day', state.galleryDate !== ALL);
   if (incremental) {
     const unit = state.galleryFilter === 'halfframe' ? '对' : '张';
-    patchDayGrid(wrap, vis, { h, createCell: cell, syncCell, fmtDate, countOn, unit });
+    const idxById = new Map(vis.map((p, i) => [p.id, i]));
+    patchDayGrid(wrap, vis, { h, createCell: (p) => cell(p, idxById.get(p.id) ?? EAGER_THUMBS), syncCell, fmtDate, countOn, unit });
   } else {
     wrap.replaceChildren();
     appendCells(vis);
@@ -490,12 +491,15 @@ function renderGrid({ incremental = false } = {}) {
   renderSelBar();
 }
 
+const EAGER_THUMBS = 16;
+
 // 按日期分组往网格末尾加：和最后一组同一天就接着放，不同就新开一组
 function appendCells(list) {
   const wrap = document.getElementById('grid-wrap');
   if (!wrap) return;
   let group = wrap.lastElementChild && wrap.lastElementChild.classList.contains('day') ? wrap.lastElementChild : null;
   const unit = state.galleryFilter === 'halfframe' ? '对' : '张';
+  let index = wrap.querySelectorAll('.cell').length;
   for (const p of list) {
     if (!group || group.dataset.date !== String(p.date)) {
       const hid = `day-${p.date || 'unknown'}`;
@@ -505,7 +509,7 @@ function appendCells(list) {
       group.dataset.date = String(p.date);
       wrap.append(group);
     }
-    group.lastElementChild.append(cell(p));
+    group.lastElementChild.append(cell(p, index++));
   }
 }
 
@@ -517,10 +521,11 @@ function countOn(date) {
   return d ? d.count : state.photos.filter((p) => p.date === date).length;
 }
 
-function cell(p) {
+function cell(p, index = EAGER_THUMBS) {
   const selected = isPhotoSelected(state.selection, p);
   const pair = isPairSecond(p);
-  const img = h('img', { src: p.thumb_url, alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' });
+  const eager = index < EAGER_THUMBS;
+  const img = h('img', { loading: eager ? 'eager' : 'lazy', ...(eager ? { fetchpriority: 'high' } : {}), decoding: 'async', draggable: 'false', alt: '', src: p.thumb_url });
   // 缩略图到了再淡入（.ready），之前是同色的空格子，不闪白
   const ready = () => img.classList.add('ready');
   if (img.complete && img.naturalWidth) ready();

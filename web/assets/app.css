@@ -347,6 +347,8 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px;
 .grid h3 span { color: var(--text-3); font-weight: var(--fw-regular); font-size: var(--fs-small); }
 /* 选了某一天时，分组标题和顶上的标题是同一个日期：只留给读屏 */
 .grid.single-day .day > h3 { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* 非首组日期分区延迟渲染：首屏立即可见，离屏分组跳过布局与绘制并记住实测高度 */
+.grid .day:nth-child(n + 2) { content-visibility: auto; contain-intrinsic-block-size: auto 320px; }
 /* 图库里点选、⇧ 连选、⌘A 都不该留下文字选中的高亮；输入框照旧能选字 */
 .library { user-select: none; -webkit-user-select: none; }
 .library input, .library textarea, .library select { user-select: text; -webkit-user-select: text; }
