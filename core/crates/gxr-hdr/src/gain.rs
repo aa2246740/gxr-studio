@@ -9,7 +9,7 @@ use gxr_raw::{CODE_MAX, CoreError, Dng, Json, orient_array};
 use crate::curve::fit_curve;
 use crate::elem::{exp2, log2, log2f, powf32};
 use crate::error::unsupported;
-use crate::fft::phase_shift;
+use crate::fft::PhaseReference;
 use crate::filter::{check_shape, gaussian_filter};
 use crate::np::{
     Real, View, count_f64, interp, maximum, mean, mean_of, pairwise, std, std_view, sum,
@@ -578,13 +578,18 @@ pub fn align(sdr: &Plane32, raw: &Plane32) -> Result<Alignment, CoreError> {
     }
     let (h, w) = (sdr.h, sdr.w);
     let a = norm(&hp32(&sdr.v, h, w)?);
-    let corr_at = |s: f64, dy: i64, dx: i64| -> Result<f64, CoreError> {
-        Ok(mean_product(&a, &warped_norm(raw, h, w, s, dy, dx)?))
-    };
+    let phase = PhaseReference::new(&a, h, w)?;
     let mut best: Option<(f64, f64, i64, i64)> = None;
     for &s in &SCALES {
-        let (mut dy, mut dx) = phase_shift(&a, &warped_norm(raw, h, w, s, 0, 0)?, h, w)?;
-        let mut corr = corr_at(s, dy, dx)?;
+        let centered = warped_norm(raw, h, w, s, 0, 0)?;
+        let (mut dy, mut dx) = phase.shift(&centered)?;
+        let corr_at = |dy: i64, dx: i64| -> Result<f64, CoreError> {
+            if (dy, dx) == (0, 0) {
+                return Ok(mean_product(&a, &centered));
+            }
+            Ok(mean_product(&a, &warped_norm(raw, h, w, s, dy, dx)?))
+        };
+        let mut corr = corr_at(dy, dx)?;
         if s == 1.0 && dy == 0 && dx == 0 && corr > 0.6 {
             best = Some((corr, s, dy, dx));
             break;
@@ -595,7 +600,7 @@ pub fn align(sdr: &Plane32, raw: &Plane32) -> Result<Alignment, CoreError> {
                 if i == 0 && j == 0 {
                     continue;
                 }
-                let c = corr_at(s, py + i, px + j)?;
+                let c = corr_at(py + i, px + j)?;
                 if c > corr {
                     corr = c;
                     dy = py + i;
@@ -607,6 +612,7 @@ pub fn align(sdr: &Plane32, raw: &Plane32) -> Result<Alignment, CoreError> {
             best = Some((corr, s, dy, dx));
         }
     }
+    drop(phase);
     let (corr, s, dy, dx) = best.ok_or_else(|| bad("SCALES 是空的"))?;
     #[allow(clippy::cast_precision_loss)]
     let registered = warp(raw, (h, w), s, dy as f64, dx as f64)?;
