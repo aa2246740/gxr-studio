@@ -10,6 +10,7 @@ function wasmAssetUrl(): string {
 
 interface Pending {
   slot: number;
+  worker: Worker;
   resolve: (result: CoreResult) => void;
   reject: (err: Error) => void;
 }
@@ -116,7 +117,7 @@ export class Pool {
     const worker = this.workerAt(slot);
     this.inFlight[slot] += 1;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { slot, resolve, reject });
+      this.pending.set(id, { slot, worker, resolve, reject });
       const base: PoolRequest = { id, op, buffer, args, ...extra, wasmManaged: true };
       if (eager && this.canPostModule && !this.wasmSent.has(worker)) {
         if (this.wasmResolved) {
@@ -125,14 +126,16 @@ export class Pool {
         }
         void this.getWasmModule().then(
           (mod) => {
-            if (this.stopped || !this.pending.has(id)) return;
+            if (this.stopped || !this.pending.has(id) || this.workers[slot] !== worker) return;
             this.postWithModule(worker, base, transfer, mod);
           },
           (err: unknown) => {
             const p = this.pending.get(id);
             if (!p) return;
             this.pending.delete(id);
-            this.inFlight[p.slot] = Math.max(0, this.inFlight[p.slot] - 1);
+            if (this.workers[p.slot] === p.worker) {
+              this.inFlight[p.slot] = Math.max(0, this.inFlight[p.slot] - 1);
+            }
             p.reject(err instanceof Error ? err : new Error(String(err)));
           },
         );
@@ -174,8 +177,11 @@ export class Pool {
     const existing = this.workers[slot];
     if (existing) return existing;
     const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
-    worker.onmessage = (event: MessageEvent<PoolWorkerMessage>) => this.onMessage(worker, event.data);
-    worker.onerror = (event) => this.failAll(event.message || 'Worker 出错');
+    worker.onmessage = (event: MessageEvent<PoolWorkerMessage>) => {
+      if (this.workers[slot] !== worker) return;
+      this.onMessage(worker, event.data);
+    };
+    worker.onerror = (event) => this.failSlot(slot, worker, event.message || 'Worker 出错');
     this.workers[slot] = worker;
     return worker;
   }
@@ -209,14 +215,14 @@ export class Pool {
   }
 
   private deliverWasm(worker: Worker): void {
-    if (this.stopped) return;
+    if (this.stopped || !this.workers.includes(worker)) return;
     if (!this.canPostModule) {
       worker.postMessage({ wasmFallback: true });
       return;
     }
     void this.getWasmModule().then(
       (mod) => {
-        if (this.stopped) return;
+        if (this.stopped || !this.workers.includes(worker)) return;
         try {
           worker.postMessage({ wasmModule: mod });
           this.wasmSent.add(worker);
@@ -226,7 +232,7 @@ export class Pool {
         }
       },
       (err: unknown) => {
-        if (this.stopped) return;
+        if (this.stopped || !this.workers.includes(worker)) return;
         worker.postMessage({ wasmError: err instanceof Error ? err.message : String(err) });
       },
     );
@@ -244,9 +250,30 @@ export class Pool {
     const pending = this.pending.get(reply.id);
     if (!pending) return;
     this.pending.delete(reply.id);
-    this.inFlight[pending.slot] = Math.max(0, this.inFlight[pending.slot] - 1);
+    if (this.workers[pending.slot] === pending.worker) {
+      this.inFlight[pending.slot] = Math.max(0, this.inFlight[pending.slot] - 1);
+    }
     if (reply.ok) pending.resolve({ json: reply.json, buffers: reply.buffers });
     else pending.reject(reply.code ? new CoreError(reply.code, reply.message) : new Error(reply.message));
+  }
+
+  /** 单个 Worker 槽位发生永久错误时只拒绝该槽位的在途任务并销毁坏实例，下次请求自动新建。 */
+  private failSlot(slot: number, worker: Worker, message: string): void {
+    if (this.workers[slot] === worker) {
+      this.workers[slot] = null;
+      this.inFlight[slot] = 0;
+    }
+    this.wasmSent.delete(worker);
+    try {
+      worker.terminate();
+    } catch {
+      /* 已经失效的 Worker 忽略 terminate 异常。 */
+    }
+    for (const [id, pending] of this.pending) {
+      if (pending.slot !== slot || pending.worker !== worker) continue;
+      this.pending.delete(id);
+      pending.reject(new Error(message));
+    }
   }
 
   private failAll(message: string): void {

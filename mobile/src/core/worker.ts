@@ -101,15 +101,16 @@ function requestSharedModule(): Promise<WebAssembly.Module | null> {
 
 function load(): Promise<unknown> {
   if (ready) return ready;
-  const task = (async () => {
+  const attempt = (async () => {
     const mod = sharedModule ?? (await requestSharedModule());
     return mod ? init({ module_or_path: mod }) : init({ module_or_path: wasmUrl });
   })();
-  ready = task.catch((err: unknown) => {
-    if (ready === task) ready = null;
+  const tracked = attempt.catch((err: unknown) => {
+    if (ready === tracked) ready = null;
     throw err;
   });
-  return ready;
+  ready = tracked;
+  return tracked;
 }
 
 /** 核心的错误是 JSON 文本（kind、message）；拿出 code 和 message，拿不出就原样。 */
