@@ -514,7 +514,7 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 
 ### 相机配方文件和配方卡
 
-`GXRCE.DAT` 在 Worker 里用 `camdata_parse`、`camdata_entries`、`color_listing` 读。选了几个时用修改时间最新的，网格上写一行。只选 DAT（06d 的按钮）时留在当前这一屏。超过 16 MiB 的不读。新卡同一文件夹里还有 `GXRFX.BIN`：`classify` 认这个名字，几个里同样用修改时间最新的，和 DAT 一起交给 `setDat`。两个文件可以分两次选，先选哪一个都行；只补了 BIN 而且已经有一份 DAT（读上了或没读上）就用存着的 DAT 再读一次，只选了 DAT 就留着先前的 BIN。`GXRFX.BIN` 也是超过 16 MiB 不读。库字节跟着 DAT 交给 `camdata_parse`、`camdata_entries`、`color_listing` 和每一次 `color_resolve`（烘焙前那一次，以及导出 Worker 里那一次）。06d 的表和配方页在读失败时写核心的原话，不藏起来；路径那一行同时写 `GXRFX.BIN（新卡才有）`。每次选 DAT、清空照片都让 DAT 的版本加一，导入、删除、恢复校准数据让校准的版本加一；异步结果提交前核对版本，晚到的只丢掉。
+`GXRCE.DAT` 在 Worker 里用 `camdata_parse`、`camdata_entries`、`color_listing` 读。选了几个时用修改时间最新的，网格上写一行。只选 DAT（06d 的按钮）时留在当前这一屏。超过 16 MiB 的不读。新卡同一文件夹里还有 `GXRFX.BIN`：`classify` 认这个名字，几个里同样用修改时间最新的，和 DAT 一起交给 `setDat`。两个文件可以分两次选，先选哪一个都行；只补了 BIN 而且已经有一份 DAT（读上了或没读上）就用存着的 DAT 再读一次，只选了 DAT 就留着先前的 BIN。`GXRFX.BIN` 也是超过 16 MiB 不读。库字节跟着 DAT 交给 `camdata_parse`、`camdata_entries`、`color_listing` 和每一次 `color_resolve`（烘焙前那一次，以及导出 Worker 里那一次）。06d 的表和配方页在读失败时写核心的原话，不藏起来；路径那一行同时写 `GXRFX.BIN（新卡才有）`。每次选 DAT 或忘掉已记住的相机配方文件都让 DAT 的版本加一（清空照片不再清掉已记住的相机配方文件），导入、删除、恢复校准数据让校准的版本加一；异步结果提交前核对版本，晚到的只丢掉。
 
 配方卡照桌面 `CameraData.listing` 和 `recipes.js`：这张照片所在单元的内置 8 个（`BASE_NAMES`，说明用 `look_model.js` 的表），文件里对这个单元开放的 Looks，相机里的用户配方。镜头单元按 `unit_of_lens`（镜头名先取相机 JPG 的 `LensModel`，没有再取 DNG 的，再没有用 `UniqueCameraModel` 去掉「RICOH 」），认不出用 50mm。模型按 `model_for`：ISO ≥ 566 用 1600，否则用 200。「未校准」照 `RenderService.plan`：认不出单元、ISO 不在实拍校准范围、配方单元不是照片的单元，原因用 `calibration_note.js` 的句子。
 
@@ -522,7 +522,16 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 
 点卡就把选择记进这张照片的编辑状态（`photo.choice`），和调整放在一起，换片、重新选同一张都留着。表已经在缓存里就当帧换上；还在做时照片留着上一张，做好了而且还是要它才换。长按看原图是中性转换、调整归零。
 
-没有校准数据（默认校准也用不了，或者这个单元没校准）时，卡片和照片都是中性转换（`lib/neutral.ts`），配方照样能选（06c）。没有 DAT 时只列八个位置的名字，卡片置灰，点卡或打开「配方」页提示补选（06d）。只有 JPG 时卡片是相机 JPG、全部停用，面板是桌面的两句（06e）。
+没有校准数据（默认校准也用不了，或者这个单元没校准）时，卡片和照片都是中性转换（`lib/neutral.ts`），配方照样能选（06c）。没有 DAT 时，RAW+JPG 照片默认显示相机 JPG 且不弹阻断提示，只有 RAW 的照片保持中性转换；配方条列出八个位置的名字并置灰，点卡或状态瓷砖时提示补选（06d）。只有 JPG 时卡片是相机 JPG、全部停用，面板是桌面的两句（06e）。
+
+### 相机配方文件一次记住与起始页（`camfiles-once`，2026-11-24）
+
+- **IndexedDB 持久化与「相机配方文件」卡片（`lib/camfiles.ts`、`lib/idb.ts` v4、`app/book_camfiles.ts`、`app/calib_ui.ts`）**：`GXRCE.DAT`（及可选的 `GXRFX.BIN`）经 Worker 校验通过后，把原始字节、代号与 `GXRFX.BIN[84:89]` 库目录标识存进 IndexedDB（`gxr-mobile` / `camfiles`，沿用单事务水位 + 墓碑防乱序）。再次打开页面自动读回并重新经 Worker 校验，不挡首屏；损坏或校验不通过时清空并回退到未记住状态。在图库 `⋯` 与编辑器「更多 → 校准与配方文件」的校准卡旁展示「相机配方文件」卡片（显示 `已记住 · 第 N 代`、提供「换一份…」与「忘掉」）；清空照片保留已记住的文件，仅点「忘掉」时清除内存与 IndexedDB。
+- **两态起始页与文案清理（`app/start.ts`、`app/recipe_band.ts`）**：尚未记住相机配方文件时，起始页先引导选一次存储卡最外层的 `GXRCE.DAT` 和 `GXRFX.BIN`，再选照片（也仍支持一次同时选照片与配方文件）；记住后起始页只保留「从存储卡选照片」与一行静默状态「相机配方文件已记住 · 第 N 代」。移除 06d 弹层里过时的「每张卡选一次就行」。
+- **不匹配判定与单次提醒（`lib/camfiles.ts`、`app/model.ts`、`app/camfiles_ui.ts`、`app/recipe_view.ts`）**：打开带 `GXR1` 标签的 RAW 照片时，结合核心的 `camera_recipe_catalog_missing` 与前端比对（标签 `catalog_identity` 与记住的 `GXRFX.BIN[84:89]`、库代际及未知/未来目录 ID）识别不匹配。不匹配时按当前不匹配文件只弹一次替换提示，并保持中性转换而不渲染错误配方；换上匹配文件后提示自动关闭并按真实配方渲染。**同一库内的固件更新不需要重新选择相机配方文件**（例如 g262 与 g266 共用 KUBIK 库目录 `0ccc86c19b`，解析结果一致，不算不匹配）。
+- **无配方文件时 RAW+JPG 默认相机 JPG（`app/editor_media.ts`、`app/recipe_view.ts`、`app/recipe_band.ts`）**：没有相机配方文件时，RAW+JPG 直接打开到相机 JPG（不弹窗），只有点击配方卡或「选配方文件」瓷砖才打开 06d 弹层（取消按钮写「先不用，继续看相机 JPG」）；只有 RAW 的照片继续打开到「中性转换」。编辑器打开期间补选有效配方文件会自动把未手动改过的 RAW+JPG 升级到 RAW 配方预览，忘掉则回到相机 JPG；导出字节不变。
+- **「未校准」文案拆分（`app/recipe_band.ts`、`app/shell.css`）**：没有校准包或该单元校准核对失败时保留警告态「未校准」（`tone: 'warn'`、`data-state="no-calibration"`）；已有有效校准、仅照片 ISO 或镜头超出实拍标定范围（例如 ISO 1250 或跨单元配方）时改用中性信息态「校准范围外（推算）」（`tone: 'dim'`、信息图标，不使用警告色），说明仍给出具体原因。
+- **验收测试**：`tests/test_mobile_camfiles_once.py`（`tests/support/mobile_camfiles_once_unit.mjs`、`tests/support/mobile_camfiles_once_browser.mjs`）。
 
 ### 旋钮、Looks 和校准核对（第 6 项）
 
