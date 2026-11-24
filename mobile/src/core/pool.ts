@@ -160,13 +160,34 @@ export class Pool {
     this.wasmResolved = null;
   }
 
-  /** 必然用 WASM 的请求优先复用已装好 WASM 且空闲的 Worker，避免首张进编辑时临时实例化；其余请求保持轮询。 */
+  /** 必然用 WASM 的请求优先复用已装好 WASM 且空闲的 Worker，其次选任意空闲槽（含未启动冷槽），全忙时选在途最少槽；其余请求保持轮询。 */
   private pickSlot(eagerWasm: boolean): number {
     if (eagerWasm) {
       for (let i = 0; i < this.cap; i += 1) {
         const w = this.workers[i];
         if (w && this.inFlight[i] === 0 && this.wasmSent.has(w)) return i;
       }
+      for (let i = 0; i < this.cap; i += 1) {
+        const idx = (this.next + i) % this.cap;
+        if (this.workers[idx] && this.inFlight[idx] === 0) {
+          this.next = idx + 1;
+          return idx;
+        }
+      }
+      for (let i = 0; i < this.cap; i += 1) {
+        const idx = (this.next + i) % this.cap;
+        if (!this.workers[idx]) {
+          this.next = idx + 1;
+          return idx;
+        }
+      }
+      let best = this.next % this.cap;
+      for (let i = 1; i < this.cap; i += 1) {
+        const idx = (this.next + i) % this.cap;
+        if (this.inFlight[idx] < this.inFlight[best]) best = idx;
+      }
+      this.next = best + 1;
+      return best;
     }
     const slot = this.next % this.cap;
     this.next += 1;
