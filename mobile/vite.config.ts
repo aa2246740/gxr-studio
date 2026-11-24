@@ -249,6 +249,43 @@ function prodStaticBoot(): Plugin {
   };
 }
 
+/** 生产构建把懒加载分包路径写进 boot_lazy，便于首次网络失败后换查询串绕过浏览器模块表失败缓存。 */
+function lazyChunkMap(): Plugin {
+  const TARGETS = new Set(['grid', 'editor', 'export_ui', 'off_image_sheet']);
+  return {
+    name: 'gxr-lazy-chunk-map',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const map: Record<string, { js: string; css: string[] }> = {};
+      for (const item of Object.values(bundle)) {
+        if (item.type !== 'chunk' || !TARGETS.has(item.name)) continue;
+        const css = new Set<string>();
+        const seen = new Set<string>([item.fileName]);
+        const queue = [item];
+        while (queue.length) {
+          const cur = queue.shift()!;
+          const meta = (cur as { viteMetadata?: { importedCss?: Set<string> } }).viteMetadata;
+          if (meta?.importedCss) for (const file of meta.importedCss) css.add(file);
+          for (const dep of cur.imports) {
+            if (seen.has(dep)) continue;
+            seen.add(dep);
+            const next = bundle[dep];
+            if (next && next.type === 'chunk') queue.push(next);
+          }
+        }
+        map[item.name] = { js: item.fileName, css: [...css] };
+      }
+      const encoded = JSON.stringify(JSON.stringify(map));
+      const placeholder = /(['"`])__GXR_LAZY_CHUNKS__\1/g;
+      for (const item of Object.values(bundle)) {
+        if (item.type === 'chunk' && item.code.includes('__GXR_LAZY_CHUNKS__')) {
+          item.code = item.code.replace(placeholder, encoded);
+        }
+      }
+    },
+  };
+}
+
 const BOOT_CHUNK_RE =
   /(?:^|[\\/])(?:mobile[\\/]src[\\/](?:main\.ts$|app[\\/](?:boot(?:_lazy|_shots)?|dom|export_pause|start|book|lut_book|lut_gpu|calib_ui|looks|model|queue|layout|shell\.css|ipad\.css)|core[\\/](?:api|pool|protocol)|ui[\\/]perf|wasm-pkg[\\/]|lib[\\/](?!lut_table\.ts$|frame_render\.ts$|font_loader\.ts$))|src[\\/]gxr_studio[\\/]assets[\\/]fonts[\\/])/;
 const ENGINE_CHUNK_RE = /(?:^|[\\/])frontend[\\/]src[\\/]/;
@@ -293,5 +330,5 @@ export default defineConfig(({ command }) => ({
       },
     },
   },
-  plugins: [prodStaticBoot(), devSamples(), defaultCalibSwitch()],
+  plugins: [prodStaticBoot(), lazyChunkMap(), devSamples(), defaultCalibSwitch()],
 }));

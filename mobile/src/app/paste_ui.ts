@@ -13,9 +13,11 @@ import { loadExportHdr, saveExportHdr, watchExportHdr } from '../lib/prefs';
 import { adoptedSelectionOf, DEFAULT_CARD, namesOnly, photoWithAdopted, recipeUnitOf, shelf, shelves, tagAmountLevels } from '../lib/recipes';
 import { NOT_SET, NOTHING_COPIED, ONLY_SOURCE, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
 import { curveSummary, groupsPresent } from '../lib/paste';
+import { importChunk } from './boot_lazy';
 import { button, el, icon, ICON } from './dom';
 import { ensureCameraRecipe, needsCameraRecipe, onCameraRecipe, photoMs, type AppApi, type Knobs, type Photo } from './model';
 import { groupsAnd, groupsText, pasteState, rangeOf } from './paste_state';
+import { registerSheet } from './sheet_lifecycle';
 import { showToast } from './toast';
 import './paste.css';
 
@@ -485,28 +487,73 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
   head.append(el('h2', '', '更多'));
   const done = button('nb', '完成');
   head.append(done);
-  const view = overlay(host, sheet, () => view.close());
-  done.addEventListener('click', () => view.close());
+
+  const session = api.session();
+  const photoId = photo.id;
+  const photoVersion = photo.version;
+  const editorEl = host.querySelector('.screen.editor');
+  let closed = false;
+  let pendingToken = 0;
+  let retryCurrent: (() => void) | null = null;
+  let unregister: () => void = () => undefined;
+
+  const isStillCurrent = (): boolean =>
+    !closed &&
+    sheet.isConnected &&
+    host.dataset.screen === 'editor' &&
+    api.session() === session &&
+    api.photo(photoId) === photo &&
+    photo.version === photoVersion &&
+    Boolean(editorEl?.isConnected);
+
+  const view = overlay(host, sheet, () => closeSheet());
+  const closeSheet = (): void => {
+    if (closed) return;
+    closed = true;
+    pendingToken += 1;
+    unregister();
+    view.close();
+  };
+  unregister = registerSheet(host, closeSheet);
+  done.addEventListener('click', closeSheet);
+
+  const statusNote = el('p', 'pnote');
+  statusNote.hidden = true;
+  const failActs = el('div', 'acts');
+  failActs.hidden = true;
+  const reloadBtn = button('btn lg', '刷新页面');
+  reloadBtn.dataset.act = 'more-load-reload';
+  reloadBtn.addEventListener('click', () => location.reload());
+  const retryBtn = button('btn primary lg', '重试');
+  retryBtn.dataset.act = 'more-load-retry';
+  retryBtn.addEventListener('click', () => retryCurrent?.());
+  failActs.append(reloadBtn, retryBtn);
+
+  type MoreEntry =
+    | { act: string; label: string; detail: string; kind: 'sync'; run: () => void }
+    | { act: string; label: string; detail: string; kind: 'lazy'; run: () => Promise<() => void> };
 
   const clip = pasteState.clip;
   const group = groupsNow(api).find((item) => item.ids.includes(photo.id));
   const groupDetail = group ? `${group.rangeLabel} · ${group.ids.length} 张` : '当前照片所在分组';
 
-  const entries: Array<[string, string, string, () => void]> = [
-    [
-      'more-copy',
-      '复制调整',
-      '选要复制的项目，套用到别的照片',
-      () => openCopySheet(host, api, photo, () => undefined),
-    ],
+  const entries: MoreEntry[] = [
+    {
+      act: 'more-copy',
+      label: '复制调整',
+      detail: '选要复制的项目，套用到别的照片',
+      kind: 'sync',
+      run: () => openCopySheet(host, api, photo, () => undefined),
+    },
   ];
   if (clip) {
     entries.push(
-      [
-        'more-paste',
-        '粘贴',
-        `来自 ${clip.from.stem} · ${groupsText(clip.groups)}`,
-        () => {
+      {
+        act: 'more-paste',
+        label: '粘贴',
+        detail: `来自 ${clip.from.stem} · ${groupsText(clip.groups)}`,
+        kind: 'sync',
+        run: () => {
           const current = pasteState.clip;
           if (!current) {
             showToast(host, NOTHING_COPIED);
@@ -526,12 +573,13 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
             leaveFirst: false,
           });
         },
-      ],
-      [
-        'more-apply-group',
-        '套用到这一组',
-        groupDetail,
-        () => {
+      },
+      {
+        act: 'more-apply-group',
+        label: '套用到这一组',
+        detail: groupDetail,
+        kind: 'sync',
+        run: () => {
           const current = pasteState.clip;
           if (!current) {
             showToast(host, NOTHING_COPIED);
@@ -553,52 +601,102 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
             leaveFirst: true,
           });
         },
-      ],
+      },
     );
   }
   entries.push(
-    [
-      'more-export-options',
-      '导出选项',
-      '尺寸、品质与 HDR 说明',
-      () => {
-        // 延迟导入导出与关机图模块，避免网格首图阶段经 paste_ui 提前拉取 export_ui。
-        void import('./export_ui').then(({ openExportOptions }) => {
-          openExportOptions(host, [photo.id]);
-        });
+    {
+      act: 'more-export-options',
+      label: '导出选项',
+      detail: '尺寸、品质与 HDR 说明',
+      kind: 'lazy',
+      run: async () => {
+        const mod = await importChunk('export_ui', () => import('./export_ui'), 'src/app/export_ui.ts');
+        return () => {
+          if (!mod.openExportOptions(host, [photo.id])) throw new Error('导出选项暂不可用');
+        };
       },
-    ],
-    [
-      'more-off-image',
-      '做成关机图',
-      '生成 640×480 的 GXROFF.JPG',
-      () => {
-        void import('./off_image_sheet').then(({ openOffImageSheet }) => {
-          openOffImageSheet(host, api, photo);
-        });
+    },
+    {
+      act: 'more-off-image',
+      label: '做成关机图',
+      detail: '生成 640×480 的 GXROFF.JPG',
+      kind: 'lazy',
+      run: async () => {
+        const mod = await importChunk('off_image_sheet', () => import('./off_image_sheet'), 'src/app/off_image_sheet.ts');
+        return () => mod.openOffImageSheet(host, api, photo);
       },
-    ],
-    [
-      'more-photo-info',
-      '照片信息',
-      '文件名、拍摄时间与镜头',
-      () => openPhotoInfoSheet(host, api, photo),
-    ],
+    },
+    {
+      act: 'more-photo-info',
+      label: '照片信息',
+      detail: '文件名、拍摄时间与镜头',
+      kind: 'sync',
+      run: () => openPhotoInfoSheet(host, api, photo),
+    },
   );
 
+  const rowControls: Array<{ btn: HTMLButtonElement; detailEl: HTMLElement; detail: string }> = [];
+  const resetRows = () => {
+    for (const row of rowControls) {
+      row.btn.disabled = false;
+      row.detailEl.textContent = row.detail;
+    }
+  };
+
+  const runLazy = (
+    entry: Extract<MoreEntry, { kind: 'lazy' }>,
+    btn: HTMLButtonElement,
+    detailEl: HTMLElement,
+  ): void => {
+    const token = ++pendingToken;
+    resetRows();
+    btn.disabled = true;
+    detailEl.textContent = '正在加载…';
+    statusNote.className = 'pnote faint';
+    statusNote.removeAttribute('role');
+    statusNote.textContent = `正在加载「${entry.label}」…`;
+    statusNote.hidden = false;
+    failActs.hidden = true;
+    retryCurrent = () => runLazy(entry, btn, detailEl);
+    void entry
+      .run()
+      .then((openPanel) => {
+        if (token !== pendingToken || !isStillCurrent()) return;
+        openPanel();
+        closeSheet();
+      })
+      .catch(() => {
+        if (token !== pendingToken || !isStillCurrent()) return;
+        resetRows();
+        statusNote.className = 'pnote bad';
+        statusNote.setAttribute('role', 'alert');
+        statusNote.textContent = `未能加载「${entry.label}」，请检查网络后重试。`;
+        statusNote.hidden = false;
+        failActs.hidden = false;
+      });
+  };
+
   sheet.append(isIpad ? el('i', 'arrow up') : el('div', 'grab'), head);
-  for (const [act, label, detail, run] of entries) {
+  for (const entry of entries) {
     const line = button('lrow', '');
-    line.dataset.act = act;
+    line.dataset.act = entry.act;
     const text = el('div');
-    text.append(el('b', '', label), el('small', '', detail));
+    const detailEl = el('small', '', entry.detail);
+    text.append(el('b', '', entry.label), detailEl);
     line.append(text);
+    rowControls.push({ btn: line, detailEl, detail: entry.detail });
     line.addEventListener('click', () => {
-      view.close();
-      run();
+      if (entry.kind === 'lazy') {
+        runLazy(entry, line, detailEl);
+        return;
+      }
+      closeSheet();
+      entry.run();
     });
     sheet.append(line);
   }
+  sheet.append(statusNote, failActs);
 }
 
 export interface EditorNavHandle {
