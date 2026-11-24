@@ -63,7 +63,7 @@ export class AdjustView {
   private ipadLabEl: HTMLElement | null = null;
   private ipadValEl: HTMLElement | null = null;
   private histBtn: HTMLButtonElement | null = null;
-  private chipsEl: HTMLElement | null = null;
+  private readonly chipByKey = new Map<keyof Knobs, HTMLButtonElement>();
   private committed = 0;
   private readonly host: AdjustHost;
   private readonly head: HTMLElement;
@@ -111,7 +111,7 @@ export class AdjustView {
     this.ipadLabEl = null;
     this.ipadValEl = null;
     this.histBtn = null;
-    this.chipsEl = null;
+    this.chipByKey.clear();
   }
 
   private resetAll(): void {
@@ -134,7 +134,7 @@ export class AdjustView {
     const panel = el('div', 'panel adjust');
     const row = el('div', 'adjust-row');
     const chips = el('div', 'chips');
-    this.chipsEl = chips;
+    this.chipByKey.clear();
 
     for (const spec of SLIDERS) {
       const chip = button('chip', spec.label);
@@ -142,9 +142,10 @@ export class AdjustView {
       if (spec.key === this.key) chip.classList.add('on');
       chip.addEventListener('click', () => {
         this.key = spec.key;
-        for (const item of chips.querySelectorAll('.chip[data-key]')) item.classList.toggle('on', item === chip);
+        for (const item of this.chipByKey.values()) item.classList.toggle('on', item === chip);
         this.showKnob();
       });
+      this.chipByKey.set(spec.key, chip);
       chips.append(chip);
     }
 
@@ -254,10 +255,9 @@ export class AdjustView {
 
   private paintChipDots(): void {
     const photo = this.host.photo();
-    if (!photo || !this.chipsEl) return;
-    for (const node of this.chipsEl.querySelectorAll<HTMLElement>('.chip[data-key]')) {
-      const key = node.dataset.key as keyof Knobs | undefined;
-      if (key) node.classList.toggle('edited', photo.knobs[key] !== 0);
+    if (!photo) return;
+    for (const [key, node] of this.chipByKey) {
+      node.classList.toggle('edited', photo.knobs[key] !== 0);
     }
   }
 

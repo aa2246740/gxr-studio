@@ -11,7 +11,7 @@ import { mountCurves, previewCurve, type CurvesView } from './curves_view';
 import { el } from './dom';
 import { EditorBand, positionFloatHist } from './editor_band';
 import { EditorBar, type BandTool, type BarTool } from './editor_bar';
-import { createHistWidget, drawHistCanvas, editedFlagsOf, fitGpuCanvas, type HistWidget } from './editor_hist';
+import { createHistWidget, drawHistCanvas, editedFlagsOf, fitGpuCanvas, observeStageBox, type HistWidget, type StageBoxCache } from './editor_hist';
 import { createEditorIpadBridge, type EditorIpadBridge } from './editor_ipad_bridge';
 import { EditorMedia, NO_GPU_DETAIL, NO_GPU_TITLE, type MediaMode } from './editor_media';
 import { openExportOptions, startQuickExport, syncExportDock } from './export_ui';
@@ -80,6 +80,7 @@ export class EditorView {
   private ipad: EditorIpadBridge | null = null;
   private layoutMode: LayoutMode = 'phone-portrait';
   private pvObserver: ResizeObserver | null = null;
+  private readonly boxCache: StageBoxCache = { pv: null, stage: null };
   private decor: StageDecorController | null = null;
   /** 舞台上套的烘焙表（中性转换或某个配方）。 */
   private recipeKey = NEUTRAL_BAKE_KEY;
@@ -205,6 +206,7 @@ export class EditorView {
     this.decor?.destroy();
     this.luts?.destroy();
     this.stageZoom = this.cropStage = this.pvObserver = this.sharp = null;
+    this.boxCache.pv = this.boxCache.stage = null;
     this.recipes = this.adjust = this.curves = this.frames = this.stampBand = null;
     this.ipad = this.band = this.bar = this.screen = this.stage = this.pv = null;
     this.scrubPill = this.decor = this.luts = null;
@@ -242,6 +244,7 @@ export class EditorView {
     this.lookCaption = '';
     this.pvObserver?.disconnect();
     this.pvObserver = null;
+    this.boxCache.pv = this.boxCache.stage = null;
     this.stageZoom?.destroy();
     this.stageZoom = null;
     this.cropStage?.destroy();
@@ -317,16 +320,12 @@ export class EditorView {
     this.histWidget = histWidget;
     stage.append(pv, histWidget.root, this.scrubPill.el());
 
-    if (typeof ResizeObserver === 'function') {
-      this.pvObserver = new ResizeObserver(() => {
-        this.fitStageCanvas();
-        this.engine?.redraw();
-        if (this.activeTool === 'crop') this.cropStage?.renderOverlay();
-        this.syncFloatHistPos();
-      });
-      this.pvObserver.observe(stage);
-      this.pvObserver.observe(pv);
-    }
+    this.pvObserver = observeStageBox(stage, pv, this.boxCache, () => {
+      this.fitStageCanvas();
+      this.engine?.redraw();
+      if (this.activeTool === 'crop') this.cropStage?.renderOverlay();
+      this.syncFloatHistPos();
+    });
 
     this.stageZoom = new StageZoom(stage, pv, {
       isCropActive: () => this.activeTool === 'crop',
@@ -596,7 +595,7 @@ export class EditorView {
     if (this.mode === 'still') return;
     const engineSize = typeof this.engine?.finalSize === 'function' ? this.engine.finalSize() : null;
     const size = engineSize ?? (this.photo?.bitmap ? { w: this.photo.bitmap.width, h: this.photo.bitmap.height } : null);
-    if (fitGpuCanvas(this.stage, this.pv, this.gpuCanvas, size) && redraw) {
+    if (fitGpuCanvas(this.stage, this.pv, this.gpuCanvas, size, this.boxCache.pv ?? this.boxCache.stage) && redraw) {
       this.engine?.redraw();
     }
   }
@@ -666,7 +665,7 @@ export class EditorView {
 
   private push(): void {
     if (!this.engine || !this.photo || this.mode === 'still') return;
-    this.fitStageCanvas();
+    if (!this.dragging) this.fitStageCanvas();
     const knobs = this.holding ? zeroKnobs() : this.photo.knobs;
     const lut = this.holding ? null : this.lutToken;
     if (lut && !this.engine.hasLut(lut)) this.luts?.ensureActive();
@@ -678,7 +677,7 @@ export class EditorView {
       curve: previewCurve(this.photo.curve, this.holding),
       adjust: toAdjust(knobs),
     });
-    this.requestHist();
+    this.requestHist(false, false);
     this.decor?.onLookChanged(this.dragging);
     this.hdr.sync();
   }
@@ -717,16 +716,17 @@ export class EditorView {
     const token = this.token;
     requestAnimationFrame(() => {
       if (token !== this.token) return;
+      this.fitStageCanvas();
       this.engine?.redraw();
       this.decor?.onLookChanged(false);
       this.hdr.sync();
     });
   }
 
-  private requestHist(retry = false): void {
+  private requestHist(retry = false, fit = !retry): void {
     if (!this.engine || this.mode === 'still') return;
     if (!retry) {
-      this.fitStageCanvas(true);
+      if (fit && !this.dragging) this.fitStageCanvas(true);
       this.histMisses = 0;
       this.cancelHistRetry();
     }
