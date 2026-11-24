@@ -1,8 +1,12 @@
 // 按需启动的核心 Worker 池（上限不变）。WASM 只拉取并编译一次，再把编译好的 Module 发给真正需要它的 Worker。
 // 页面不能用 SharedArrayBuffer（GitHub Pages 没有 COOP/COEP）。
 
-import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
+// 使用标准 new URL(..., import.meta.url) 而不是 Vite `?url` 静态导入，保证 Node --experimental-strip-types 单测加载 api/pool 时不触发原生 WASM 模块导入。
 import { CoreError, type BakeArgs, type CoreOp, type CoreReply, type CoreRequest, type CoreResult } from './protocol';
+
+function wasmAssetUrl(): string {
+  return new URL('../wasm-pkg/gxr_wasm_bg.wasm', import.meta.url).href;
+}
 
 interface Pending {
   slot: number;
@@ -48,7 +52,7 @@ function workerCount(): number {
 }
 
 async function compileWasmModule(): Promise<WebAssembly.Module> {
-  const res = await fetch(wasmUrl, { credentials: 'same-origin' });
+  const res = await fetch(wasmAssetUrl(), { credentials: 'same-origin' });
   if (!res.ok) throw new Error(`WASM HTTP ${res.status}`);
   const contentType = (res.headers.get('content-type') || '').toLowerCase();
   if (typeof WebAssembly.compileStreaming === 'function' && contentType.includes('application/wasm')) {
