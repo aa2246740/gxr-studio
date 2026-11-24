@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ pytestmark = pytest.mark.browser_serial
 REPO = Path(__file__).resolve().parents[1]
 DIST = REPO / "mobile" / "dist"
 DRIVER = REPO / "tests" / "support" / "mobile_perf_startup_browser.mjs"
+DRIVER_R4 = REPO / "tests" / "support" / "mobile_perf_startup_r4_browser.mjs"
 
 
 def _prereq() -> None:
@@ -39,13 +41,19 @@ def _prereq() -> None:
     _need(RUNTIME.is_file(), "pinned Playwright runtime is missing")
 
 
-def _run_driver(mode: str, manifest: dict[str, Any], tmp_path: Path, timeout: int = 180) -> dict[str, Any]:
+def _run_driver(
+    mode: str,
+    manifest: dict[str, Any],
+    tmp_path: Path,
+    timeout: int = 180,
+    driver: Path = DRIVER,
+) -> dict[str, Any]:
     out_path = tmp_path / f"{mode}-report.json"
     manifest_path = tmp_path / f"{mode}-manifest.json"
     payload = {**manifest, "out": str(out_path)}
     manifest_path.write_text(json.dumps(payload), encoding="utf-8")
     proc = subprocess.run(
-        ["node", str(DRIVER), str(RUNTIME), mode, str(manifest_path)],
+        ["node", str(driver), str(RUNTIME), mode, str(manifest_path)],
         cwd=REPO,
         env={**os.environ, "HOME": str(REAL_HOME)},
         check=False,
@@ -181,3 +189,112 @@ def test_first_thumb_does_not_prewarm_editor_or_export_ui_during_import(tmp_path
     if order["offImage"] is not None:
         assert order["offImageBegunBeforeDraw"] is False, f"off_image_sheet started before first thumb drew: {order}"
     assert report["exportOptionsOpened"] is True, "export options sheet failed to open from editor more menu"
+
+
+def _make_valid_raw_only_dng(dest: Path) -> str:
+    """构造带 DNGVersion 标签且无内嵌预览的合法 DNG，用于验证「只有 RAW」路径。"""
+    dest.mkdir(parents=True, exist_ok=True)
+    data = bytearray(write_dng(np.full((64, 96), 512, dtype=np.uint16)))
+    old_ifd = struct.unpack_from(">I", data, 4)[0]
+    count = struct.unpack_from(">H", data, old_ifd)[0]
+    start = old_ifd + 2
+    rows = [bytes(data[at : at + 12]) for at in range(start, start + count * 12, 12)]
+    rows.append(struct.pack(">HHI4s", 50706, 1, 4, bytes([1, 4, 0, 0])))
+    struct.pack_into(">I", data, 4, len(data))
+    dng = dest / "R9990001.DNG"
+    dng.write_bytes(data + struct.pack(">H", len(rows)) + b"".join(sorted(rows)) + bytes(4))
+    return str(dng)
+
+
+def test_editor_more_lazy_sheet_cancels_on_navigate_and_retries_on_failure(tmp_path: Path) -> None:
+    """编辑器「…」懒加载面板离开后不得晚到弹出；加载失败必须显示可见错误并支持重试恢复。"""
+    _prereq()
+    photos = _make_synthetic_photo_pair(tmp_path / "menu_photos")
+    report = _run_driver(
+        "menu-race-and-fail",
+        {"distDir": str(DIST), "jpgFile": photos[1]},
+        tmp_path,
+        timeout=180,
+        driver=DRIVER_R4,
+    )
+    race = report["raceResult"]
+    assert race["pageErrors"] == [], f"race pageErrors: {race['pageErrors']}"
+    assert race["moreVisibleWhileLoading"] is True, f"editor-more closed before lazy chunk loaded: {race}"
+    assert race["screenAfterRelease"] == "grid"
+    assert race["offImagePoppedOnGrid"] is False, f"off-image sheet popped up on grid after leaving editor: {race}"
+
+    fail = report["failResult"]
+    assert fail["pageErrors"] == [], f"fail pageErrors: {fail['pageErrors']}"
+    assert fail["moreVisibleOnFail"] is True, f"editor-more vanished on chunk failure: {fail}"
+    assert fail["alertVisibleOnFail"] is True, f"no visible alert on chunk failure: {fail}"
+    assert fail["retryVisibleOnFail"] is True, f"no retry button on chunk failure: {fail}"
+    assert fail["reloadVisibleOnFail"] is True, f"no reload fallback on chunk failure: {fail}"
+    assert fail["recoveredAfterRetry"] is True, f"retry did not recover off-image sheet: {fail}"
+    assert fail["offAttempts"] >= 2, f"retry did not trigger a new chunk fetch: {fail}"
+
+
+def test_raw_only_dng_does_not_prewarm_editor_during_import(tmp_path: Path) -> None:
+    """无内嵌预览的纯 RAW 导入未画出缩略图时不得立即预热 editor/export_ui，空闲落定或点开后才加载。"""
+    _prereq()
+    raw_dng = _make_valid_raw_only_dng(tmp_path / "raw_only")
+    report = _run_driver(
+        "raw-only-prewarm",
+        {"distDir": str(DIST), "rawOnlyDng": raw_dng},
+        tmp_path,
+        timeout=180,
+        driver=DRIVER_R4,
+    )
+    assert report["pageErrors"] == [], f"pageErrors: {report['pageErrors']}"
+    early = report["early"]
+    assert early["rawOnly"] == 1
+    assert early["drawn"] == 0
+    assert early["chunks"] == [], f"editor/export_ui prewarmed immediately with zero drawn thumbnails: {early}"
+    assert report["settledPrewarmed"] is True, "settled idle fallback did not prewarm editor/export_ui"
+    assert report["onDemandEditorOpened"] is True, "clicking RAW-only cell failed to load editor on demand"
+
+
+def test_pool_dispatches_wasm_op_to_idle_cold_slot_when_warm_slots_busy(tmp_path: Path) -> None:
+    """四槽池中 0/1/2 已预热但忙碌、3 号冷槽空闲时，WASM 请求必须派到 3 号空闲槽而非排在 0 号后。"""
+    _prereq()
+    report = _run_driver(
+        "pool-idle-cold-slot",
+        {"repoDir": str(REPO)},
+        tmp_path,
+        timeout=60,
+        driver=DRIVER_R4,
+    )
+    assert report["wasmFetches"] == 1, f"expected single WASM fetch, got {report}"
+    assert report["pingSlot"] == 3, f"non-WASM ping did not keep round-robin to slot 3: {report}"
+    slots = [row["slot"] for row in report["dispatch"]]
+    assert slots == [0, 1, 2, 3], f"resolve queued behind busy warm slot instead of idle slot 3: {report}"
+    assert report["dispatch"][-1]["op"] == "resolve"
+    assert report["dispatch"][-1]["module"] is True, f"cold idle slot 3 did not receive compiled WASM module: {report}"
+    assert report["slot3Held"] == 1
+
+
+def test_grid_chunk_failure_shows_error_and_recovers_on_retry_or_repick(tmp_path: Path) -> None:
+    """首次 grid 分包加载失败时不得误切 screen，应显示可见错误与重试，且重选照片或点重试均可恢复。"""
+    _prereq()
+    photos = _make_synthetic_photo_pair(tmp_path / "grid_fail")
+    report = _run_driver(
+        "grid-fail-recovery",
+        {"distDir": str(DIST), "jpgFile": photos[1]},
+        tmp_path,
+        timeout=180,
+        driver=DRIVER_R4,
+    )
+    repick = report["repickResult"]
+    assert repick["pageErrors"] == [], f"repick pageErrors: {repick['pageErrors']}"
+    assert repick["afterFailA"]["screen"] == "start", f"screen switched to grid before chunk loaded: {repick}"
+    assert repick["afterFailA"]["startVisible"] is True
+    assert repick["afterFailA"]["alertVisible"] is True, f"no visible alert after grid chunk failure: {repick}"
+    assert repick["afterFailA"]["retryVisible"] is True
+    assert repick["afterFailA"]["reloadVisible"] is True
+    assert repick["recoveredRepick"] is True, f"re-picking photo failed to recover grid: {repick}"
+    assert repick["gridAttemptsA"] >= 2, f"re-pick did not make a new grid chunk request: {repick}"
+
+    retry_btn = report["retryBtnResult"]
+    assert retry_btn["pageErrors"] == [], f"retryBtn pageErrors: {retry_btn['pageErrors']}"
+    assert retry_btn["hasRetryB"] is True, f"retry button missing after grid chunk failure: {retry_btn}"
+    assert retry_btn["recoveredRetryBtn"] is True, f"clicking retry button failed to recover grid: {retry_btn}"
+    assert retry_btn["gridAttemptsB"] >= 2
