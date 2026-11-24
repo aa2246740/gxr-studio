@@ -11,7 +11,7 @@ import { mountCurves, previewCurve, type CurvesView } from './curves_view';
 import { el } from './dom';
 import { EditorBand, positionFloatHist } from './editor_band';
 import { EditorBar, type BandTool, type BarTool } from './editor_bar';
-import { createHistWidget, drawHistCanvas, editedFlagsOf, fitGpuCanvas, observeStageBox, type HistWidget, type StageBoxCache } from './editor_hist';
+import { createHistWidget, drawHistCanvas, editedFlagsOf, fitGpuCanvas, observeStageBox, syncEditorBarOrder, type HistWidget, type StageBoxCache } from './editor_hist';
 import { createEditorIpadBridge, type EditorIpadBridge } from './editor_ipad_bridge';
 import { EditorMedia, NO_GPU_DETAIL, NO_GPU_TITLE, type MediaMode } from './editor_media';
 import { openExportOptions, startQuickExport, syncExportDock } from './export_ui';
@@ -381,6 +381,7 @@ export class EditorView {
       onScrub,
       onEditedChanged: () => this.updateEditedDots(),
     });
+    if (!this.engine) this.adjust.setDisabled(true);
     const cropPanelEl = this.cropStage.createPanel();
     const cropHeadEl = this.cropStage.panelHeadEl();
 
@@ -486,6 +487,7 @@ export class EditorView {
     const wasIpad = isIpadLayout(this.layoutMode);
     const nowIpad = isIpadLayout(mode);
     this.layoutMode = mode;
+    syncEditorBarOrder(this.screen, this.band?.el() ?? null, this.bar?.el() ?? null, mode === 'phone-landscape');
     if (initial || wasIpad !== nowIpad) {
       this.histOpen = this.engine !== null && nowIpad ? loadIpadHist() : false;
       if (!nowIpad && this.activeTool === 'more') this.selectBandTool('recipe', false);

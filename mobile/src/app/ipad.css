@@ -336,3 +336,32 @@
   margin: 0 auto;
   padding: 24px 24px 28px;
 }
+
+/* 无 WebGPU 时禁用调整滑块：明确禁用态 + 单行原因（手机竖屏 84px 带内不裁切） */
+.app .panel.adjust .adj-disabled-note {
+  margin: 0;
+  font: 500 11px/14px var(--font-ui);
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.app .panel.adjust .adj-disabled-note[hidden] { display: none; }
+.app .panel.adjust[data-disabled="1"] .big { justify-content: center; gap: 2px; }
+.app .panel.adjust[data-disabled="1"] .slider { height: 22px; }
+.app .panel.adjust[data-disabled="1"] .slider input[type="range"]:disabled {
+  height: 22px;
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.app .panel.adjust[data-disabled="1"] .slider input[type="range"]:disabled::-webkit-slider-runnable-track {
+  background: var(--gray-700);
+}
+.app .panel.adjust[data-disabled="1"] .slider input[type="range"]:disabled::-webkit-slider-thumb {
+  width: 18px;
+  height: 18px;
+  margin-top: -7px;
+  background: var(--gray-400);
+  box-shadow: none;
+}
+.app .panel.adjust[data-disabled="1"] .adj-l1 .val { color: var(--text-3); }

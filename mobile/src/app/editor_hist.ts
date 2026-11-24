@@ -143,3 +143,18 @@ export function fitGpuCanvas(
   gpu.style.height = hPx;
   return true;
 }
+
+/** 手机横屏时工具栏在视觉上位于配方面板上方，同步 DOM 顺序让键盘/读屏焦点与视觉顺序一致。 */
+export function syncEditorBarOrder(
+  screen: HTMLElement | null,
+  band: HTMLElement | null,
+  bar: HTMLElement | null,
+  phoneLandscape: boolean,
+): void {
+  if (!screen || !band || !bar || band.parentElement !== screen || bar.parentElement !== screen) return;
+  if (phoneLandscape) {
+    if (bar.nextElementSibling !== band) screen.insertBefore(bar, band);
+  } else if (band.nextElementSibling !== bar) {
+    screen.insertBefore(band, bar);
+  }
+}
