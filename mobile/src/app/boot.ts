@@ -23,7 +23,7 @@ import type { ThumbFail, ThumbOk } from '../workers/thumb';
 import './shell.css';
 import './ipad.css';
 import { watchViewportLayout } from './layout';
-import { afterFirstPaint, bindPickers, createBootDom, createGpuEngine, LazyModules, scheduleIdle } from './boot_lazy';
+import { afterFirstPaint, bindPickers, clearChunkLoadError, createBootDom, createGpuEngine, LazyModules, scheduleIdle, showChunkLoadError } from './boot_lazy';
 
 type Reply = ThumbOk | ThumbFail;
 
@@ -340,6 +340,7 @@ class App implements AppApi {
   open(id: string): void {
     const photo = this.byId.get(id);
     if (!photo || !openable(photo)) return;
+    clearChunkLoadError(this.shell);
     this.lazy.cancelPendingWarm();
     this.gridSeq += 1;
     this.grid?.destroy(); this.grid = null;
@@ -365,7 +366,9 @@ class App implements AppApi {
       })
       .catch((err) => {
         this.reportEngine(err);
-        if (seq === this.openSeq && this.screen === 'editor') this.back();
+        if (seq !== this.openSeq || this.screen !== 'editor') return;
+        this.back();
+        showChunkLoadError(this.shell, 'editor', () => this.open(id));
       });
   }
 
@@ -464,6 +467,7 @@ class App implements AppApi {
 
   private showStart(): void {
     this.lazy.cancelPendingWarm();
+    clearChunkLoadError(this.shell);
     this.closeEditor();
     this.resetPerf();
     this.screen = 'start';
@@ -475,40 +479,46 @@ class App implements AppApi {
     this.syncDock();
   }
 
-  private showGrid(remount: boolean): void {
+  private mountGrid(GridCtor: new (host: HTMLElement, api: AppApi) => GridView, flushBad: boolean): void {
     this.closeEditor();
-    this.shell.dataset.screen = 'grid';
-    const switched = this.screen !== 'grid';
-    if (switched) this.resetPerf();
+    if (this.screen !== 'grid') this.resetPerf();
     this.screen = 'grid';
+    this.shell.dataset.screen = 'grid';
+    this.grid?.destroy();
+    this.grid = new GridCtor(this.view, this);
+    this.grid.show();
+    if (flushBad) {
+      const shown = new Set<string>();
+      for (const badId of this.pendingUnreadable.splice(0)) { shown.add(badId); this.grid.showUnreadable(badId); }
+      for (const photo of this.byId.values()) if (photo.status === 'bad' && !shown.has(photo.id)) this.grid.showUnreadable(photo.id);
+      if (this.cardIsOut) this.cardChanged();
+    }
+    this.syncDock();
+    this.maybeWarmAfterThumbs();
+  }
+
+  private showGrid(remount: boolean): void {
+    clearChunkLoadError(this.shell);
     void this.ensureEngine().catch(() => undefined);
-    if (this.grid && !remount && !switched) {
+    if (this.grid && !remount && this.screen === 'grid') {
+      this.closeEditor();
       this.grid.refresh();
       this.syncDock();
       this.maybeWarmAfterThumbs();
       return;
     }
-    this.grid?.destroy(); this.grid = null;
-    if (this.lazy.gridCtor) {
-      this.grid = new this.lazy.gridCtor(this.view, this);
-      this.grid.show();
-      this.syncDock();
-      this.maybeWarmAfterThumbs();
-      return;
-    }
+    if (this.lazy.gridCtor) { this.mountGrid(this.lazy.gridCtor, false); return; }
     const seq = ++this.gridSeq;
     const session = this.generation;
     void this.lazy.loadGrid()
       .then((GridCtor) => {
-        if (seq !== this.gridSeq || this.screen !== 'grid' || session !== this.generation) return;
-        this.grid = new GridCtor(this.view, this);
-        this.grid.show();
-        for (const badId of this.pendingUnreadable.splice(0)) this.grid.showUnreadable(badId);
-        if (this.cardIsOut) this.cardChanged();
-        this.syncDock();
-        this.maybeWarmAfterThumbs();
+        if (seq !== this.gridSeq || session !== this.generation || !this.byId.size) return;
+        this.mountGrid(GridCtor, true);
       })
-      .catch((err) => this.reportEngine(err));
+      .catch(() => {
+        if (seq !== this.gridSeq || session !== this.generation) return;
+        showChunkLoadError(this.shell, 'grid', () => { if (this.byId.size) this.showGrid(true); });
+      });
   }
 
   /** 等可见缩略图绘出（或无预览纯 RAW 全部落定并空闲）后再预热编辑与导出分包。 */

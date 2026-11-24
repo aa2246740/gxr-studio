@@ -65,10 +65,21 @@ export function clearChunkLoadError(shell: HTMLElement): void {
   for (const node of shell.querySelectorAll('.load-err-scrim, .load-err-dlg')) node.remove();
 }
 
-export function showChunkLoadError(
-  shell: HTMLElement,
-  opts: { title: string; message: string; retryAct: string; onRetry: () => void },
-): void {
+const CHUNK_ERROR_COPY: Record<'grid' | 'editor', { title: string; message: string; retryAct: string }> = {
+  grid: {
+    title: '照片页未能加载',
+    message: '网络中断或资源暂时不可用，请重试；若仍打不开，请刷新页面。',
+    retryAct: 'retry-grid',
+  },
+  editor: {
+    title: '编辑器未能加载',
+    message: '网络中断或资源暂时不可用，请重试；若仍打不开，请刷新页面。',
+    retryAct: 'retry-editor',
+  },
+};
+
+export function showChunkLoadError(shell: HTMLElement, kind: 'grid' | 'editor', onRetry: () => void): void {
+  const opts = CHUNK_ERROR_COPY[kind];
   clearChunkLoadError(shell);
   const scrim = document.createElement('div');
   scrim.className = 'scrim load-err-scrim';
@@ -97,7 +108,7 @@ export function showChunkLoadError(
   retryBtn.textContent = '重试';
   retryBtn.addEventListener('click', () => {
     clearChunkLoadError(shell);
-    opts.onRetry();
+    onRetry();
   });
   acts.append(reloadBtn, retryBtn);
   dlg.append(heading, msg, acts);
