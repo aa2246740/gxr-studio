@@ -150,24 +150,26 @@ interface IdleWindow {
   cancelIdleCallback?: (id: number) => void;
 }
 
-/** 与 core/pool.ts 保持一致的 Worker 数量推算（不改 pool.ts）。 */
+/** 与 core/pool.ts 保持一致的 Worker 数量推算。 */
 export function coreWorkerCount(cores?: number): number {
   const raw = (cores ?? (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 0)) || 2;
   return Math.min(4, Math.max(1, Math.floor(raw) - 1));
 }
 
 /**
- * 现行 core/pool.ts 按严格轮询分派 Worker，静默离屏并发上限先钉在 2（保留一半空闲 Worker 避免点击撞车）；
- * 待 perf-startup 合入最闲路由（pickSlot）后再按需调高。
+ * 静默离屏并发上限（F1 上限）：core/pool.ts 的 pickSlot 已对 WASM 任务（bake / resolve）按空闲优先路由，
+ * 预留 1 个空闲 Worker 给点击即可，不再受轮询池的固定上限 2 约束。
  */
-export const QUIET_IDLE_BAKE_CAP = 2;
+export function quietIdleBakeCap(workers: number = coreWorkerCount()): number {
+  return Math.max(1, Math.floor(workers) - 1);
+}
 
 /**
  * 配方卡可见优先与点击抢占调度器：
  * - 按实际 Worker 数量计算后台并发上限（N >= 2 时始终至少预留 1 个空闲 Worker 给用户点击）；
  * - 跨 cancel() 保持真实的在途 running 计数，只在实际任务结束（resolve/reject）时递减；
  * - 用户主动点击选卡或调旋钮时立即抢占并暂停派发新的后台任务，直到所点配方落到舞台；
- * - 离屏卡片在无用户交互的空闲期按 min(QUIET_IDLE_BAKE_CAP, bgLimit) 并行烘焙，一旦检测到编辑器任意输入立即回落至并发 1。
+ * - 离屏卡片在无用户交互的空闲期按 F1 上限 max(1, workers - 1) 并行烘焙，一旦检测到编辑器任意输入立即回落至并发 1。
  */
 export class CardBakeController<T> {
   private readonly workers: number;
@@ -403,7 +405,7 @@ export class CardBakeController<T> {
   private currentIdleLimit(): number {
     const limit = this.bgLimit();
     if (Date.now() < this.quietUntil) return Math.min(1, limit);
-    return Math.min(QUIET_IDLE_BAKE_CAP, limit);
+    return Math.min(quietIdleBakeCap(this.workers), limit);
   }
 
   private flushTapWaiters(): void {
