@@ -1,11 +1,12 @@
 // 开发服务器只绑 127.0.0.1。样本和测试回执只在 dev 里存在，打进生产包的检查会搜 __dev。
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Connect, Plugin, ViteDevServer } from 'vite';
 import { defineConfig } from 'vite';
-import { DEFAULT_CALIB_PATH } from './src/lib/default_calib.ts';
+import { DEFAULT_CALIB_PATH, DEFAULT_CALIB_SHA256 } from './src/lib/default_calib.ts';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 
@@ -233,6 +234,86 @@ function buildId(command: string): string {
   }
 }
 
+/** 生产构建时生成带内容哈希与精确白名单的 dist/sw.js；开发服务器不启用。 */
+function serviceWorkerBuild(): Plugin {
+  const PRECACHE_PREFIXES = [
+    'assets/main-',
+    'assets/boot-',
+    'assets/rolldown-runtime-',
+    'assets/worker-',
+    'assets/gxr_wasm_bg-',
+    'assets/engine-',
+  ];
+  return {
+    name: 'gxr-service-worker',
+    apply: 'build',
+    writeBundle(options) {
+      const outDir = options.dir ? path.resolve(options.dir) : path.resolve(root, 'dist');
+      const assetsDir = path.join(outDir, 'assets');
+      const template = fs.readFileSync(path.join(root, 'src', 'sw.js'), 'utf8');
+      const indexPath = path.join(outDir, 'index.html');
+      let indexHtml = fs.readFileSync(indexPath, 'utf8');
+
+      const allowed = fs
+        .readdirSync(assetsDir)
+        .filter((name) => !name.startsWith('dev-'))
+        .map((name) => `assets/${name}`)
+        .sort();
+
+      // 给生产入口页补上开始页核心分包的并行预加载，避免 main -> boot -> css 串行往返。
+      const bootJs = allowed.find((name) => /^assets\/boot-[^/]+\.js$/.test(name));
+      const bootCss = allowed.find((name) => /^assets\/boot-[^/]+\.css$/.test(name));
+      const preloadTags: string[] = [];
+      if (bootJs && !indexHtml.includes(bootJs)) {
+        preloadTags.push(`    <link rel="modulepreload" crossorigin href="/${bootJs}">`);
+      }
+      if (bootCss && !indexHtml.includes(bootCss)) {
+        preloadTags.push(`    <link rel="stylesheet" crossorigin href="/${bootCss}">`);
+      }
+      if (preloadTags.length > 0 && indexHtml.includes('</head>')) {
+        indexHtml = indexHtml.replace('  </head>', `${preloadTags.join('\n')}\n  </head>`);
+        fs.writeFileSync(indexPath, indexHtml, 'utf8');
+      }
+
+      const entryMatch = indexHtml.match(/assets\/main-[^"']+\.js/);
+      const entryScript = entryMatch ? entryMatch[0] : '';
+
+      const precache = [
+        'index.html',
+        ...allowed.filter((name) => PRECACHE_PREFIXES.some((prefix) => name.startsWith(prefix))),
+        DEFAULT_CALIB_PATH,
+      ];
+
+      const digest = crypto
+        .createHash('sha256')
+        .update(template)
+        .update('\0')
+        .update(indexHtml)
+        .update('\0')
+        .update(DEFAULT_CALIB_SHA256)
+        .update('\0')
+        .update(allowed.join('\n'))
+        .digest('hex')
+        .slice(0, 12);
+      const cacheName = `gxr-studio-v1-${digest}`;
+
+      const source = template
+        .replace('__GXR_SW_CACHE__', cacheName)
+        .replace('__GXR_SW_ENTRY__', entryScript)
+        .replace('__GXR_SW_CALIB__', DEFAULT_CALIB_PATH)
+        .replace('__GXR_SW_PRECACHE__', JSON.stringify(precache))
+        .replace('__GXR_SW_ALLOWED__', JSON.stringify(allowed));
+
+      fs.writeFileSync(path.join(outDir, 'sw.js'), source, 'utf8');
+    },
+  };
+}
+
+const BOOT_CHUNK_RE =
+  /(?:^|[\\/])(?:mobile[\\/]src[\\/](?:app[\\/](?:boot(?:_lazy|_shots)?|dom|export_pause|start|book|lut_book|lut_gpu|calib_ui|looks|model|queue|layout|shell\.css)|core[\\/](?:api|pool|protocol)|ui[\\/]perf|wasm-pkg[\\/]|lib[\\/](?!lut_table\.ts$|frame_render\.ts$|font_loader\.ts$))|src[\\/]gxr_studio[\\/]assets[\\/]fonts[\\/])/;
+const ENGINE_CHUNK_RE = /(?:^|[\\/])frontend[\\/]src[\\/]/;
+const ROLLDOWN_RUNTIME_RE = /rolldown[:/]runtime/;
+
 export default defineConfig(({ command }) => ({
   root,
   define: { __GXR_BUILD__: JSON.stringify(buildId(command)) },
@@ -246,12 +327,29 @@ export default defineConfig(({ command }) => ({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: false,
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         main: path.resolve(root, 'index.html'),
         dev: path.resolve(root, 'dev.html'),
       },
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: 'boot',
+              priority: 30,
+              includeDependenciesRecursively: false,
+              test: (id) => BOOT_CHUNK_RE.test(id) || ROLLDOWN_RUNTIME_RE.test(id),
+            },
+            {
+              name: 'engine',
+              priority: 20,
+              test: ENGINE_CHUNK_RE,
+            },
+          ],
+        },
+      },
     },
   },
-  plugins: [devSamples(), defaultCalibSwitch()],
+  plugins: [devSamples(), defaultCalibSwitch(), serviceWorkerBuild()],
 }));
