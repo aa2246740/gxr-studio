@@ -83,16 +83,52 @@ export function editedFlagsOf(photo: Photo): EditedFlags {
   };
 }
 
+export interface StageBoxCache {
+  pv: { w: number; h: number } | null;
+  stage: { w: number; h: number } | null;
+}
+
+export function updateStageBox(
+  cache: StageBoxCache,
+  entries: readonly ResizeObserverEntry[],
+  pv: HTMLElement | null,
+  stage: HTMLElement | null,
+): void {
+  for (const entry of entries) {
+    const rect = entry.contentRect;
+    const dims = rect.width > 0 && rect.height > 0 ? { w: rect.width, h: rect.height } : null;
+    if (entry.target === pv) cache.pv = dims;
+    else if (entry.target === stage) cache.stage = dims;
+  }
+}
+
+export function observeStageBox(
+  stage: HTMLElement,
+  pv: HTMLElement,
+  cache: StageBoxCache,
+  onResize: () => void,
+): ResizeObserver | null {
+  if (typeof ResizeObserver !== 'function') return null;
+  const ro = new ResizeObserver((entries) => {
+    updateStageBox(cache, entries, pv, stage);
+    onResize();
+  });
+  ro.observe(stage);
+  ro.observe(pv);
+  return ro;
+}
+
 /** 未套用边框/时间戳装饰时把 GPU 画布贴合照片实际宽高比，避免引擎的灰底黑边盖住舞台纯黑背景。 */
 export function fitGpuCanvas(
   stage: HTMLElement | null,
   pv: HTMLElement | null,
   gpu: HTMLCanvasElement | null,
   size: { w: number; h: number } | null,
+  box?: { w: number; h: number } | null,
 ): boolean {
   if (!stage || !pv || !gpu || pv.dataset.decor === '1') return false;
-  const sw = pv.clientWidth || stage.clientWidth;
-  const sh = pv.clientHeight || stage.clientHeight;
+  const sw = box && box.w > 0 ? box.w : pv.clientWidth || stage.clientWidth;
+  const sh = box && box.h > 0 ? box.h : pv.clientHeight || stage.clientHeight;
   if (sw <= 0 || sh <= 0 || !size || size.w <= 0 || size.h <= 0) {
     const had = Boolean(gpu.style.width || gpu.style.height);
     gpu.style.removeProperty('width');
@@ -106,4 +142,23 @@ export function fitGpuCanvas(
   gpu.style.width = wPx;
   gpu.style.height = hPx;
   return true;
+}
+
+/** 手机横屏时工具栏在视觉上位于配方面板上方，同步 DOM 顺序让键盘/读屏焦点与视觉顺序一致，并移动不含焦点的节点避免焦点丢失。 */
+export function syncEditorBarOrder(
+  screen: HTMLElement | null,
+  band: HTMLElement | null,
+  bar: HTMLElement | null,
+  phoneLandscape: boolean,
+): void {
+  if (!screen || !band || !bar || band.parentElement !== screen || bar.parentElement !== screen) return;
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
+  if (phoneLandscape) {
+    if (bar.nextElementSibling === band) return;
+    if (active && bar.contains(active)) screen.insertBefore(band, bar.nextElementSibling);
+    else screen.insertBefore(bar, band);
+  } else if (band.nextElementSibling !== bar) {
+    if (active && band.contains(active)) screen.insertBefore(bar, band.nextElementSibling);
+    else screen.insertBefore(band, bar);
+  }
 }

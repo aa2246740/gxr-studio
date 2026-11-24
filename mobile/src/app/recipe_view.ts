@@ -22,7 +22,7 @@ import type { UnitState } from './book';
 import { isCatalogMismatch, openMismatchDatSheet, shouldPromptMismatch } from './camfiles_ui';
 import { button, el, icon } from './dom';
 import { exportPaused } from './export_pause';
-import { lookCache } from './looks';
+import { CardBakeController, lookCache, renderCardThumb } from './looks';
 import { ensureCameraRecipe, needsCameraRecipe, onCameraRecipe, type AppApi, type Photo } from './model';
 import {
   bitmapId,
@@ -122,6 +122,7 @@ export class RecipeView {
   private neutralBitmap: ImageBitmap | null = null;
   private shown = '';
   private wanted = '';
+  private readonly bakeCtrl = new CardBakeController<Card>();
   private asked = false;
   private askHandle: AskSheetHandle | null = null;
   private readonly api: AppApi;
@@ -197,6 +198,7 @@ export class RecipeView {
 
   destroy(): void {
     this.token += 1;
+    this.bakeCtrl.destroy();
     if (this.scrollRaf) {
       cancelAnimationFrame(this.scrollRaf);
       this.scrollRaf = 0;
@@ -388,6 +390,7 @@ export class RecipeView {
           : 'uncalibrated';
     const isEmpty = Boolean(scene.list && this.which === 'mine' && !cards.length);
     if (isEmpty) {
+      this.bakeCtrl.clearObserver();
       this.strip.replaceChildren();
       this.slots = [];
       this.stripKeys = ['__empty__'];
@@ -414,6 +417,7 @@ export class RecipeView {
         slot.node.disabled = !scene.raw;
         this.syncMark(slot.node, slot.thumb, Boolean(picked && picked.id === card.id));
       }
+      if (this.strip.isConnected && !this.bakeCtrl.hasVisible()) this.bakeCtrl.syncVisible(this.slots.map((s) => s.node), this.strip);
       this.paintThumbs();
       this.scheduleScrollActive(picked?.id ?? null);
       return;
@@ -443,6 +447,8 @@ export class RecipeView {
       this.strip.append(node);
       this.slots.push({ card, node, thumb, nameEl, sub });
     }
+    this.bakeCtrl.observe(this.slots.map((s) => s.node), this.strip);
+    this.bakeCtrl.attachInput(this.panel.closest('.screen.editor') ?? this.panel, this.strip);
     this.paintThumbs();
     this.scheduleScrollActive(picked?.id ?? null);
   }
@@ -619,7 +625,7 @@ export class RecipeView {
     }
     const nextScene = this.scene();
     this.buildHead(nextScene);
-    this.applyLook(nextScene);
+    this.applyLook(nextScene, true);
     this.hooks.onEditedChanged?.();
     void this.renderCards(nextScene, this.token);
   }
@@ -665,11 +671,11 @@ export class RecipeView {
     }
     const nextScene = this.scene();
     this.syncSubView(nextScene);
-    this.applyLook(nextScene);
+    this.applyLook(nextScene, true);
     this.hooks.onEditedChanged?.();
   }
 
-  private applyLook(scene: Scene): void {
+  private applyLook(scene: Scene, userTap = false): void {
     if (!scene.raw || !this.engine || this.hooks.mode() !== 'raw') return;
     const target = this.target(scene);
     const book = this.api.book();
@@ -677,6 +683,7 @@ export class RecipeView {
     const ready = scene.dat && scene.state.state === 'ready' && target !== null && !needsCameraRecipe(this.photo, book.dat) && !mismatch;
     if (!target || !ready) {
       this.wanted = NEUTRAL_BAKE_KEY;
+      this.bakeCtrl.clearStage();
       this.show(NEUTRAL_BAKE_KEY, NEUTRAL_LABEL);
       return;
     }
@@ -684,19 +691,23 @@ export class RecipeView {
     const key = book.bakeKey(target, scene.unit, scene.iso, levels);
     if (key && book.ready(key)) {
       this.wanted = key;
+      this.bakeCtrl.clearStage();
       this.show(key, PREDICTED_LABEL);
       return;
     }
     if (!this.shown) this.show(NEUTRAL_BAKE_KEY, NEUTRAL_LABEL);
     const want = `${target.id}|${JSON.stringify(levels ?? null)}|${scene.unit}|${scene.iso}`;
     this.wanted = want;
+    this.bakeCtrl.beginStage(want, target.id, userTap);
     book.bake(target, scene.unit, scene.iso, levels).then(
       (made) => {
-        if (this.wanted !== want || !this.panel.isConnected) return;
-        this.wanted = made;
-        this.show(made, PREDICTED_LABEL);
+        if (this.wanted === want && this.panel.isConnected) {
+          this.wanted = made;
+          this.show(made, PREDICTED_LABEL);
+        }
+        this.bakeCtrl.endStage(want, target.id);
       },
-      () => undefined,
+      () => this.bakeCtrl.endStage(want, target.id),
     );
   }
 
@@ -711,6 +722,7 @@ export class RecipeView {
   }
 
   private async renderCards(scene: Scene, token: number): Promise<void> {
+    this.bakeCtrl.cancel();
     const engine = this.engine;
     const source = this.rawKey;
     const book = this.api.book();
@@ -719,62 +731,45 @@ export class RecipeView {
     const version = photo.version;
     const session = this.api.session();
     const alive = () => token === this.token && this.api.photo(photo.id) === photo && photo.version === version && this.api.session() === session;
-    const geomInfo = await this.hooks.geometry().catch(() => ({ geometry: GEOMETRY, cropped: false }));
-    if (!alive()) return;
-    const thumbGeometry = geomInfo.geometry;
+    const geomPromise = this.hooks.geometry().then((info) => info.geometry, () => GEOMETRY);
     const order = [...this.cardsOf(scene), ...shelf(scene.list, 'all')];
     const seen = new Set<string>();
-    const jobs: Array<{ card: Card; bake: Promise<string> }> = [];
+    const jobs: Array<{ id: string; item: Card }> = [];
     for (const card of order) {
       if (seen.has(card.id) || !card.controls.length) continue;
       seen.add(card.id);
       const known = book.bakeKey(card, scene.unit, scene.iso, this.levelsOf(card, scene));
       if (known && lookCache.get(photo, known)) continue;
-      const bake = book.bake(card, scene.unit, scene.iso, this.levelsOf(card, scene));
-      bake.catch(() => undefined);
-      jobs.push({ card, bake });
+      jobs.push({ id: card.id, item: card });
     }
-    for (const job of jobs) {
-      let key: string;
-      try {
-        key = await job.bake;
-      } catch (err) {
-        if (!alive()) return;
-        const slot = this.slots.find((s) => s.card.id === job.card.id);
-        if (slot) {
-          slot.sub.textContent = '无法生成电脑预测';
-          slot.node.classList.add('lockd');
-          slot.node.title = err instanceof Error ? err.message : String(err);
-        }
-        continue;
-      }
-      while (alive() && (this.hooks.dragging() || exportPaused())) await new Promise((done) => setTimeout(done, 120));
-      if (!alive()) return;
-      let gpu = book.gpuKey(key);
-      if (!gpu) {
-        try {
-          await book.bake(job.card, scene.unit, scene.iso, this.levelsOf(job.card, scene));
-        } catch {
-          continue;
-        }
-        if (!alive()) return;
-        gpu = book.gpuKey(key);
-        if (!gpu) continue;
-      }
-      const out = await engine.thumb({ source, look: { recipe: gpu, lut: null, lutStrength: 1, curve: null, adjust: ADJUST }, geometry: thumbGeometry, aspect: null, maxEdge: 192 });
-      if (!out || !alive()) return;
-      const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));
-      if (!alive()) {
-        bitmap.close();
-        return;
-      }
-      if (lookCache.get(photo, key)) {
-        bitmap.close();
-        continue;
-      }
-      lookCache.put(photo, key, version, bitmap, job.card.id);
-      this.paintThumbs();
-    }
+    if (!jobs.length) return;
+    this.bakeCtrl.attachInput(this.panel.closest('.screen.editor') ?? this.panel, this.strip);
+    if (this.strip.isConnected && !this.bakeCtrl.hasVisible()) this.bakeCtrl.syncVisible(this.slots.map((s) => s.node), this.strip);
+    const isBusy = () => this.hooks.dragging() || exportPaused();
+    this.bakeCtrl.start(jobs, {
+      isAlive: alive,
+      isBusy,
+      isDeferred: (id) => this.bakeCtrl.isStageBaking(id),
+      isPriority: (id) => id === this.target(scene)?.id,
+      run: (card) => {
+        const levels = this.levelsOf(card, scene);
+        return renderCardThumb({
+          engine, source, photo, version, cardId: card.id, geometry: () => geomPromise, adjust: ADJUST,
+          alive, isBusy, bakeCtrl: this.bakeCtrl,
+          bakeKey: () => book.bakeKey(card, scene.unit, scene.iso, levels),
+          gpuKey: (k) => book.gpuKey(k),
+          bake: () => book.bake(card, scene.unit, scene.iso, levels),
+          onError: (err) => {
+            const slot = this.slots.find((s) => s.card.id === card.id);
+            if (!slot) return;
+            slot.sub.textContent = '无法生成电脑预测';
+            slot.node.classList.add('lockd');
+            slot.node.title = err instanceof Error ? err.message : String(err);
+          },
+          onPainted: () => this.paintThumbs(),
+        });
+      },
+    });
   }
 
   private syncAsk(): void {
