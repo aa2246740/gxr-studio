@@ -43,7 +43,6 @@ class App implements AppApi {
   private editor: EditorView | null = null;
   private openSeq = 0;
   private editorOpening: Promise<void> = Promise.resolve();
-  private editorWarmed = false;
   private engine: Engine | null = null;
   private engineSettled = false;
   private engineLoad: Promise<Engine | null> | null = null;
@@ -341,6 +340,7 @@ class App implements AppApi {
   open(id: string): void {
     const photo = this.byId.get(id);
     if (!photo || !openable(photo)) return;
+    this.lazy.cancelPendingWarm();
     this.gridSeq += 1;
     this.grid?.destroy(); this.grid = null;
     this.closeEditor();
@@ -463,6 +463,7 @@ class App implements AppApi {
   }
 
   private showStart(): void {
+    this.lazy.cancelPendingWarm();
     this.closeEditor();
     this.resetPerf();
     this.screen = 'start';
@@ -484,6 +485,7 @@ class App implements AppApi {
     if (this.grid && !remount && !switched) {
       this.grid.refresh();
       this.syncDock();
+      this.maybeWarmAfterThumbs();
       return;
     }
     this.grid?.destroy(); this.grid = null;
@@ -509,16 +511,15 @@ class App implements AppApi {
       .catch((err) => this.reportEngine(err));
   }
 
-  /** 等首批缩略图上屏（最多前 8 张完成）后再预热编辑与导出分包，不和首图及批读抢主线程。 */
+  /** 等可见缩略图绘出（或无预览纯 RAW 全部落定并空闲）后再预热编辑与导出分包。 */
   private maybeWarmAfterThumbs(): void {
-    if (this.editorWarmed || !this.grid || this.screen !== 'grid') return;
-    const { done, total } = this.loading();
-    if (!total || done < Math.min(total, 8)) return;
-    if (![...this.byId.values()].some((photo) => photo.status === 'ready')) return;
-    this.editorWarmed = true;
-    afterFirstPaint(() => {
-      void this.lazy.loadEditor().catch(() => undefined);
-      scheduleIdle(() => { void this.ensureExporter().catch(() => undefined); });
+    const session = this.generation;
+    this.lazy.maybeWarmAfterThumbs({
+      active: () => Boolean(this.grid) && this.screen === 'grid' && session === this.generation,
+      loading: () => this.loading(),
+      hasDrawnThumb: () => Boolean(this.view.querySelector('.cell canvas[data-drawn]')),
+      hasOpenable: () => [...this.byId.values()].some((photo) => openable(photo)),
+      warmExporter: () => this.ensureExporter(),
     });
   }
 

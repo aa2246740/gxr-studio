@@ -119,6 +119,21 @@ export function scheduleIdle(fn: () => void): void {
   else window.setTimeout(fn, 60);
 }
 
+/** 延迟一段静默时间后再进入空闲回调，用于无缩略图纯 RAW 导入落定后的兜底预热。 */
+export function scheduleSettledIdle(delayMs: number, fn: () => void): () => void {
+  let cancelled = false;
+  const timer = window.setTimeout(() => {
+    if (cancelled) return;
+    scheduleIdle(() => {
+      if (!cancelled) fn();
+    });
+  }, delayMs);
+  return () => {
+    cancelled = true;
+    window.clearTimeout(timer);
+  };
+}
+
 function makeInput(className: string, multiple: boolean): HTMLInputElement {
   const input = document.createElement('input');
   input.type = 'file';
@@ -210,6 +225,54 @@ export class LazyModules {
   private editorLoad: Promise<typeof EditorView> | null = null;
   private exporterLoad: Promise<ExportFlow> | null = null;
   private syncDockFn: ((shell: HTMLElement) => void) | null = null;
+  private editorWarmed = false;
+  private cancelRawWarm: (() => void) | null = null;
+
+  cancelPendingWarm(): void {
+    this.cancelRawWarm?.();
+    this.cancelRawWarm = null;
+  }
+
+  /** 等可见缩略图绘出（且首批最多 8 张完成）后再预热编辑与导出分包；无预览纯 RAW 仅在全部落定并空闲后兜底预热。 */
+  maybeWarmAfterThumbs(opts: {
+    active: () => boolean;
+    loading: () => { done: number; total: number };
+    hasDrawnThumb: () => boolean;
+    hasOpenable: () => boolean;
+    warmExporter: () => Promise<ExportFlow>;
+  }): void {
+    if (this.editorWarmed || !opts.active()) return;
+    const { done, total } = opts.loading();
+    if (!total || done < Math.min(total, 8)) {
+      this.cancelPendingWarm();
+      return;
+    }
+    const triggerWarm = () => {
+      if (this.editorWarmed) return;
+      this.cancelPendingWarm();
+      this.editorWarmed = true;
+      afterFirstPaint(() => {
+        void this.loadEditor().catch(() => undefined);
+        scheduleIdle(() => {
+          void opts.warmExporter().catch(() => undefined);
+        });
+      });
+    };
+    if (opts.hasDrawnThumb()) {
+      triggerWarm();
+      return;
+    }
+    if (done < total) {
+      this.cancelPendingWarm();
+      return;
+    }
+    if (this.cancelRawWarm || !opts.hasOpenable()) return;
+    this.cancelRawWarm = scheduleSettledIdle(1500, () => {
+      this.cancelRawWarm = null;
+      const cur = opts.loading();
+      if (opts.active() && cur.total > 0 && cur.done >= cur.total) triggerWarm();
+    });
+  }
 
   loadGrid(): Promise<typeof GridView> {
     if (this.gridCtor) return Promise.resolve(this.gridCtor);
