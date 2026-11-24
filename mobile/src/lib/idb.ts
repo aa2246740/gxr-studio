@@ -1,10 +1,12 @@
-// 校准数据、自定义标志与用户 LUT 存在这台 iPhone 的浏览器里（IndexedDB），加到主屏幕后重开还在。
+// 校准数据、相机配方文件、自定义标志与用户 LUT 存在这台 iPhone 的浏览器里（IndexedDB），加到主屏幕后重开还在。
 
 import { MAX_LUT_LIBRARY_BYTES, type LutRecord } from './lut';
 
 const DB = 'gxr-mobile';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE = 'calib';
+const CAMFILES_STORE = 'camfiles';
+const CAMFILES_KEY = 'current';
 const LOGOS_STORE = 'logos';
 const KEY = 'pack';
 const LUT_RECORDS = 'lut_records';
@@ -16,6 +18,16 @@ const LUT_WATERMARK_KEY = 'watermark';
 export interface StoredPack {
   zip: ArrayBuffer;
   name: string;
+  savedAt: number;
+}
+
+export interface StoredCamFiles {
+  dat: ArrayBuffer;
+  datName: string;
+  library: ArrayBuffer | null;
+  generation: number | null;
+  libraryHash: string | null;
+  catalogId: string | null;
   savedAt: number;
 }
 
@@ -37,6 +49,7 @@ function open(): Promise<IDBDatabase> {
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      if (!db.objectStoreNames.contains(CAMFILES_STORE)) db.createObjectStore(CAMFILES_STORE);
       if (!db.objectStoreNames.contains(LOGOS_STORE)) db.createObjectStore(LOGOS_STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(LUT_RECORDS)) db.createObjectStore(LUT_RECORDS, { keyPath: 'cube_id' });
       if (!db.objectStoreNames.contains(LUT_BLOBS)) db.createObjectStore(LUT_BLOBS);
@@ -155,6 +168,109 @@ export async function deletePack(at: number): Promise<boolean> {
   if (typeof indexedDB === 'undefined') return true;
   return putIfNewer({ zip: null, name: '', savedAt: at });
 }
+
+interface CamFilesTomb {
+  dat: null;
+  datName: '';
+  library: null;
+  generation: null;
+  libraryHash: null;
+  catalogId: null;
+  savedAt: number;
+}
+
+async function runCamFiles<T>(mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+  const db = await open();
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      const tx = db.transaction(CAMFILES_STORE, mode);
+      const request = work(tx.objectStore(CAMFILES_STORE));
+      tx.oncomplete = () => resolve(request.result);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function putCamFilesIfNewer(row: StoredCamFiles | CamFilesTomb): Promise<boolean> {
+  const db = await open();
+  try {
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction(CAMFILES_STORE, 'readwrite');
+      const store = tx.objectStore(CAMFILES_STORE);
+      let wrote = false;
+      const mark = store.get(WATERMARK);
+      mark.onsuccess = () => {
+        try {
+          const record = store.get(CAMFILES_KEY);
+          record.onsuccess = () => {
+            try {
+              const now = record.result as { savedAt?: unknown } | undefined;
+              const high = Math.max(watermarkOf(mark.result), watermarkOf(now?.savedAt));
+              if (high >= row.savedAt) return;
+              store.put(row, CAMFILES_KEY);
+              store.put(row.savedAt, WATERMARK);
+              wrote = true;
+            } catch (err) {
+              try { tx.abort(); } catch { /* transaction may already be aborted */ }
+              reject(err);
+            }
+          };
+        } catch (err) {
+          try { tx.abort(); } catch { /* transaction may already be aborted */ }
+          reject(err);
+        }
+      };
+      tx.oncomplete = () => resolve(wrote);
+      tx.onerror = () => reject(tx.error ?? new Error('IndexedDB'));
+      tx.onabort = () => reject(tx.error ?? new Error('IndexedDB'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function loadCamFiles(): Promise<StoredCamFiles | null> {
+  if (typeof indexedDB === 'undefined') return null;
+  try {
+    const row = (await runCamFiles('readonly', (store) => store.get(CAMFILES_KEY))) as StoredCamFiles | CamFilesTomb | undefined;
+    if (!row || !(row.dat instanceof ArrayBuffer) || typeof row.datName !== 'string') return null;
+    if (row.library !== null && !(row.library instanceof ArrayBuffer)) return null;
+    return row as StoredCamFiles;
+  } catch {
+    return null;
+  }
+}
+
+export async function loadCamFilesWatermark(): Promise<number> {
+  if (typeof indexedDB === 'undefined') return 0;
+  try {
+    return watermarkOf(await runCamFiles('readonly', (store) => store.get(WATERMARK)));
+  } catch {
+    return 0;
+  }
+}
+
+export async function saveCamFiles(files: StoredCamFiles): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') return false;
+  const wrote = await putCamFilesIfNewer(files);
+  void navigator.storage?.persist?.().catch(() => false);
+  return wrote;
+}
+
+export async function deleteCamFiles(at: number): Promise<boolean> {
+  if (typeof indexedDB === 'undefined') return true;
+  return putCamFilesIfNewer({ dat: null, datName: '', library: null, generation: null, libraryHash: null, catalogId: null, savedAt: at });
+}
+
+export const camFilesIo = {
+  loadCamFiles,
+  saveCamFiles,
+  deleteCamFiles,
+  camFilesWatermark: loadCamFilesWatermark,
+};
 
 export async function loadAllLogos(): Promise<StoredLogo[]> {
   if (typeof indexedDB === 'undefined') return [];

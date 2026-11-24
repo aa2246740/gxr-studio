@@ -1,12 +1,14 @@
 // 这一次打开里的照片。文件句柄留着，字节只在正在看的那一张上。
 
 import type { RawLayout, Scene } from '../../../frontend/src/index';
+import { describeCamFilesMismatch } from '../lib/camfiles';
 import type { CropState, GeometryState } from '../lib/crop';
 import { copyrightFromTiff, mergeCopyright, type PhotoMeta } from '../lib/exif';
 import type { FrameMetaResult, FrameSpec, StampSpec } from '../lib/frame_spec';
 import type { GapMinutes, Order } from '../lib/group';
 import type { CurveMap } from '../lib/export_request';
 import type { Frame } from '../lib/photo_size';
+import { parseRecipeTag } from '../lib/recipe_tags';
 import {
   datKeyOf,
   NO_DAT_CAMERA_RECIPE_KEY,
@@ -341,6 +343,11 @@ export function ensureCameraRecipe(photo: Photo, book: Book, options?: EnsureCam
       } catch {
         // Worker 或传输临时出错时不缓存成 none，留给下一次请求重试。
         return;
+      }
+      // 同库代数内不同目录（如非 KUBIK g185/g250 对 KUBIK 照片）或未知未来目录：绝不采用错误配方。
+      if (dat && result.status !== 'error') {
+        const mismatch = describeCamFilesMismatch(parseRecipeTag(copyright), dat);
+        if (mismatch) result = { status: 'error', error: { code: mismatch.code, message: '请先导入拍摄时使用的相机配方文件。' } };
       }
     }
     if (photo.version !== version || cameraRecipeKey(book.dat, checkMissingDat) !== key) return;

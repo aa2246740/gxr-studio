@@ -7,9 +7,13 @@ import type { BakeArgs, CalibCheckArgs } from '../core/protocol';
 import { modelIso, TEXT, UNIT_ISOS, type Unit, type UnitPack } from '../lib/calib';
 import { DEFAULT_LABEL, DEFAULT_TEXT } from '../lib/default_calib';
 import { deviceName } from '../lib/device';
-import { selection, selectionKey, unitIndex, type Card, type Listing } from '../lib/recipes';
+import type { StoredCamFiles } from '../lib/idb';
+import { selection, selectionKey, shelves, unitIndex, type Card, type Shelves } from '../lib/recipes';
 import { ZIP_LIMITS, type ZipFail } from '../lib/zip';
+import { CamFilesController, type Dat, type PhotoDatTarget } from './book_camfiles';
 import { whenExportIdle } from './export_pause';
+
+export type { Dat, PhotoDatTarget };
 
 /**
  * 烘焙表一张约 3.8 MB（683×683 的增益网格）。JS 里最多留 16 张，显卡里最多 24 张（Sol r1 的建议，等真机量过再调）：
@@ -29,17 +33,6 @@ export interface Pack {
   kind: 'user' | 'default';
 }
 
-export interface Dat {
-  name: string;
-  read: DatRead;
-  /** 代数（旧版相机的旋钮只认 ±5）。 */
-  generation: number | null;
-  /** `color_listing` 的配方和旋钮。 */
-  listing: Listing;
-  /** 同卡的 GXRFX.BIN。单文件卡是 null。 */
-  library: ArrayBuffer | null;
-}
-
 export type UnitState =
   | { state: 'none' }
   | { state: 'missing'; message: string }
@@ -51,9 +44,6 @@ function notSavedText(): string {
   return `校准数据没有存进这台 ${deviceName()}：这次能用，下次打开要重新导入。`;
 }
 const DELETE_FAILED = '删除没有成功，校准数据还在。请再试一次。';
-
-/** 相机配方文件的上限：真的 DAT 不到 1 MB，超过这个一定不是，先拒绝再读。 */
-const MAX_DAT_BYTES = 16 << 20;
 
 const ZIP_TEXT: Record<ZipFail, string> = {
   not_zip: '这个文件不是校准数据。请选在 Mac 上导出的「GXR 校准数据」zip 文件。',
@@ -85,6 +75,11 @@ export interface BookIo {
   watermark(): Promise<number>;
   /** 内置的默认校准包（下载和核对都在 Worker 里）。不给（测试里的假 io）就当没有默认校准。 */
   defaultCalib?(): Promise<CalibRead>;
+  /** 相机配方文件（GXRCE.DAT / GXRFX.BIN）本地 IndexedDB 持久化；不给时仅内存保存。 */
+  loadCamFiles?(): Promise<StoredCamFiles | null>;
+  saveCamFiles?(files: StoredCamFiles): Promise<boolean>;
+  deleteCamFiles?(at: number): Promise<boolean>;
+  camFilesWatermark?(): Promise<number>;
 }
 
 export class Book {
@@ -97,16 +92,11 @@ export class Book {
   /** 最近一次导入失败的那一行。导入成功、删除后清掉。 */
   packError: string | null = null;
   packBusy = false;
-  dat: Dat | null = null;
-  datError: string | null = null;
-  /** 选了几个 GXRCE.DAT 时说明用的是哪个。 */
-  datNote: string | null = null;
-  datBusy = false;
+  private readonly camFiles: CamFilesController;
   /**
    * 每个异步操作提交前核对自己的版本（Sol r1）：选新的 DAT、清空都让 DAT 的版本加一；导入、替换、删除、恢复校准数据
    * 让校准的版本加一。晚到的结果只丢掉，不会把清空的状态复活，也不会盖掉后来的选择。
    */
-  private datSeq = 0;
   private packSeq = 0;
   /** 导入和删除的时间戳只增不减（IndexedDB 里按它判断谁更新）。 */
   private stamp = 0;
@@ -123,8 +113,24 @@ export class Book {
   private pinned = '';
   private readonly listeners = new Set<() => void>();
   private engine: Engine | null = null;
+  private readonly io: BookIo;
 
-  constructor(private readonly io: BookIo) {}
+  constructor(io: BookIo) {
+    this.io = io;
+    this.camFiles = new CamFilesController(io, {
+      onBump: () => this.bump(),
+      onChanged: () => this.changed(),
+    });
+  }
+
+  get dat(): Dat | null { return this.camFiles.dat; }
+  set dat(value: Dat | null) { this.camFiles.dat = value; }
+  get datError(): string | null { return this.camFiles.datError; }
+  set datError(value: string | null) { this.camFiles.datError = value; }
+  get datNote(): string | null { return this.camFiles.datNote; }
+  set datNote(value: string | null) { this.camFiles.datNote = value; }
+  get datBusy(): boolean { return this.camFiles.datBusy; }
+  set datBusy(value: boolean) { this.camFiles.datBusy = value; }
 
   /** 现在用的校准包：用户导入的优先，没有就是默认校准；默认校准也用不了是 null（中性转换）。 */
   get pack(): Pack | null {
@@ -207,8 +213,12 @@ export class Book {
   /** 已经应用到内存（`this.pack`）的最高版本，包括本次会话能用但未存下的校准包。 */
   private appliedAt = 0;
 
-  /** 打开页面时把上次导入的校准数据读回来，并像桌面每次用之前那样重新核对（在 Worker 里）。 */
+  /** 打开页面时把上次导入的校准数据与记住的相机配方文件读回来并重新核对（并行，不挡首屏）。 */
   async restore(): Promise<void> {
+    await Promise.all([this.restoreCalibOnly(), this.camFiles.restore()]);
+  }
+
+  private async restoreCalibOnly(): Promise<void> {
     const seq = ++this.packSeq;
     try {
       const read = await this.io.restoreCalib();
@@ -388,67 +398,44 @@ export class Book {
     this.bump();
   }
 
+  /** 选文件时收下最新的 GXRCE.DAT / GXRFX.BIN：支持一起选、分两次选、重载后单补 BIN，以及单文件换掉双文件。 */
+  ingestCamFiles(datFile: File | null, datCount: number, binFile: File | null): void {
+    this.camFiles.ingest(datFile, datCount, binFile);
+  }
+
+  /** 「清空照片，重新选」：保留已记住的相机配方文件，只清本批提示与未配对的半份文件。 */
+  clearSessionCamFiles(): void {
+    this.camFiles.clearSession();
+  }
+
   /** 这次选上的 GXRCE.DAT（已经挑好最新的那个）。`count` 是一共选了几个。`bin` 是同一次或先前选上的 GXRFX.BIN。 */
-  async setDat(file: File, count: number, bin?: File | null): Promise<void> {
-    const seq = ++this.datSeq;
-    this.datNote = count > 1 ? `选了 ${count} 个 GXRCE.DAT，用的是修改时间最新的那个。` : null;
-    if (file.size > MAX_DAT_BYTES) {
-      this.datBusy = false;
-      this.datError = '这个文件太大，不是相机配方文件。请重新选一次 GXRCE.DAT。';
-      this.changed();
-      return;
-    }
-    if (bin && bin.size > MAX_DAT_BYTES) {
-      this.datBusy = false;
-      this.datError = '这个文件太大，不是相机配方文件。请重新选一次 GXRFX.BIN。';
-      this.changed();
-      return;
-    }
-    this.datBusy = true;
-    this.datError = null;
-    this.changed();
-    try {
-      const bytes = await this.io.readFile(file);
-      if (seq !== this.datSeq) return;
-      if (!bytes) {
-        this.datError = '读不了这个相机配方文件。请重新选一次 GXRCE.DAT。';
-        return;
-      }
-      let library: ArrayBuffer | null = null;
-      if (bin) {
-        library = await this.io.readFile(bin);
-        if (seq !== this.datSeq) return;
-        if (!library) {
-          this.datError = '读不了这个相机配方文件。请重新选一次 GXRFX.BIN。';
-          return;
-        }
-      }
-      const read = await this.io.readDat(bytes, library);
-      if (seq !== this.datSeq) return;
-      const summary = JSON.parse(read.summary) as { generation?: unknown };
-      const listing = JSON.parse(read.listing) as Listing;
-      if (read.entries.length !== 24 * 552) throw new Error('条目长度不合格');
-      const generation = typeof summary.generation === 'number' ? summary.generation : null;
-      this.dat = { name: file.name, read, generation, listing, library: read.library ?? null };
-      this.bump();
-    } catch (err) {
-      if (seq === this.datSeq) this.datError = `无法读取相机配方文件：${err instanceof Error ? err.message : String(err)}`;
-    } finally {
-      if (seq === this.datSeq) {
-        this.datBusy = false;
-        this.changed();
-      }
-    }
+  setDat(file: File, count: number, bin?: File | null): Promise<void> {
+    return this.camFiles.setDat(file, count, bin);
+  }
+
+  /** 忘掉已记住的相机配方文件：等 IndexedDB 墓碑写入确认后再清内存。 */
+  forgetDat(): Promise<boolean> {
+    return this.camFiles.forget();
   }
 
   clearDat(): void {
-    this.datSeq += 1;
-    this.datBusy = false;
-    this.dat = null;
-    this.datError = null;
-    this.datNote = null;
-    this.bump();
-    this.changed();
+    this.camFiles.clear();
+  }
+
+  /** 对指定照片可用的相机配方文件；没有文件或目录不匹配时返回 null。 */
+  usableDatFor(photo: PhotoDatTarget): Dat | null {
+    return this.camFiles.usableFor(photo);
+  }
+
+  /** 对指定照片和单元可用的配方卡目录；没有可用相机配方文件（含目录不匹配）时返回 null。 */
+  shelvesFor(photo: PhotoDatTarget, unit: Unit): Shelves | null {
+    const dat = this.usableDatFor(photo);
+    return dat ? shelves(dat.listing, unit) : null;
+  }
+
+  /** 对指定照片和单元的校准状态；照片命中目录不匹配时按无可用相机配方文件处理。 */
+  unitStateFor(photo: PhotoDatTarget, unit: Unit): UnitState {
+    return this.unitState(unit, this.usableDatFor(photo));
   }
 
   private entry(unit: Unit, slot: number): Uint8Array | null {
@@ -472,11 +459,11 @@ export class Book {
    * 这个单元能不能用校准模型预测。第一次问时在后台交给核心的 `color_calib_check`（桌面 model_for 的同一段检查：
    * 版本、单元、原厂 04 指纹、文件清单、SHA-256，再建模型），两个 ISO 分支各一次。核对完会通知界面。
    */
-  unitState(unit: Unit): UnitState {
+  unitState(unit: Unit, usableDat: Dat | null = this.dat): UnitState {
     if (!this.pack) return this.loadingDefault ? { state: 'checking' } : { state: 'none' };
     const row = this.pack.units.find((u) => u.unit === unit);
     if (!row) return { state: 'missing', message: TEXT.unitMissing };
-    if (!this.dat) return { state: 'checking' };
+    if (!usableDat) return { state: 'checking' };
     const known = this.units.get(unit);
     if (known && known.generation === this.generation) return known.state;
     const generation = this.generation;

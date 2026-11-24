@@ -2061,7 +2061,7 @@ try {
     await page2.goto(idbPageUrl);
     out.results.idbV2ToV3UpgradeOk = await page2.evaluate(async () => {
       const idbMod = await import('/src/lib/idb.ts');
-      const allFive = ['calib', 'logos', 'lut_blobs', 'lut_meta', 'lut_records'];
+      const allSix = ['calib', 'camfiles', 'logos', 'lut_blobs', 'lut_meta', 'lut_records'];
       const assert = (cond, msg) => {
         if (!cond) throw new Error(msg);
       };
@@ -2133,8 +2133,8 @@ try {
 
       const logosAfterLutUpgrade = await idbMod.loadAllLogos();
       const infoA = await inspectDb();
-      assert(infoA.version === 3, `expected v3 after LUT-only upgrade, got ${infoA.version}`);
-      assert(JSON.stringify(infoA.stores) === JSON.stringify(allFive), `stores mismatch A: ${infoA.stores}`);
+      assert(infoA.version === 4, `expected v4 after LUT-only upgrade, got ${infoA.version}`);
+      assert(JSON.stringify(infoA.stores) === JSON.stringify(allSix), `stores mismatch A: ${infoA.stores}`);
       assert(logosAfterLutUpgrade.length === 0, 'expected empty logos store after LUT-only upgrade');
       const lutMeta = await idbMod.loadLutLibraryMeta();
       assert(lutMeta.records.length === 1 && lutMeta.records[0].label === 'Real V2 LUT', 'LUT record lost on upgrade');
@@ -2180,8 +2180,8 @@ try {
 
       const lutAfterLogoUpgrade = await idbMod.loadLutLibraryMeta();
       const infoB = await inspectDb();
-      assert(infoB.version === 3, `expected v3 after logos-only upgrade, got ${infoB.version}`);
-      assert(JSON.stringify(infoB.stores) === JSON.stringify(allFive), `stores mismatch B: ${infoB.stores}`);
+      assert(infoB.version === 4, `expected v4 after logos-only upgrade, got ${infoB.version}`);
+      assert(JSON.stringify(infoB.stores) === JSON.stringify(allSix), `stores mismatch B: ${infoB.stores}`);
       assert(lutAfterLogoUpgrade.records.length === 0 && lutAfterLogoUpgrade.totalBytes === 0, 'expected empty LUT stores');
       const logosRestored = await idbMod.loadAllLogos();
       assert(

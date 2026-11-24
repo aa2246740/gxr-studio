@@ -191,7 +191,7 @@ const CASES = {
   async 'card-removed-queued-upload'() {
     const { page, context, errors } = await makePage({ gpu: true });
     try {
-      await pick(page, manifest.pairs.slice(0, 4));
+      await pick(page, manifest.dngs.slice(0, 2));
       const [a, b] = await gridIds(page);
       const aName = `${a.toUpperCase()}.DNG`;
       const bName = `${b.toUpperCase()}.DNG`;
@@ -259,7 +259,7 @@ const CASES = {
   async 'neutral-after-clear'() {
     const { page, context, errors } = await makePage({ gpu: true });
     try {
-      await pick(page, manifest.pairs.slice(0, 2));
+      await pick(page, manifest.dngs.slice(0, 1));
       await page.evaluate(() => {
         const engine = window.__gxrEngine;
         window.__thumbHeld = [];
@@ -303,7 +303,7 @@ const CASES = {
   async 'card-removed-three'() {
     const { page, context, errors } = await makePage({ gpu: true });
     try {
-      await pick(page, manifest.pairs.slice(0, 6));
+      await pick(page, manifest.dngs.slice(0, 3));
       const ids = await gridIds(page);
       const [a, b, c] = ids;
       await page.locator(`.cell[data-id="${a}"]`).click();
@@ -497,7 +497,7 @@ const CASES = {
     const gpuRun = await (async () => {
       const { page, context, errors } = await makePage({ gpu: true });
       try {
-        await pick(page, manifest.pairs.slice(0, 4));
+        await pick(page, manifest.dngs.slice(0, 2));
         stage('gpu: picked');
         await page.evaluate(() => {
           window.__thumbCalls = 0;
@@ -632,7 +632,7 @@ const CASES = {
   async 'card-removed'() {
     const { page, context, errors } = await makePage({ gpu: true });
     try {
-      await pick(page, manifest.pairs.slice(0, 4));
+      await pick(page, manifest.dngs.slice(0, 2));
       const ids = await gridIds(page);
       const [a, b] = ids;
       const bName = `${b.toUpperCase()}.DNG`;
@@ -676,7 +676,7 @@ const CASES = {
       await page.waitForSelector('[data-screen="grid"]');
       // 插回卡、重新选同样的照片：拔卡状态清掉，那张能打开。
       await page.evaluate(() => window.__rewrites.clear());
-      await pick(page, manifest.pairs.slice(2, 4));
+      await pick(page, manifest.dngs.slice(1, 2));
       const subtitleRepicked = await page.locator('.nav small').innerText();
       const bClassRepicked = await cellClass(page, b);
       await page.locator(`.cell[data-id="${b}"]`).click();
@@ -739,7 +739,7 @@ const CASES = {
           return original.call(this);
         };
       });
-      await pick(page, manifest.pairs.slice(0, 4));
+      await pick(page, manifest.dngs.slice(0, 2));
       const gpu = await page.locator('.app').getAttribute('data-gpu');
       await page.locator('.cell').first().click();
       await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });

@@ -162,7 +162,7 @@ def test_mobile_camera_recipe_adoption_and_reset_browser(tmp_path: Path) -> None
         "wrong-gen DAT editor error box must include desktop suffix '照片调整仍可保存，暂不生成拍摄配方预测。'",
     )
     check(wrong["errorCode"] == "camera_recipe_catalog_missing", f"expected camera_recipe_catalog_missing, got {wrong['errorCode']!r}")
-    check(wrong["heading"] == "原厂标准", f"wrong-gen DAT must fall back to default '原厂标准', got {wrong['heading']!r}")
+    check(wrong["heading"] == "中性转换", f"wrong-gen DAT must show neutral head instead of mismatched DAT card, got {wrong['heading']!r}")
     check(wrong["choice"] is None, "wrong-gen fallback must not store photo.choice")
     check(wrong["exportDone"] == 1 and wrong["exportFailed"] == 0, "wrong-gen DAT export must still succeed as camera JPG")
     check(wrong["fileCount"] == 1, f"wrong-gen DAT export must share 1 file, got {wrong['fileCount']}")

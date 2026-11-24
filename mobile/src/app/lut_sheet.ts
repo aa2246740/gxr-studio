@@ -304,7 +304,10 @@ function openRenameDialog(host: HTMLElement, lutBook: LutBook, record: LutRecord
   };
   save.addEventListener('click', () => void submit());
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') void submit();
+    if (e.key === 'Enter') {
+      if (e.isComposing || e.keyCode === 229) return;
+      void submit();
+    }
   });
   requestAnimationFrame(() => input.select());
 }

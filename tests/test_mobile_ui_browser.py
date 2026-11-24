@@ -334,7 +334,7 @@ def test_mobile_ui_recipes_calibration_and_bake_parity(tmp_path: Path) -> None:
     nodat = steps["no-recipe-file"]
     assert nodat["state"] == "no-recipe-file" and nodat["locked"] == 8
     assert nodat["names"][:4] == ["GR 正片", "GR 负片", "GR 高对比黑白", "原厂标准"]
-    assert nodat["label"] == "中性转换"
+    assert nodat["label"] == "相机 JPG"
     assert "还差相机配方文件" in nodat["sheet"] and "GXRCE.DAT" in nodat["sheet"] and nodat["closed"]
 
     cards = steps["cards"]

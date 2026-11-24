@@ -449,8 +449,8 @@ test('Checklist #5: idb logo operations use atomic transactions and logoStore ro
   dbRows.set('id1', existing);
 
   const loaded = await idbMod.loadAllLogos();
-  assert.equal(openedVersion, 3, 'IndexedDB version must be 3 after merging frame + LUT');
-  for (const name of ['calib', 'logos', 'lut_records', 'lut_blobs', 'lut_meta']) {
+  assert.equal(openedVersion, 4, 'IndexedDB version must be 4 after merging frame + LUT + camfiles');
+  for (const name of ['calib', 'camfiles', 'logos', 'lut_records', 'lut_blobs', 'lut_meta']) {
     assert.ok(stores.has(name), `missing store ${name}`);
   }
   assert.equal(loaded.length, 1);
@@ -826,9 +826,9 @@ test('Merge: IndexedDB v2 -> v3 upgrade preserves LUT-only and logos-only v2 dat
 
   try {
     const idbMod = await import('../../mobile/src/lib/idb.ts');
-    const allFive = ['calib', 'logos', 'lut_blobs', 'lut_meta', 'lut_records'];
+    const allSix = ['calib', 'camfiles', 'logos', 'lut_blobs', 'lut_meta', 'lut_records'];
 
-    // Case A: v2 database holding only LUT stores (+ calib), opened at v3 -> gains logos, LUT data unchanged
+    // Case A: v2 database holding only LUT stores (+ calib), opened at v4 -> gains logos + camfiles, LUT data unchanged
     const lutOnly = makeV2Db([
       ['calib', null],
       ['lut_records', 'cube_id'],
@@ -862,8 +862,8 @@ test('Merge: IndexedDB v2 -> v3 upgrade preserves LUT-only and logos-only v2 dat
 
     globalThis.indexedDB = lutOnly.idb;
     const logosFromLutV2 = await idbMod.loadAllLogos();
-    assert.equal(lutOnly.version, 3);
-    assert.deepEqual(lutOnly.storeNames(), allFive);
+    assert.equal(lutOnly.version, 4);
+    assert.deepEqual(lutOnly.storeNames(), allSix);
     assert.deepEqual(logosFromLutV2, []);
     const restoredLut = await idbMod.loadLutLibraryMeta();
     assert.equal(restoredLut.records.length, 1);
@@ -872,7 +872,7 @@ test('Merge: IndexedDB v2 -> v3 upgrade preserves LUT-only and logos-only v2 dat
     const restoredBlob = await idbMod.loadLutBlob('cube_v2_1');
     assert.deepEqual(new Uint8Array(restoredBlob), new Uint8Array(lutBytes));
 
-    // Case B: v2 database holding only logos (+ calib), opened at v3 -> gains LUT stores, logo data unchanged
+    // Case B: v2 database holding only logos (+ calib), opened at v4 -> gains LUT + camfiles stores, logo data unchanged
     const logosOnly = makeV2Db([
       ['calib', null],
       ['logos', 'id'],
@@ -892,8 +892,8 @@ test('Merge: IndexedDB v2 -> v3 upgrade preserves LUT-only and logos-only v2 dat
 
     globalThis.indexedDB = logosOnly.idb;
     const lutMetaFromLogoV2 = await idbMod.loadLutLibraryMeta();
-    assert.equal(logosOnly.version, 3);
-    assert.deepEqual(logosOnly.storeNames(), allFive);
+    assert.equal(logosOnly.version, 4);
+    assert.deepEqual(logosOnly.storeNames(), allSix);
     assert.deepEqual(lutMetaFromLogoV2, { records: [], order: [], totalBytes: 0, watermark: 0 });
     const restoredLogos = await idbMod.loadAllLogos();
     assert.equal(restoredLogos.length, 1);

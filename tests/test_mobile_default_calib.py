@@ -202,9 +202,10 @@ def test_default_calibration_renders_and_exports_like_a_hand_import(tmp_path: Pa
     data = _run(tmp_path, "bundled", extra)
     steps = data["steps"]
 
-    # 起始页：没有校准这一步，能点的只有选照片和帮助。
+    # 起始页：没有校准这一步；未记住相机配方文件时依次给出「选相机配方文件」和「选照片」。
     assert steps["start"]["cards"] == 0
-    assert steps["start"]["buttons"][0] == "从存储卡选照片" and all("校准" not in text for text in steps["start"]["buttons"])
+    assert steps["start"]["buttons"][:2] == ["选相机配方文件", "选照片"]
+    assert all("校准" not in text for text in steps["start"]["buttons"])
     assert steps["bootState"]["kind"] == "default" and steps["bootState"]["units"] == ["jlaunch", "qlaunch", "l08firm"]
 
     # A：不导入，按默认校准画，卡上写「默认校准（基于样机）」和那一句说明；整次会话只下载一次。
