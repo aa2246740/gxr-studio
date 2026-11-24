@@ -51,6 +51,7 @@ try {
   } else {
     out.cases = await page.evaluate(async () => {
       const { RecipeView } = await import('/src/app/recipe_view.ts');
+      const { shelves } = await import('/src/lib/recipes.ts');
       const { zeroKnobs } = await import('/src/app/model.ts');
       const mismatch = '无法读取相机配方文件：GXRFX.BIN 与第 178 代 GXRCE.DAT 不匹配或已损坏，请重新复制同一套两个文件。';
       const missing = '无法读取相机配方文件：缺少 GXRFX.BIN。请将 GXRCE.DAT 和 GXRFX.BIN 一起从存储卡复制到同一文件夹，再同时导入。';
@@ -64,6 +65,10 @@ try {
       const hooks = { mode: () => 'raw', look() {}, dragging: () => false, recipeTab: () => true, geometry: async () => ({ geometry: null, cropped: false }) };
 
       function mount(book) {
+        // camfiles-once: RecipeView asks Book per photo; these stubs have one DAT and no catalog mismatch.
+        book.usableDatFor = () => book.dat;
+        book.unitStateFor = (_p, unit) => book.unitState(unit, book.dat);
+        book.shelvesFor = (_p, unit) => (book.dat ? shelves(book.dat.listing, unit) : null);
         const listeners = [];
         book.onChange = (fn) => {
           listeners.push(fn);
