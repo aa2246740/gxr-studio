@@ -252,13 +252,7 @@ function prodStaticBoot(): Plugin {
 
 /** 生产构建时生成带内容哈希与精确白名单的 dist/sw.js；开发服务器不启用。 */
 function serviceWorkerBuild(): Plugin {
-  const PRECACHE_PREFIXES = [
-    'assets/main-',
-    'assets/rolldown-runtime-',
-    'assets/worker-',
-    'assets/gxr_wasm_bg-',
-    'assets/engine-',
-  ];
+  const PRECACHE_EXT_RE = /\.(?:js|css|wasm)$/;
   return {
     name: 'gxr-service-worker',
     apply: 'build',
@@ -266,9 +260,11 @@ function serviceWorkerBuild(): Plugin {
       const outDir = options.dir ? path.resolve(options.dir) : path.resolve(root, 'dist');
       const assetsDir = path.join(outDir, 'assets');
       const template = fs.readFileSync(path.join(root, 'src', 'sw.js'), 'utf8');
-      const indexHtml = fs.readFileSync(path.join(outDir, 'index.html'), 'utf8');
-      const entryMatch = indexHtml.match(/assets\/main-[^"']+\.js/);
+      const indexPath = path.join(outDir, 'index.html');
+      const rawIndexHtml = fs.readFileSync(indexPath, 'utf8');
+      const entryMatch = rawIndexHtml.match(/assets\/main-[^"']+\.js/);
       const entryScript = entryMatch ? entryMatch[0] : '';
+      const calibUrl = `${DEFAULT_CALIB_PATH}?v=${DEFAULT_CALIB_SHA256.slice(0, 12)}`;
 
       const allowed = fs
         .readdirSync(assetsDir)
@@ -276,17 +272,18 @@ function serviceWorkerBuild(): Plugin {
         .map((name) => `assets/${name}`)
         .sort();
 
+      // 预缓存覆盖首次离线导入、编辑、导出与关机图所需的全部分包与 Worker，并用 scope 根路径和带 SHA 的默认校准 URL 作为键。
       const precache = [
-        'index.html',
-        ...allowed.filter((name) => PRECACHE_PREFIXES.some((prefix) => name.startsWith(prefix))),
-        DEFAULT_CALIB_PATH,
+        '',
+        ...allowed.filter((name) => PRECACHE_EXT_RE.test(name)),
+        calibUrl,
       ];
 
       const digest = crypto
         .createHash('sha256')
         .update(template)
         .update('\0')
-        .update(indexHtml)
+        .update(rawIndexHtml)
         .update('\0')
         .update(DEFAULT_CALIB_SHA256)
         .update('\0')
@@ -295,10 +292,17 @@ function serviceWorkerBuild(): Plugin {
         .slice(0, 12);
       const cacheName = `gxr-studio-v1-${digest}`;
 
+      // 给生产入口页写入与 SW 缓存名一致的构建标记，便于新 SW 识别仍在运行的旧版本标签页。
+      if (rawIndexHtml.includes('<html ') && !rawIndexHtml.includes('data-gxr-build=')) {
+        const stamped = rawIndexHtml.replace('<html ', `<html data-gxr-build="${cacheName}" `, 1);
+        fs.writeFileSync(indexPath, stamped, 'utf8');
+      }
+
       const source = template
         .replace('__GXR_SW_CACHE__', cacheName)
         .replace('__GXR_SW_ENTRY__', entryScript)
-        .replace('__GXR_SW_CALIB__', DEFAULT_CALIB_PATH)
+        .replace('__GXR_SW_CALIB_PATH__', DEFAULT_CALIB_PATH)
+        .replace('__GXR_SW_CALIB_URL__', calibUrl)
         .replace('__GXR_SW_PRECACHE__', JSON.stringify(precache))
         .replace('__GXR_SW_ALLOWED__', JSON.stringify(allowed));
 

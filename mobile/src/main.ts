@@ -11,6 +11,24 @@ const root = document.querySelector('#app');
 const params = new URLSearchParams(location.search);
 const wantsDev = document.documentElement.dataset.page === 'dev' || params.get('dev') === '1' || params.get('autotest') === '1';
 
+if ('serviceWorker' in navigator) {
+  const readBuild = () => document.documentElement.dataset.gxrBuild || '';
+  const notifyHello = () => {
+    const build = readBuild();
+    if (build) navigator.serviceWorker.controller?.postMessage({ type: 'gxr-sw-hello', build });
+  };
+  navigator.serviceWorker.addEventListener('message', (event: MessageEvent<{ type?: string }>) => {
+    if (event.data?.type === 'gxr-sw-ping' && event.ports?.[0]) {
+      event.ports[0].postMessage({ build: readBuild() });
+    }
+  });
+  navigator.serviceWorker.addEventListener('controllerchange', notifyHello);
+  window.addEventListener('pagehide', () => {
+    navigator.serviceWorker.controller?.postMessage({ type: 'gxr-sw-bye' });
+  });
+  notifyHello();
+}
+
 function shouldRegisterSw(): boolean {
   if (!import.meta.env.PROD || wantsDev || !('serviceWorker' in navigator)) return false;
   const swParam = params.get('sw');
