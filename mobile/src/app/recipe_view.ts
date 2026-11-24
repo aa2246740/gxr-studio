@@ -20,6 +20,7 @@ import {
 import type { AdoptedSelection, CameraRecipeError, Card, Control, Shelf, Shelves } from '../lib/recipes';
 import { recipeSwitch } from '../lib/recipe_memory';
 import type { UnitState } from './book';
+import { isCatalogMismatch, openMismatchDatSheet, shouldPromptMismatch } from './camfiles_ui';
 import { button, el, icon } from './dom';
 import { exportPaused } from './export_pause';
 import { lookCache } from './looks';
@@ -311,6 +312,7 @@ export class RecipeView {
     this.buildStrip(scene);
     this.syncSubView(scene);
     this.syncAsk();
+    if (isCatalogMismatch(scene.camError, this.photo.choice) && shouldPromptMismatch(this.api.book().dat)) this.ask(true);
     this.applyLook(scene);
     void this.renderCards(scene, token);
   }
@@ -629,6 +631,10 @@ export class RecipeView {
       this.ask();
       return;
     }
+    if (isCatalogMismatch(scene.camError, this.photo.choice)) {
+      this.ask(true);
+      return;
+    }
     if (!card.controls.length) return;
     const choice = this.photo.choice;
     const adopted = scene.adopted;
@@ -666,7 +672,8 @@ export class RecipeView {
     if (!scene.raw || !this.engine || this.hooks.mode() !== 'raw') return;
     const target = this.target(scene);
     const book = this.api.book();
-    const ready = scene.dat && scene.state.state === 'ready' && target !== null && !needsCameraRecipe(this.photo, book.dat);
+    const mismatch = isCatalogMismatch(scene.camError, this.photo.choice);
+    const ready = scene.dat && scene.state.state === 'ready' && target !== null && !needsCameraRecipe(this.photo, book.dat) && !mismatch;
     if (!target || !ready) {
       this.wanted = NEUTRAL_BAKE_KEY;
       this.show(NEUTRAL_BAKE_KEY, NEUTRAL_LABEL);
@@ -773,12 +780,14 @@ export class RecipeView {
     this.askHandle?.sync(this.api.book());
   }
 
-  private ask(): void {
-    this.asked = true;
+  private ask(mismatch = false): void {
+    if (!mismatch) this.asked = true;
     const host = this.shellEl();
     if (!host) return;
     this.closeAsk();
-    this.askHandle = openAskDatSheet(host, this.api.book(), () => this.api.pickDat());
+    this.askHandle = mismatch
+      ? openMismatchDatSheet(host, this.api.book(), Boolean(this.photo.jpg), () => this.api.pickDat())
+      : openAskDatSheet(host, this.api.book(), () => this.api.pickDat());
   }
 
   private closeAsk(): void {
