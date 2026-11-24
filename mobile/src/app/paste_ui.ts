@@ -14,8 +14,6 @@ import { adoptedSelectionOf, DEFAULT_CARD, namesOnly, photoWithAdopted, recipeUn
 import { NOT_SET, NOTHING_COPIED, ONLY_SOURCE, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
 import { curveSummary, groupsPresent } from '../lib/paste';
 import { button, el, icon, ICON } from './dom';
-import { openExportOptions } from './export_ui';
-import { openOffImageSheet } from './off_image_sheet';
 import { ensureCameraRecipe, needsCameraRecipe, onCameraRecipe, photoMs, type AppApi, type Knobs, type Photo } from './model';
 import { groupsAnd, groupsText, pasteState, rangeOf } from './paste_state';
 import { showToast } from './toast';
@@ -564,14 +562,21 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
       '导出选项',
       '尺寸、品质与 HDR 说明',
       () => {
-        openExportOptions(host, [photo.id]);
+        // 延迟导入导出与关机图模块，避免网格首图阶段经 paste_ui 提前拉取 export_ui。
+        void import('./export_ui').then(({ openExportOptions }) => {
+          openExportOptions(host, [photo.id]);
+        });
       },
     ],
     [
       'more-off-image',
       '做成关机图',
       '生成 640×480 的 GXROFF.JPG',
-      () => openOffImageSheet(host, api, photo),
+      () => {
+        void import('./off_image_sheet').then(({ openOffImageSheet }) => {
+          openOffImageSheet(host, api, photo);
+        });
+      },
     ],
     [
       'more-photo-info',

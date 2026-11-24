@@ -154,7 +154,12 @@ class App implements AppApi {
       const lutsRestored = this.lutBookStore.restore().catch(() => undefined);
       void Promise.all([restored, lutsRestored]).finally(finishRestores);
       if (import.meta.env.DEV) void this.ensureExporter().catch(() => undefined);
-      scheduleIdle(() => { void this.ensureEngine().catch(() => undefined); });
+      scheduleIdle(() => {
+        void this.ensureEngine().catch(() => undefined);
+        void this.lazy.loadGrid().catch(() => undefined);
+        void this.queue;
+        void this.reader;
+      });
     });
   }
 
@@ -486,7 +491,7 @@ class App implements AppApi {
       this.grid = new this.lazy.gridCtor(this.view, this);
       this.grid.show();
       this.syncDock();
-      this.maybeWarmAfterFirstThumb();
+      this.maybeWarmAfterThumbs();
       return;
     }
     const seq = ++this.gridSeq;
@@ -499,28 +504,21 @@ class App implements AppApi {
         for (const badId of this.pendingUnreadable.splice(0)) this.grid.showUnreadable(badId);
         if (this.cardIsOut) this.cardChanged();
         this.syncDock();
-        this.maybeWarmAfterFirstThumb();
+        this.maybeWarmAfterThumbs();
       })
       .catch((err) => this.reportEngine(err));
   }
 
-  /** 等首张缩略图上屏后再在空闲时预热编辑与导出分包，不和首图导入抢主线程。 */
-  private maybeWarmAfterFirstThumb(): void {
+  /** 等首批缩略图上屏（最多前 8 张完成）后再预热编辑与导出分包，不和首图及批读抢主线程。 */
+  private maybeWarmAfterThumbs(): void {
     if (this.editorWarmed || !this.grid || this.screen !== 'grid') return;
-    let hasReady = false;
-    for (const photo of this.byId.values()) {
-      if (photo.status === 'ready') {
-        hasReady = true;
-        break;
-      }
-    }
-    if (!hasReady) return;
+    const { done, total } = this.loading();
+    if (!total || done < Math.min(total, 8)) return;
+    if (![...this.byId.values()].some((photo) => photo.status === 'ready')) return;
     this.editorWarmed = true;
     afterFirstPaint(() => {
       void this.lazy.loadEditor().catch(() => undefined);
-      scheduleIdle(() => {
-        void this.ensureExporter().catch(() => undefined);
-      });
+      scheduleIdle(() => { void this.ensureExporter().catch(() => undefined); });
     });
   }
 
@@ -634,6 +632,7 @@ class App implements AppApi {
     if (!file) {
       photo.status = 'bad';
       this.afterRead(photo);
+      this.maybeWarmAfterThumbs();
       return;
     }
     const live = (handle: File | null) => generation === this.generation && this.current(photo.id, version, photo, handle);
@@ -663,6 +662,7 @@ class App implements AppApi {
     if (!reply.ok) {
       photo.status = 'bad';
       this.afterRead(photo);
+      this.maybeWarmAfterThumbs();
       return;
     }
     if (!reply.bad && from === photo.jpg && reply.diptych) {
@@ -699,7 +699,7 @@ class App implements AppApi {
     }
     photo.status = reply.bad ? 'bad' : 'ready';
     this.afterRead(photo);
-    if (photo.status === 'ready') this.maybeWarmAfterFirstThumb();
+    this.maybeWarmAfterThumbs();
   }
 
   private drop(reply: Reply): void {
