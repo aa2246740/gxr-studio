@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Connect, Plugin, ViteDevServer } from 'vite';
 import { defineConfig } from 'vite';
-import { DEFAULT_CALIB_PATH } from './src/lib/default_calib';
+import { DEFAULT_CALIB_PATH } from './src/lib/default_calib.ts';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 
