@@ -5,6 +5,7 @@ import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { CoreError, type BakeArgs, type CoreOp, type CoreReply, type CoreRequest, type CoreResult } from './protocol';
 
 interface Pending {
+  slot: number;
   resolve: (result: CoreResult) => void;
   reject: (err: Error) => void;
 }
@@ -59,6 +60,7 @@ async function compileWasmModule(): Promise<WebAssembly.Module> {
 export class Pool {
   private readonly cap: number;
   private readonly workers: Array<Worker | null>;
+  private readonly inFlight: number[];
   private next = 0;
   private seq = 1;
   private stopped = false;
@@ -71,6 +73,7 @@ export class Pool {
   constructor() {
     this.cap = workerCount();
     this.workers = Array.from({ length: this.cap }, () => null);
+    this.inFlight = Array.from({ length: this.cap }, () => 0);
   }
 
   /** 把 `buffer` 交给一个 Worker。`transfer` 里的东西发给对方之后这边就不能再用。 */
@@ -103,14 +106,14 @@ export class Pool {
   ): Promise<CoreResult> {
     if (this.stopped) return Promise.reject(new Error('Worker 已停止'));
     const id = this.seq++;
-    const slot = this.next % this.cap;
-    this.next += 1;
+    const eager = EAGER_WASM_OPS.has(op);
+    const maybe = MAYBE_WASM_OPS.has(op);
+    const slot = this.pickSlot(eager);
     const worker = this.workerAt(slot);
+    this.inFlight[slot] += 1;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      this.pending.set(id, { slot, resolve, reject });
       const base: PoolRequest = { id, op, buffer, args, ...extra, wasmManaged: true };
-      const eager = EAGER_WASM_OPS.has(op);
-      const maybe = MAYBE_WASM_OPS.has(op);
       if (eager && this.canPostModule && !this.wasmSent.has(worker)) {
         if (this.wasmResolved) {
           this.postWithModule(worker, base, transfer, this.wasmResolved);
@@ -125,6 +128,7 @@ export class Pool {
             const p = this.pending.get(id);
             if (!p) return;
             this.pending.delete(id);
+            this.inFlight[p.slot] = Math.max(0, this.inFlight[p.slot] - 1);
             p.reject(err instanceof Error ? err : new Error(String(err)));
           },
         );
@@ -147,6 +151,19 @@ export class Pool {
     }
     this.wasmPromise = null;
     this.wasmResolved = null;
+  }
+
+  /** 必然用 WASM 的请求优先复用已装好 WASM 且空闲的 Worker，避免首张进编辑时临时实例化；其余请求保持轮询。 */
+  private pickSlot(eagerWasm: boolean): number {
+    if (eagerWasm) {
+      for (let i = 0; i < this.cap; i += 1) {
+        const w = this.workers[i];
+        if (w && this.inFlight[i] === 0 && this.wasmSent.has(w)) return i;
+      }
+    }
+    const slot = this.next % this.cap;
+    this.next += 1;
+    return slot;
   }
 
   private workerAt(slot: number): Worker {
@@ -223,11 +240,13 @@ export class Pool {
     const pending = this.pending.get(reply.id);
     if (!pending) return;
     this.pending.delete(reply.id);
+    this.inFlight[pending.slot] = Math.max(0, this.inFlight[pending.slot] - 1);
     if (reply.ok) pending.resolve({ json: reply.json, buffers: reply.buffers });
     else pending.reject(reply.code ? new CoreError(reply.code, reply.message) : new Error(reply.message));
   }
 
   private failAll(message: string): void {
+    this.inFlight.fill(0);
     for (const [id, pending] of this.pending) {
       pending.reject(new Error(message));
       this.pending.delete(id);
