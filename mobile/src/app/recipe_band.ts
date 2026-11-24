@@ -20,6 +20,7 @@ import { registerSheet } from './sheet_lifecycle';
 
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
 const WARN = 'M12 4l9 16H3zM12 10v4M12 17h.01';
+const INFO = 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18M12 11v5M12 8h.01';
 const PLUS = 'M12 5v14M5 12h14';
 const FILE = 'M7 3h7l4 4v14H7zM14 3v4h4';
 
@@ -125,8 +126,11 @@ export function recipeStatusSpec(
   if (!calibrated) {
     return { label: '未校准', tone: 'warn', stateAttr: 'no-calibration', action: 'status-sheet' };
   }
-  if (off || hasDatError) {
-    return { label: '未校准', tone: 'warn', stateAttr: 'uncalibrated', action: 'status-sheet' };
+  if (hasDatError) {
+    return { label: '配方文件异常', tone: 'warn', stateAttr: 'uncalibrated', action: 'status-sheet' };
+  }
+  if (off) {
+    return { label: '校准范围外（推算）', tone: 'dim', stateAttr: 'uncalibrated', action: 'status-sheet' };
   }
   return null;
 }
@@ -140,7 +144,7 @@ export function makeRecipeStatusTile(spec: RecipeStatusSpec, onClick: () => void
   if (spec.cameraRecipeNote) tile.dataset.cameraRecipeNote = spec.cameraRecipeNote;
   tile.setAttribute('aria-label', `配方状态：${spec.label}`);
   const box = el('div', 'th filter-th');
-  box.append(icon(WARN), el('span', 'status-lab', spec.label));
+  box.append(icon(spec.tone === 'warn' ? WARN : INFO), el('span', 'status-lab', spec.label));
   tile.append(box);
   tile.addEventListener('click', onClick);
   return tile;
@@ -279,7 +283,7 @@ export function buildStatusBlock(scene: RecipeStatusScene, pickCalib: () => void
     line.dataset.state = off ? 'uncalibrated' : 'calibrated';
     if (off) {
       const why = el('span', 'why');
-      why.append(el('b', '', '未校准：'), document.createTextNode(uncalibratedReason(scene.photoUnit, scene.unit, scene.iso)));
+      why.append(el('b', '', '校准范围外（推算）：'), document.createTextNode(uncalibratedReason(scene.photoUnit, scene.unit, scene.iso)));
       line.append(why);
     } else if (book.pack?.kind === 'default') {
       // 内置的默认校准：写明来自作者的样机，想更准可以换成自己的。
@@ -528,7 +532,7 @@ export function buildIpadRecipeMeta(
     if (spec.stateAttr) btn.dataset.state = spec.stateAttr;
     if (spec.cameraRecipeError) btn.dataset.cameraRecipeError = spec.cameraRecipeError;
     if (spec.cameraRecipeNote) btn.dataset.cameraRecipeNote = spec.cameraRecipeNote;
-    btn.prepend(icon(WARN));
+    btn.prepend(icon(spec.tone === 'warn' ? WARN : INFO));
     btn.addEventListener('click', () => onStatusClick(spec.action));
     wrap.append(btn);
   }

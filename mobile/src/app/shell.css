@@ -736,7 +736,7 @@ svg.curve .curve-point { stroke: #111; stroke-width: 1.5; }
 .recipe-info-body { display: flex; flex-direction: column; gap: 10px; }
 .recipe-info-body .bn { margin: 0; }
 .hdr-note .why { flex: 1; color: var(--text-2); }
-.hdr-note .why b { color: var(--warn-text); font-weight: 500; }
+.hdr-note .why b { color: var(--text-1); font-weight: 500; }
 .small { font-size: 13px; line-height: 18px; }
 .path { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 12px; padding: 12px; border-radius: 12px; background: var(--surface-panel); box-shadow: inset 0 0 0 1px var(--line-subtle); font-size: 15px; }
 .path .fic { color: var(--accent-text); display: inline-flex; }
