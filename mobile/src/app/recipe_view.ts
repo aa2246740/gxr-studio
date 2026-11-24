@@ -122,7 +122,7 @@ export class RecipeView {
   private neutralBitmap: ImageBitmap | null = null;
   private shown = '';
   private wanted = '';
-  private readonly bakeCtrl = new CardBakeController<Card>(2, 1);
+  private readonly bakeCtrl = new CardBakeController<Card>();
   private asked = false;
   private askHandle: AskSheetHandle | null = null;
   private readonly api: AppApi;
@@ -446,6 +446,7 @@ export class RecipeView {
       this.slots.push({ card, node, thumb, nameEl, sub });
     }
     this.bakeCtrl.observe(this.slots.map((s) => s.node), this.strip);
+    this.bakeCtrl.attachInput(this.panel, this.strip);
     this.paintThumbs();
     this.scheduleScrollActive(picked?.id ?? null);
   }
@@ -747,7 +748,6 @@ export class RecipeView {
           engine, source, photo, version, cardId: card.id, geometry: () => geomPromise, adjust: ADJUST,
           alive, isBusy, bakeCtrl: this.bakeCtrl,
           bakeKey: () => book.bakeKey(card, scene.unit, scene.iso, levels),
-          ready: (k) => book.ready(k),
           gpuKey: (k) => book.gpuKey(k),
           bake: () => book.bake(card, scene.unit, scene.iso, levels),
           onError: (err) => {

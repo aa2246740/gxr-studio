@@ -150,33 +150,69 @@ interface IdleWindow {
   cancelIdleCallback?: (id: number) => void;
 }
 
+/** 与 core/pool.ts 保持一致的 Worker 数量推算（不改 pool.ts）。 */
+export function coreWorkerCount(cores?: number): number {
+  const raw = (cores ?? (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 0)) || 2;
+  return Math.min(4, Math.max(1, Math.floor(raw) - 1));
+}
+
 /**
  * 配方卡可见优先与点击抢占调度器：
- * - 初始打开照片时允许最多 2 张视口内可见卡与主舞台并行烘焙（保留空闲 Worker 给随时到来的点击）；
+ * - 按实际 Worker 数量计算后台并发上限（N >= 2 时始终至少预留 1 个空闲 Worker 给用户点击）；
  * - 用户主动点击选卡或调旋钮时立即抢占并暂停派发新的后台任务，直到所点配方落到舞台；
- * - 离屏卡片等可见卡完成后再于浏览器空闲期按并发 1 逐张烘焙。
+ * - 离屏卡片在无用户交互的空闲期按同上限并行烘焙，一旦检测到用户输入立即回落至并发 1。
  */
 export class CardBakeController<T> {
-  private readonly visibleLimit: number;
-  private readonly idleLimit: number;
+  private readonly workers: number;
   private gen = 0;
   private pending: Array<BakeJob<T>> = [];
   private hooks: CardBakeHooks<T> | null = null;
   private inFlight = 0;
+  private idleMode = false;
   private idleHandle: { kind: 'idle' | 'timer'; id: number } | null = null;
   private waitVisTimer = 0;
   private busyTimer = 0;
+  private quietTimer = 0;
+  private quietUntil = 0;
   private visFallback = false;
   private tapWant = '';
   private stageCardId = '';
   private tapWaiters: Array<() => void> = [];
   private readonly visibleIds = new Set<string>();
   private visObserver: IntersectionObserver | null = null;
+  private inputDetach: (() => void) | null = null;
   private ioReady = false;
 
-  constructor(visibleLimit = 2, idleLimit = 1) {
-    this.visibleLimit = visibleLimit;
-    this.idleLimit = idleLimit;
+  constructor(workerCount?: number) {
+    this.workers = Math.max(1, Math.floor(workerCount ?? coreWorkerCount()));
+  }
+
+  attachInput(panel: EventTarget | null, strip?: EventTarget | null): void {
+    this.detachInput();
+    const onInput = (): void => this.noteInput();
+    const opts = { passive: true } as AddEventListenerOptions;
+    const panelEvents = ['pointerdown', 'touchstart', 'wheel', 'keydown'];
+    if (panel) {
+      for (const ev of panelEvents) panel.addEventListener(ev, onInput, opts);
+    }
+    if (strip) strip.addEventListener('scroll', onInput, opts);
+    this.inputDetach = () => {
+      if (panel) {
+        for (const ev of panelEvents) panel.removeEventListener(ev, onInput, opts);
+      }
+      if (strip) strip.removeEventListener('scroll', onInput, opts);
+    };
+  }
+
+  noteInput(cooldownMs = 1200): void {
+    const until = Date.now() + cooldownMs;
+    if (until > this.quietUntil) this.quietUntil = until;
+    if (this.inFlight >= 1) this.clearIdle();
+    if (this.quietTimer) clearTimeout(this.quietTimer);
+    this.quietTimer = setTimeout(() => {
+      this.quietTimer = 0;
+      if (Date.now() >= this.quietUntil) this.wake();
+    }, cooldownMs + 20) as unknown as number;
   }
 
   hasVisible(): boolean {
@@ -244,7 +280,10 @@ export class CardBakeController<T> {
 
   beginStage(want: string, cardId: string, userTap: boolean): void {
     this.stageCardId = cardId;
-    if (userTap) this.tapWant = want;
+    if (userTap) {
+      this.tapWant = want;
+      this.noteInput();
+    }
   }
 
   endStage(want: string, cardId: string): void {
@@ -275,14 +314,17 @@ export class CardBakeController<T> {
     return this.stageCardId !== '' && this.stageCardId === cardId;
   }
 
-  async waitUntilReady(alive: () => boolean, isBusy: () => boolean): Promise<void> {
+  async waitUntilReady(alive: () => boolean, isBusy: () => boolean): Promise<boolean> {
+    let waited = false;
     while (alive() && (this.tapWant !== '' || isBusy())) {
+      waited = true;
       if (this.tapWant !== '' && !isBusy()) {
         await new Promise<void>((done) => this.tapWaiters.push(done));
       } else {
         await new Promise((done) => setTimeout(done, 120));
       }
     }
+    return waited;
   }
 
   start(jobs: Array<BakeJob<T>>, hooks: CardBakeHooks<T>): void {
@@ -307,6 +349,7 @@ export class CardBakeController<T> {
     this.pending = [];
     this.hooks = null;
     this.inFlight = 0;
+    this.idleMode = false;
     this.visFallback = false;
     this.clearIdle();
     if (this.waitVisTimer) {
@@ -325,6 +368,27 @@ export class CardBakeController<T> {
     this.flushTapWaiters();
     this.cancel();
     this.clearObserver();
+    this.detachInput();
+    if (this.quietTimer) {
+      clearTimeout(this.quietTimer);
+      this.quietTimer = 0;
+    }
+  }
+
+  private detachInput(): void {
+    this.inputDetach?.();
+    this.inputDetach = null;
+  }
+
+  private bgLimit(): number {
+    const stageActive = this.stageCardId !== '' ? 1 : 0;
+    const maxTotal = Math.max(1, this.workers - 1);
+    return Math.max(0, maxTotal - stageActive);
+  }
+
+  private currentIdleLimit(): number {
+    const limit = this.bgLimit();
+    return Date.now() >= this.quietUntil ? limit : Math.min(1, limit);
   }
 
   private flushTapWaiters(): void {
@@ -428,14 +492,16 @@ export class CardBakeController<T> {
       }
       return;
     }
-    while (this.inFlight < this.visibleLimit) {
+    const limit = this.bgLimit();
+    while (this.inFlight < limit) {
       if (!hooks.isAlive() || this.paused(hooks)) return;
       const next = this.takeNext(true);
       if (!next) break;
+      this.idleMode = false;
       this.clearIdle();
       this.launch(next);
     }
-    if (this.pending.length > 0 && this.inFlight === 0 && this.stageCardId === '') {
+    if (this.pending.length > 0 && this.stageCardId === '' && (this.inFlight === 0 || (this.idleMode && this.inFlight < this.currentIdleLimit()))) {
       this.scheduleIdle();
     }
   }
@@ -454,7 +520,9 @@ export class CardBakeController<T> {
       this.pump();
       return;
     }
-    while (this.inFlight < this.idleLimit) {
+    this.idleMode = true;
+    const limit = this.currentIdleLimit();
+    while (this.inFlight < limit) {
       if (!hooks.isAlive() || this.paused(hooks)) return;
       const next = this.takeNext(false);
       if (!next) break;
@@ -475,7 +543,6 @@ export interface CardThumbRunnerOpts {
   isBusy(): boolean;
   bakeCtrl: CardBakeController<unknown>;
   bakeKey(): string | null;
-  ready(key: string): boolean;
   gpuKey(key: string): string | null;
   bake(): Promise<string>;
   onError(err: unknown): void;
@@ -487,7 +554,8 @@ export async function renderCardThumb(opts: CardThumbRunnerOpts): Promise<void> 
   const existing = opts.bakeKey();
   if (existing && lookCache.get(opts.photo, existing)) return;
   let key: string;
-  if (existing && opts.ready(existing) && opts.gpuKey(existing)) {
+  let gpu = existing ? opts.gpuKey(existing) : null;
+  if (existing && gpu) {
     key = existing;
   } else {
     try {
@@ -497,9 +565,9 @@ export async function renderCardThumb(opts: CardThumbRunnerOpts): Promise<void> 
       return;
     }
   }
-  await opts.bakeCtrl.waitUntilReady(opts.alive, opts.isBusy);
+  const waited = await opts.bakeCtrl.waitUntilReady(opts.alive, opts.isBusy);
   if (!opts.alive()) return;
-  let gpu = opts.gpuKey(key);
+  if (!gpu || waited) gpu = opts.gpuKey(key);
   if (!gpu) {
     try {
       await opts.bake();

@@ -144,11 +144,16 @@ async function frame(page, n = 2) {
     check(dragProbe.ok && dragProbe.inputs === 10, `drag probe expected 10 inputs, got ${JSON.stringify(dragProbe)}`);
     check(dragProbe.reads === 0 && dragProbe.forced === 0, `slider drag triggered synchronous layout reads: ${JSON.stringify(dragProbe)}`);
 
-    // 2) 手机横屏焦点顺序：切回配方页，旋转到 844×390，确认 .toolbar 在 DOM 与 Tab 顺序上先于 .band
-    await page.locator('.toolbar [data-tool="recipe"]').click();
+    // 2) 手机横屏焦点顺序 + 旋转保留焦点（F4b）：先聚焦工具栏按钮再旋至横屏，焦点必须保留
+    const recipeBtn = page.locator('.toolbar [data-tool="recipe"]');
+    await recipeBtn.click();
+    await recipeBtn.focus();
     await page.setViewportSize({ width: 844, height: 390 });
     await page.waitForFunction(() => document.querySelector('.app')?.dataset.layout === 'phone-landscape', null, { timeout: 10_000 });
     await frame(page, 3);
+    const keptBarFocusOnRotate = await page.evaluate(() => document.activeElement === document.querySelector('.editor > .toolbar [data-tool="recipe"]'));
+    summary.keptBarFocusOnRotate = keptBarFocusOnRotate;
+    check(keptBarFocusOnRotate, 'rotating portrait->landscape dropped focus from toolbar button');
 
     const landscapeOrder = await page.evaluate(() => {
       const screen = document.querySelector('.screen.editor');
@@ -194,7 +199,9 @@ async function frame(page, n = 2) {
     summary.tabLandedInBar = tabLandedInBar;
     check(tabLandedInBar, 'Tab from nav more button in phone landscape did not land in toolbar');
 
-    // 转回手机竖屏 390×844，.band 恢复在 .toolbar 之前
+    // 先聚焦配方面板内可见配方卡按钮再旋回竖屏 390×844：焦点必须保留且 .band 恢复在 .toolbar 之前
+    await page.locator('.editor > .band .strip[data-recipes] .rc:not([disabled])').first().focus();
+    const focusedBandBeforeRotate = await page.evaluate(() => Boolean(document.querySelector('.editor > .band')?.contains(document.activeElement)));
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForFunction(() => document.querySelector('.app')?.dataset.layout === 'phone-portrait', null, { timeout: 10_000 });
     await frame(page, 3);
@@ -203,10 +210,14 @@ async function frame(page, n = 2) {
       const children = screen ? [...screen.children] : [];
       const bar = screen?.querySelector(':scope > .toolbar');
       const band = screen?.querySelector(':scope > .band');
-      return Boolean(bar && band && children.indexOf(band) < children.indexOf(bar));
+      return {
+        orderOk: Boolean(bar && band && children.indexOf(band) < children.indexOf(bar)),
+        keptBandFocus: Boolean(band?.contains(document.activeElement)),
+      };
     });
-    summary.portraitRestored = portraitRestored;
-    check(portraitRestored, 'phone portrait did not restore band before toolbar');
+    summary.portraitRestored = { focusedBandBeforeRotate, ...portraitRestored };
+    check(portraitRestored.orderOk, 'phone portrait did not restore band before toolbar');
+    check(focusedBandBeforeRotate && portraitRestored.keptBandFocus, `rotating landscape->portrait dropped focus from band: ${JSON.stringify(summary.portraitRestored)}`);
 
     await ctx.close();
   } finally {
@@ -309,11 +320,11 @@ async function frame(page, n = 2) {
       const { renderGallery } = await import('/assets/gallery.js');
       const first = state.photos[0];
       if (!first) return { ok: false };
-      const synthetic = Array.from({ length: 24 }, (_, i) => ({
+      const synthetic = Array.from({ length: 70 }, (_, i) => ({
         ...first,
         id: `syn_${i}`,
         name: `SYN_${i}`,
-        date: i < 12 ? '2026-11-24' : '2026-11-23',
+        date: i < 4 ? '2026-11-24' : i < 10 ? '2026-11-23' : '2026-11-22',
         pair: null,
       }));
       const realFetch = window.fetch.bind(window);
@@ -321,8 +332,9 @@ async function frame(page, n = 2) {
         const u = new URL(input.url || input, location.href);
         if (u.pathname === '/api/dates') {
           return Promise.resolve(new Response(JSON.stringify([
-            { date: '2026-11-24', count: 12 },
-            { date: '2026-11-23', count: 12 },
+            { date: '2026-11-24', count: 4 },
+            { date: '2026-11-23', count: 6 },
+            { date: '2026-11-22', count: 60 },
           ]), { headers: { 'Content-Type': 'application/json' } }));
         }
         if (u.pathname === '/api/photos') {
@@ -335,6 +347,16 @@ async function frame(page, n = 2) {
         await renderGallery(document.getElementById('view'));
         const imgs = [...document.querySelectorAll('#grid-wrap .cell img')];
         const days = [...document.querySelectorAll('#grid-wrap .day')];
+        const day1H = days[1] ? parseFloat(days[1].style.getPropertyValue('--day-h')) || 0 : 0;
+        const day2H = days[2] ? parseFloat(days[2].style.getPropertyValue('--day-h')) || 0 : 0;
+        const day2CisBefore = days[2] ? getComputedStyle(days[2]).containIntrinsicBlockSize : null;
+        const sizeSlider = document.querySelector('#libbar input.size');
+        let day2HAfterResize = 0;
+        if (sizeSlider) {
+          sizeSlider.value = '320';
+          sizeSlider.dispatchEvent(new Event('input', { bubbles: true }));
+          day2HAfterResize = days[2] ? parseFloat(days[2].style.getPropertyValue('--day-h')) || 0 : 0;
+        }
         return {
           ok: true,
           count: imgs.length,
@@ -342,17 +364,25 @@ async function frame(page, n = 2) {
           restLazyNoHigh: imgs.slice(16).every((im) => im.getAttribute('loading') === 'lazy' && !im.hasAttribute('fetchpriority')),
           day0Cv: days[0] ? getComputedStyle(days[0]).contentVisibility : null,
           day1Cv: days[1] ? getComputedStyle(days[1]).contentVisibility : null,
-          day1Cis: days[1] ? getComputedStyle(days[1]).containIntrinsicBlockSize : null,
+          day2Cv: days[2] ? getComputedStyle(days[2]).contentVisibility : null,
+          day1H,
+          day2H,
+          day2CisBefore,
+          day2HAfterResize,
         };
       } finally {
         window.fetch = realFetch;
       }
     });
     summary.desktopGallery = desktopGallery;
-    check(desktopGallery.ok && desktopGallery.count === 24, `desktop gallery render failed: ${JSON.stringify(desktopGallery)}`);
+    check(desktopGallery.ok && desktopGallery.count === 70, `desktop gallery render failed: ${JSON.stringify(desktopGallery)}`);
     check(desktopGallery.first16EagerHigh, `first 16 thumbs must be loading=eager + fetchpriority=high: ${JSON.stringify(desktopGallery)}`);
     check(desktopGallery.restLazyNoHigh, `thumbs after 16 must stay loading=lazy without fetchpriority: ${JSON.stringify(desktopGallery)}`);
-    check(desktopGallery.day0Cv === 'visible' && desktopGallery.day1Cv === 'auto', `off-screen .day must use content-visibility: auto (day0 visible): ${JSON.stringify(desktopGallery)}`);
+    check(desktopGallery.day0Cv === 'visible' && desktopGallery.day1Cv === 'auto' && desktopGallery.day2Cv === 'auto', `off-screen .day must use content-visibility: auto (day0 visible): ${JSON.stringify(desktopGallery)}`);
+    check(
+      desktopGallery.day1H > 100 && desktopGallery.day2H > desktopGallery.day1H * 3 && desktopGallery.day2HAfterResize > desktopGallery.day2H,
+      `per-day --day-h estimate missing or not scaling with photo count / thumb size: ${JSON.stringify(desktopGallery)}`,
+    );
 
     // 桌面标志重命名弹窗：IME Enter（isComposing / keyCode 229）绝不触发 PUT，正常 Enter 才提交
     await page.reload({ waitUntil: 'domcontentloaded' });

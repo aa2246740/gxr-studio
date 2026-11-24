@@ -144,7 +144,7 @@ export function fitGpuCanvas(
   return true;
 }
 
-/** 手机横屏时工具栏在视觉上位于配方面板上方，同步 DOM 顺序让键盘/读屏焦点与视觉顺序一致。 */
+/** 手机横屏时工具栏在视觉上位于配方面板上方，同步 DOM 顺序让键盘/读屏焦点与视觉顺序一致，并移动不含焦点的节点避免焦点丢失。 */
 export function syncEditorBarOrder(
   screen: HTMLElement | null,
   band: HTMLElement | null,
@@ -152,9 +152,13 @@ export function syncEditorBarOrder(
   phoneLandscape: boolean,
 ): void {
   if (!screen || !band || !bar || band.parentElement !== screen || bar.parentElement !== screen) return;
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
   if (phoneLandscape) {
-    if (bar.nextElementSibling !== band) screen.insertBefore(bar, band);
+    if (bar.nextElementSibling === band) return;
+    if (active && bar.contains(active)) screen.insertBefore(band, bar.nextElementSibling);
+    else screen.insertBefore(bar, band);
   } else if (band.nextElementSibling !== bar) {
-    screen.insertBefore(band, bar);
+    if (active && band.contains(active)) screen.insertBefore(bar, band.nextElementSibling);
+    else screen.insertBefore(band, bar);
   }
 }

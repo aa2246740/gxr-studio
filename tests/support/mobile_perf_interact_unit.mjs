@@ -42,6 +42,7 @@ registerHooks({
 
 function setupEnv() {
   installDom();
+  globalThis.navigator.hardwareConcurrency = 8;
   globalThis.HTMLButtonElement = TestNode;
   globalThis.HTMLCanvasElement = TestNode;
   globalThis.HTMLDivElement = TestNode;
@@ -287,11 +288,11 @@ test('1. RecipeView: visible cards first, bounded concurrency, tap pre-empts que
   );
   peakBgInFlight = Math.max(peakBgInFlight, inFlight - 1);
 
-  // Finish initial stage bake (builtin:4) -> still bounded to <= 2 visible cards in flight
+  // Finish initial stage bake (builtin:4) -> still bounded to <= workers - 1 visible cards in flight
   finishBake('builtin:4');
   await tick(6);
   peakBgInFlight = Math.max(peakBgInFlight, inFlight);
-  assert.ok(inFlight >= 1 && inFlight <= 2, `visible concurrency should be 1..2, got ${inFlight}`);
+  assert.ok(inFlight >= 1 && inFlight <= 3, `visible concurrency should stay bounded (<= workers-1), got ${inFlight}`);
 
   // User taps off-screen card look:look_8 -> MUST jump the queue immediately and pause further background bakes
   const tapNode = rv.stripEl().querySelector('.rc[data-card="look:look_8"]');
@@ -325,12 +326,12 @@ test('1. RecipeView: visible cards first, bounded concurrency, tap pre-empts que
   assert.equal(offscreenStartedBeforeIdle.length, 0, `off-screen cards should wait for idle, got ${offscreenStartedBeforeIdle.join(',')}`);
   assert.ok(idleQueue.length > 0, 'off-screen cards should schedule an idle callback');
 
-  // Trigger idle callback -> at most 1 off-screen card dispatches at a time
+  // Trigger idle callback right after user tap -> dropped back to <= 1 off-screen card at a time
   const nextIdle = idleQueue.shift();
   nextIdle();
   await tick(6);
-  assert.ok(inFlight <= 1, `off-screen idle concurrency must be <= 1, got ${inFlight}`);
-  assert.ok(peakBgInFlight <= 2, `peak background concurrency must be <= 2, got ${peakBgInFlight}`);
+  assert.ok(inFlight <= 1, `off-screen idle concurrency after user input must be <= 1, got ${inFlight}`);
+  assert.ok(peakBgInFlight <= 3, `peak background concurrency must stay bounded (<= workers-1), got ${peakBgInFlight}`);
 
   rv.destroy();
 });

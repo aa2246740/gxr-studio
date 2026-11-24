@@ -10,6 +10,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 UNIT = REPO / "tests" / "support" / "mobile_perf_interact_unit.mjs"
+UNIT_R2 = REPO / "tests" / "support" / "mobile_perf_interact_r2_unit.mjs"
 
 
 def test_perf_interact_units() -> None:
@@ -17,7 +18,7 @@ def test_perf_interact_units() -> None:
     if node is None:
         pytest.skip("node is required")
     result = subprocess.run(
-        [node, "--experimental-strip-types", "--test", str(UNIT)],
+        [node, "--experimental-strip-types", "--test", str(UNIT), str(UNIT_R2)],
         cwd=REPO,
         check=False,
         capture_output=True,
