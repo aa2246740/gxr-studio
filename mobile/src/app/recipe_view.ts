@@ -486,8 +486,9 @@ export class RecipeView {
         bitmap = this.photo.bitmap;
         source = text = this.photo.jpg ? '相机 JPG' : this.photo.bitmap ? '内嵌预览' : '只有 RAW';
       } else if (!scene.dat) {
-        bitmap = this.photo.neutral?.bitmap === this.neutralBitmap ? this.neutralBitmap : null;
-        source = NEUTRAL_LABEL;
+        const useJpg = this.hooks.mode() === 'jpg' && this.photo.bitmap !== null;
+        bitmap = useJpg ? this.photo.bitmap : this.photo.neutral?.bitmap === this.neutralBitmap ? this.neutralBitmap : null;
+        source = useJpg ? '相机 JPG' : NEUTRAL_LABEL;
       } else if (scene.state.state !== 'ready') {
         bitmap = this.photo.neutral?.bitmap === this.neutralBitmap ? this.neutralBitmap : null;
         source = text = NEUTRAL_LABEL;
@@ -787,7 +788,7 @@ export class RecipeView {
     this.closeAsk();
     this.askHandle = mismatch
       ? openMismatchDatSheet(host, this.api.book(), Boolean(this.photo.jpg), () => this.api.pickDat())
-      : openAskDatSheet(host, this.api.book(), () => this.api.pickDat());
+      : openAskDatSheet(host, this.api.book(), () => this.api.pickDat(), Boolean(this.photo.jpg));
   }
 
   private closeAsk(): void {

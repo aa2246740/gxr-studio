@@ -360,12 +360,13 @@ async function checkRawNeutralCropCase(files, wantState, stem) {
 
 async function runRawClosedBitmap() {
   const { dng, jpg, dat, stem } = manifest;
-  out.steps.noDat = await checkRawNeutralCropCase([dng, jpg], 'no-recipe-file', stem);
+  // 无相机配方文件时 RAW+JPG 默认显示相机 JPG；纯 RAW 仍走中性转换小图（验证 P2-03 裁切重画）。
+  out.steps.noDat = await checkRawNeutralCropCase([dng], 'no-recipe-file', stem);
   out.steps.uncalibrated = await checkRawNeutralCropCase([dng, jpg, dat], 'uncalibrated', stem);
 }
 
 async function runNeutralReopen() {
-  const { dng, jpg, jpgB, dngC, stemA, stemB } = manifest;
+  const { dng, jpgB, dngC, stemA, stemB } = manifest;
   const page = await newPage();
   await page.evaluate(async () => {
     const { EditorView } = await import('/src/app/editor.ts');
@@ -375,7 +376,7 @@ async function runNeutralReopen() {
       return origOpen.apply(this, args);
     };
   });
-  await pickAll(page, manifest, [dng, jpg, jpgB]);
+  await pickAll(page, manifest, [dng, jpgB]);
   await openPhoto(page, stemA);
   await page.waitForFunction(() => document.querySelector('.strip[data-recipes]')?.dataset.state === 'no-recipe-file', null, { timeout: 60_000 });
   await page.waitForFunction(() => document.querySelectorAll('.strip[data-recipes] .rc .th canvas').length >= 8, null, { timeout: 60_000 });

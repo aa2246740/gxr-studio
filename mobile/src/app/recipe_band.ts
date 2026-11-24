@@ -355,7 +355,7 @@ function askLeadNodes(datError: string | null): HTMLElement[] {
       ];
 }
 
-export function openAskDatSheet(shell: HTMLElement, book: Book, pickDat: () => void): AskSheetHandle {
+export function openAskDatSheet(shell: HTMLElement, book: Book, pickDat: () => void, hasJpg = false): AskSheetHandle {
   shell.querySelector('.ask-scrim')?.remove();
   shell.querySelector('.ask-sheet')?.remove();
 
@@ -385,7 +385,8 @@ export function openAskDatSheet(shell: HTMLElement, book: Book, pickDat: () => v
     close();
     pickDat();
   });
-  const later = button('btn lg ghost block', '先不用，只看中性转换');
+  const later = button('btn lg ghost block', hasJpg ? '先不用，继续看相机 JPG' : '先不用，只看中性转换');
+  later.dataset.act = 'ask-later';
   later.addEventListener('click', close);
   scrim.addEventListener('click', close);
   const leads = el('div', 'ask-leads');

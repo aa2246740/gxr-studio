@@ -141,7 +141,7 @@ try {
   await page.waitForSelector('.ask-sheet[data-state="no-recipe-file"]');
   noDat.sheet = await page.locator('.ask-sheet').innerText();
   await snap(page, '06d');
-  await page.getByRole('button', { name: '先不用，只看中性转换' }).click();
+  await page.locator('.ask-sheet [data-act="ask-later"]').click();
   noDat.closed = (await page.locator('.ask-sheet').count()) === 0;
   step('no-recipe-file', noDat);
 
