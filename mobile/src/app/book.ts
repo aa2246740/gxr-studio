@@ -8,12 +8,12 @@ import { modelIso, TEXT, UNIT_ISOS, type Unit, type UnitPack } from '../lib/cali
 import { DEFAULT_LABEL, DEFAULT_TEXT } from '../lib/default_calib';
 import { deviceName } from '../lib/device';
 import type { StoredCamFiles } from '../lib/idb';
-import { selection, selectionKey, unitIndex, type Card } from '../lib/recipes';
+import { selection, selectionKey, shelves, unitIndex, type Card, type Shelves } from '../lib/recipes';
 import { ZIP_LIMITS, type ZipFail } from '../lib/zip';
-import { CamFilesController, type Dat } from './book_camfiles';
+import { CamFilesController, type Dat, type PhotoDatTarget } from './book_camfiles';
 import { whenExportIdle } from './export_pause';
 
-export type { Dat };
+export type { Dat, PhotoDatTarget };
 
 /**
  * 烘焙表一张约 3.8 MB（683×683 的增益网格）。JS 里最多留 16 张，显卡里最多 24 张（Sol r1 的建议，等真机量过再调）：
@@ -113,8 +113,10 @@ export class Book {
   private pinned = '';
   private readonly listeners = new Set<() => void>();
   private engine: Engine | null = null;
+  private readonly io: BookIo;
 
-  constructor(private readonly io: BookIo) {
+  constructor(io: BookIo) {
+    this.io = io;
     this.camFiles = new CamFilesController(io, {
       onBump: () => this.bump(),
       onChanged: () => this.changed(),
@@ -420,6 +422,22 @@ export class Book {
     this.camFiles.clear();
   }
 
+  /** 对指定照片可用的相机配方文件；没有文件或目录不匹配时返回 null。 */
+  usableDatFor(photo: PhotoDatTarget): Dat | null {
+    return this.camFiles.usableFor(photo);
+  }
+
+  /** 对指定照片和单元可用的配方卡目录；没有可用相机配方文件（含目录不匹配）时返回 null。 */
+  shelvesFor(photo: PhotoDatTarget, unit: Unit): Shelves | null {
+    const dat = this.usableDatFor(photo);
+    return dat ? shelves(dat.listing, unit) : null;
+  }
+
+  /** 对指定照片和单元的校准状态；照片命中目录不匹配时按无可用相机配方文件处理。 */
+  unitStateFor(photo: PhotoDatTarget, unit: Unit): UnitState {
+    return this.unitState(unit, this.usableDatFor(photo));
+  }
+
   private entry(unit: Unit, slot: number): Uint8Array | null {
     if (!this.dat || slot < 1 || slot > 8) return null;
     const at = (unitIndex(unit) * 8 + slot - 1) * 552;
@@ -441,11 +459,11 @@ export class Book {
    * 这个单元能不能用校准模型预测。第一次问时在后台交给核心的 `color_calib_check`（桌面 model_for 的同一段检查：
    * 版本、单元、原厂 04 指纹、文件清单、SHA-256，再建模型），两个 ISO 分支各一次。核对完会通知界面。
    */
-  unitState(unit: Unit): UnitState {
+  unitState(unit: Unit, usableDat: Dat | null = this.dat): UnitState {
     if (!this.pack) return this.loadingDefault ? { state: 'checking' } : { state: 'none' };
     const row = this.pack.units.find((u) => u.unit === unit);
     if (!row) return { state: 'missing', message: TEXT.unitMissing };
-    if (!this.dat) return { state: 'checking' };
+    if (!usableDat) return { state: 'checking' };
     const known = this.units.get(unit);
     if (known && known.generation === this.generation) return known.state;
     const generation = this.generation;

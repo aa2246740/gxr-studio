@@ -112,14 +112,14 @@ export function recipeStatusSpec(
   if (!scene.raw) {
     return { label: diptych ? '半格双联' : '配方需要 RAW', tone: 'warn', action: 'jpg-info' };
   }
+  if (scene.camError) {
+    return { label: '拍摄配方', tone: 'warn', cameraRecipeError: scene.camError.code, action: 'status-sheet' };
+  }
   if (!scene.dat) {
     return { label: '选配方文件', tone: 'warn', action: 'ask-dat' };
   }
   const calibrated = scene.state.state === 'ready';
   const off = calibrated && crossed(scene.photoUnit, scene.unit, scene.iso);
-  if (scene.camError) {
-    return { label: '拍摄配方', tone: 'warn', cameraRecipeError: scene.camError.code, action: 'status-sheet' };
-  }
   if (scene.adopted?.levelsUnknown) {
     return { label: '档位未标', tone: 'dim', cameraRecipeNote: 'levels-unknown', action: 'status-sheet' };
   }
@@ -345,7 +345,11 @@ export function openRecipeStatusSheet(
     note.dataset.cameraRecipeNote = 'levels-unknown';
     nodes.push(note);
   }
-  nodes.push(buildStatusBlock(scene, pickCalib, book));
+  if (scene.camError?.code === 'camera_recipe_catalog_missing' && scene.state.state === 'checking') {
+    nodes.push(datFileBox('换上拍摄这张照片所用存储卡上的相机配方文件后即可生成预测。', pickDat));
+  } else {
+    nodes.push(buildStatusBlock(scene, pickCalib, book));
+  }
   if (book.datNote) nodes.push(el('p', 'faint small', book.datNote));
   openRecipeInfoSheet(shell, '配方状态', nodes);
 }
@@ -512,13 +516,14 @@ export function buildIpadRecipeMeta(
   diptych: boolean,
   datError: string | null,
   onStatusClick: (action: RecipeStatusSpec['action']) => void,
+  fallbackLabel = '中性转换',
 ): HTMLElement {
   const wrap = el('div', 'ipad-recipe-meta');
   const head = el('div', 'rmeta');
   if (!scene.raw) {
     head.append(el('b', 'rname dim', diptych ? '半格双联' : '相机 JPG'));
   } else if (!scene.dat) {
-    head.append(el('b', 'rname dim', '未选配方文件'));
+    head.append(el('b', 'rname dim', fallbackLabel));
   } else {
     head.append(el('b', 'rname', targetName));
     if (targetTag) head.append(el('span', 'tag neutral-tag', targetTag));

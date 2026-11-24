@@ -15,7 +15,6 @@ import {
   namesOnly,
   recipeUnitOf,
   shelf,
-  shelves,
 } from '../lib/recipes';
 import type { AdoptedSelection, CameraRecipeError, Card, Control, Shelf, Shelves } from '../lib/recipes';
 import { recipeSwitch } from '../lib/recipe_memory';
@@ -236,9 +235,10 @@ export class RecipeView {
 
   private scene(): Scene {
     const book = this.api.book();
-    const dat = book.dat;
+    const rawDat = book.dat;
+    const dat = book.usableDatFor(this.photo);
     const adopted = adoptedSelectionOf(this.photo, dat);
-    const camError = cameraRecipeErrorOf(this.photo, dat);
+    const camError = cameraRecipeErrorOf(this.photo, rawDat);
     const meta = mergeMeta(this.photo.jpgMeta, this.photo.dngMeta);
     const photoUnit = unitOfLens(meta.lens);
     const unit = recipeUnitOf(this.photo.choice, adopted, photoUnit);
@@ -249,8 +249,8 @@ export class RecipeView {
       photoUnit,
       unit,
       iso: meta.iso,
-      state: book.unitState(unit),
-      list: dat ? shelves(dat.listing, unit) : null,
+      state: book.unitStateFor(this.photo, unit),
+      list: book.shelvesFor(this.photo, unit),
       generation: dat?.generation ?? null,
       adopted,
       camError,
@@ -524,7 +524,7 @@ export class RecipeView {
       return;
     }
     if (!scene.dat) {
-      this.head.append(el('span', 'rname dim', '未选配方文件'));
+      this.head.append(el('span', 'rname dim', this.hooks.mode() === 'jpg' ? '相机 JPG' : NEUTRAL_LABEL));
       return;
     }
     const target = this.target(scene);
@@ -548,7 +548,7 @@ export class RecipeView {
     this.fineBox.replaceChildren();
     const target = this.target(scene);
     if (this.ipadMode) {
-      this.fineBox.append(buildIpadRecipeMeta(scene, target?.name ?? '', target ? cardTag(target) : '', Boolean(this.photo.diptych), this.api.book().datError, (a) => this.handleStatusAction(scene, a)));
+      this.fineBox.append(buildIpadRecipeMeta(scene, target?.name ?? '', target ? cardTag(target) : '', Boolean(this.photo.diptych), this.api.book().datError, (a) => this.handleStatusAction(scene, a), this.hooks.mode() === 'jpg' ? '相机 JPG' : NEUTRAL_LABEL));
     }
     if (!scene.raw || !scene.dat || scene.state.state !== 'ready' || !target || !target.controls.length) return;
     const controls = this.orderedControls(target);
@@ -628,12 +628,12 @@ export class RecipeView {
   private pick(card: Card): void {
     const scene = this.scene();
     if (!scene.raw) return;
-    if (!scene.dat) {
-      this.ask();
-      return;
-    }
     if (isCatalogMismatch(scene.camError, this.photo.choice)) {
       this.ask(true);
+      return;
+    }
+    if (!scene.dat) {
+      this.ask();
       return;
     }
     if (!card.controls.length) return;

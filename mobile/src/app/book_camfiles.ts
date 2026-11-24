@@ -2,9 +2,22 @@
 // 从 book.ts 拆出以保持单文件 <= 800 行；所有外部行为与 Book 原有 DAT/BIN 语义一致。
 
 import type { DatRead } from '../core/api';
-import { extractLibraryCatalogId, sha256Hex } from '../lib/camfiles';
+import { describeCamFilesMismatch, extractLibraryCatalogId, sha256Hex } from '../lib/camfiles';
+import { mergeCopyright } from '../lib/exif';
 import type { StoredCamFiles } from '../lib/idb';
-import type { Listing } from '../lib/recipes';
+import { parseRecipeTag } from '../lib/recipe_tags';
+import { cameraRecipeErrorOf, type CameraRecipeCache, type Choice, type Listing } from '../lib/recipes';
+
+export interface PhotoDatTarget {
+  dng: File | null;
+  diptych?: boolean;
+  choice: Choice | null;
+  recipeOff?: boolean;
+  jpgMeta?: { copyright?: string | null } | null;
+  dngMeta?: { copyright?: string | null } | null;
+  dngCopyright?: string | null;
+  cameraRecipe?: CameraRecipeCache | null;
+}
 
 /** 相机配方文件的上限：真的 DAT 不到 1 MB，超过这个一定不是，先拒绝再读。 */
 const MAX_DAT_BYTES = 16 << 20;
@@ -101,8 +114,9 @@ export class CamFilesController {
     const seq = ++this.datSeq;
     this.datBusy = true;
     this.host.onChanged();
+    let stored: StoredCamFiles | null = null;
     try {
-      const stored = await load.call(this.io);
+      stored = await load.call(this.io);
       if (!stored || seq !== this.datSeq || stored.savedAt <= this.datAppliedAt) return;
       this.camStamp = Math.max(this.camStamp, stored.savedAt);
       const read = await this.io.readDat(stored.dat.slice(0), stored.library ? stored.library.slice(0) : null);
@@ -111,13 +125,40 @@ export class CamFilesController {
       if (seq !== this.datSeq || stored.savedAt <= this.datAppliedAt) return;
       this.commit(built, stored.savedAt);
     } catch {
-      // 记住的字节损坏或不兼容：核对拒收，不放进内存，由起始页引导重新选。
+      // 记住的字节损坏或不兼容：核对拒收并写入墓碑清掉损坏记录，下次启动不再重复解析。
+      if (stored && seq === this.datSeq && stored.savedAt > this.datAppliedAt) {
+        const del = this.io?.deleteCamFiles;
+        if (typeof del === 'function') {
+          try {
+            const at = await this.stampAbove();
+            if (seq === this.datSeq && stored.savedAt > this.datAppliedAt) {
+              const wrote = await del.call(this.io, at);
+              if (wrote && seq === this.datSeq) this.datAppliedAt = Math.max(this.datAppliedAt, at);
+            }
+          } catch {
+            // IndexedDB 写墓碑失败不挡首屏，保持内存为空。
+          }
+        }
+      }
     } finally {
       if (seq === this.datSeq) {
         this.datBusy = false;
         this.host.onChanged();
       }
     }
+  }
+
+  /** 对指定照片返回可用的相机配方文件；没有文件或拍摄目录不匹配时返回 null。 */
+  usableFor(photo: PhotoDatTarget): Dat | null {
+    const dat = this.dat;
+    if (!dat) return null;
+    if (!photo.dng || photo.diptych || photo.choice !== null || photo.recipeOff) return dat;
+    if (cameraRecipeErrorOf(photo, dat)?.code === 'camera_recipe_catalog_missing') return null;
+    const copyright = mergeCopyright(photo.jpgMeta?.copyright, photo.dngMeta?.copyright ?? photo.dngCopyright);
+    if (copyright && copyright.startsWith('GXR1 ') && describeCamFilesMismatch(parseRecipeTag(copyright), dat)) {
+      return null;
+    }
+    return dat;
   }
 
   /** 选文件时收下最新的 GXRCE.DAT / GXRFX.BIN：支持一起选、分两次选、重载后单补 BIN，以及单文件换掉双文件。 */

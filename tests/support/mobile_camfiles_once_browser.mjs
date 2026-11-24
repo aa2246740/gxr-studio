@@ -157,10 +157,26 @@ async function runPersistReloadStart() {
     await settle(page);
     await page.waitForFunction(() => window.__gxrBook && !window.__gxrBook.datBusy, null, { timeout: 30_000 });
     await page.waitForTimeout(400);
-    const afterCorruptReload = await page.evaluate(() => ({
-      hasDat: window.__gxrBook?.dat !== null,
-      camfilesAttr: document.querySelector('.screen')?.dataset.camfiles ?? null,
-    }));
+    const afterCorruptReload = await page.evaluate(async () => {
+      const db = await new Promise((resolve, reject) => {
+        const req = indexedDB.open('gxr-mobile');
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      const idbRow = await new Promise((resolve, reject) => {
+        const tx = db.transaction('camfiles', 'readonly');
+        const g = tx.objectStore('camfiles').get('current');
+        g.onsuccess = () => resolve(g.result);
+        tx.onerror = () => reject(tx.error);
+      });
+      db.close();
+      return {
+        hasDat: window.__gxrBook?.dat !== null,
+        camfilesAttr: document.querySelector('.screen')?.dataset.camfiles ?? null,
+        buttons: [...document.querySelectorAll('.start button')].map((n) => n.textContent.trim()),
+        idbCleared: idbRow === undefined || idbRow === null || idbRow.dat === null,
+      };
+    });
 
     out.steps.persist = {
       beforePick,
@@ -244,17 +260,55 @@ async function runMismatchCase(label, rememberedFiles, rememberedGen, photoFiles
     // Pick photo(s) only, open target photo.
     await page.locator('input.filepick:not(.calibpick)').setInputFiles(photoFiles);
     await waitGridLoaded(page);
+    if (expectMismatch) {
+      await page.evaluate(() => {
+        const b = window.__gxrBook;
+        window.__camfilesBakeCalls = 0;
+        if (window.__gxrBakes) window.__gxrBakes.clear();
+        if (b && !b.__camfilesBakeSpy) {
+          const orig = b.bake.bind(b);
+          b.bake = (...args) => {
+            window.__camfilesBakeCalls += 1;
+            return orig(...args);
+          };
+          b.__camfilesBakeSpy = true;
+        }
+      });
+    }
     await openPhoto(page, photoStem);
 
     if (expectMismatch) {
       await page.waitForSelector('.ask-sheet[data-state="camfiles-mismatch"]', { timeout: 30_000 });
       await page.waitForTimeout(300);
-      const before = await page.evaluate(() => ({
-        promptOpen: Boolean(document.querySelector('.ask-sheet[data-state="camfiles-mismatch"]')),
-        promptText: document.querySelector('.ask-sheet[data-state="camfiles-mismatch"]')?.innerText ?? '',
-        recipeKey: document.querySelector('.app')?.getAttribute('data-recipe-key') ?? null,
-        label: document.querySelector('.editor .lbl')?.textContent?.trim() ?? '',
-      }));
+      const promptOpen = await page.locator('.ask-sheet[data-state="camfiles-mismatch"]').isVisible();
+      const promptText = await page.locator('.ask-sheet[data-state="camfiles-mismatch"]').innerText();
+      // Dismiss mismatch prompt with 「先不用」 and verify zero card bakes, greyed cards, and no DAT card name in head.
+      await page.locator('.ask-sheet[data-state="camfiles-mismatch"] [data-act="mismatch-later"]').click();
+      await page.waitForFunction(() => !document.querySelector('.ask-sheet[data-state="camfiles-mismatch"]'), null, { timeout: 10_000 });
+      await page.waitForTimeout(500);
+      const before = await page.evaluate(() => {
+        const cards = [...document.querySelectorAll('.editor .strip[data-recipes] .rc')];
+        return {
+          promptOpen: true,
+          recipeKey: document.querySelector('.app')?.getAttribute('data-recipe-key') ?? null,
+          label: document.querySelector('.editor .lbl')?.textContent?.trim() ?? '',
+          headName: document.querySelector('.editor .recipe-head .rname')?.textContent?.trim() ?? '',
+          topBarTitle: document.querySelector('.editor .nav .t b')?.textContent?.trim() ?? '',
+          stripState: document.querySelector('.editor .strip[data-recipes]')?.dataset.state ?? null,
+          cardCount: cards.length,
+          allLocked: cards.length > 0 && cards.every((c) => c.classList.contains('lockd')),
+          predictedThumbs: cards.filter((c) => c.querySelector('.th')?.dataset.source === '电脑预测').length,
+          bakeCalls: window.__camfilesBakeCalls ?? -1,
+          bakesRecorded: window.__gxrBakes ? window.__gxrBakes.size : 0,
+        };
+      });
+      before.promptOpen = promptOpen;
+      before.promptText = promptText;
+
+      // Tapping a greyed card opens the mismatch 补选 prompt again.
+      await page.locator('.editor .strip[data-recipes] .rc').first().click();
+      await page.waitForSelector('.ask-sheet[data-state="camfiles-mismatch"]', { timeout: 15_000 });
+      before.tapReopensPrompt = true;
 
       // Pick matching card files -> prompt closes and real recipe renders.
       await page.locator('input.filepick:not(.calibpick)').setInputFiles(replaceFiles);

@@ -378,7 +378,8 @@ export function currentRecipeLabel(api: AppApi, photo: Photo): string {
   if (photo.diptych) return '半格双联';
   if (!photo.dng) return '相机 JPG';
   if (photo.recipeOff) return '中性转换';
-  const dat = api.book().dat;
+  const book = api.book();
+  const dat = typeof book.usableDatFor === 'function' ? book.usableDatFor(photo) : book.dat;
   const adopted = adoptedSelectionOf(photo, dat);
   const sel = photo.choice ?? adopted?.choice ?? null;
   if (dat) {
@@ -393,7 +394,7 @@ export function currentRecipeLabel(api: AppApi, photo: Photo): string {
     const named = namesOnly().find((c) => c.id === photo.choice?.id);
     if (named?.name) return named.name;
   }
-  return '中性转换';
+  return !book.dat && photo.jpg ? '相机 JPG' : '中性转换';
 }
 
 /** 照片信息底部面板：保留文件名、拍摄时间、格式、当前配方、尺寸、镜头和 ISO；半格双联补每格拍摄配方。 */

@@ -173,8 +173,11 @@ def test_mobile_camfiles_once_persist_start_mismatch_and_sooc(tmp_path: Path, mo
     check(p["adoptedAfterReload"]["heading"] == "K-KINO" and p["adoptedAfterReload"]["hasDat"], "photo-only pick after reload renders recipe")
     check(p["afterClearPhotos"]["camfilesAttr"] == "remembered", "clearing photos keeps remembered camera files")
     check(
-        p["afterCorruptReload"]["hasDat"] is False and p["afterCorruptReload"]["camfilesAttr"] == "none",
-        "corrupted IDB entry rejected on restore",
+        p["afterCorruptReload"]["hasDat"] is False
+        and p["afterCorruptReload"]["camfilesAttr"] == "none"
+        and p["afterCorruptReload"]["idbCleared"] is True
+        and any("选相机配方文件" in b for b in p["afterCorruptReload"]["buttons"]),
+        f"corrupted IDB entry rejected and tombstoned on restore: {p['afterCorruptReload']}",
     )
 
     # 2. 更多 → 校准与配方文件: 相机配方文件 card (换一份… / 忘掉)
@@ -194,6 +197,17 @@ def test_mobile_camfiles_once_persist_start_mismatch_and_sooc(tmp_path: Path, mo
         f"no wrong recipe rendered: {cg['before']}",
     )
     check(
+        cg["before"]["bakeCalls"] == 0
+        and cg["before"]["bakesRecorded"] == 0
+        and cg["before"]["allLocked"] is True
+        and cg["before"]["stripState"] == "no-recipe-file"
+        and cg["before"]["predictedThumbs"] == 0
+        and cg["before"]["headName"] in ("中性转换", "相机 JPG")
+        and cg["before"]["topBarTitle"] in ("中性转换", "相机 JPG")
+        and cg["before"]["tapReopensPrompt"] is True,
+        f"cross-gen mismatch must not bake cards, must grey strip, and must show neutral/camera-JPG head: {cg['before']}",
+    )
+    check(
         cg["after"]["promptOpen"] is False and cg["after"]["heading"] == "K-KINO" and cg["after"]["generation"] == 266,
         "picking g266 resolves mismatch",
     )
@@ -204,6 +218,17 @@ def test_mobile_camfiles_once_persist_start_mismatch_and_sooc(tmp_path: Path, mo
     check(
         dl["before"]["recipeKey"] in (None, "", "dev-neutral") and dl["before"]["label"] != "电脑预测",
         f"no wrong recipe rendered: {dl['before']}",
+    )
+    check(
+        dl["before"]["bakeCalls"] == 0
+        and dl["before"]["bakesRecorded"] == 0
+        and dl["before"]["allLocked"] is True
+        and dl["before"]["stripState"] == "no-recipe-file"
+        and dl["before"]["predictedThumbs"] == 0
+        and dl["before"]["headName"] in ("中性转换", "相机 JPG")
+        and dl["before"]["topBarTitle"] in ("中性转换", "相机 JPG")
+        and dl["before"]["tapReopensPrompt"] is True,
+        f"diff-lib mismatch must not bake cards, must grey strip, and must show neutral/camera-JPG head: {dl['before']}",
     )
     check(
         dl["after"]["promptOpen"] is False and dl["after"]["heading"] == "K-KINO" and dl["after"]["generation"] == 266,
