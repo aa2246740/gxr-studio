@@ -21,6 +21,7 @@ import { ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { ThumbFail, ThumbOk } from '../workers/thumb';
 import './shell.css';
+import './ipad.css';
 import { watchViewportLayout } from './layout';
 import { afterFirstPaint, bindPickers, createBootDom, createGpuEngine, LazyModules, scheduleIdle } from './boot_lazy';
 
