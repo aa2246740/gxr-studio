@@ -2,6 +2,7 @@
 // 起始页不再放这张卡：没导入时用内置的默认校准（lib/default_calib.ts），第一步就是选照片和相机配方文件。
 
 import { UNIT_LABEL, unitLine, type UnitPack } from '../lib/calib';
+import { camFilesRememberedLabel } from '../lib/camfiles';
 import { DEFAULT_LABEL, DEFAULT_NOTE } from '../lib/default_calib';
 import { deviceName } from '../lib/device';
 import type { Book } from './book';
@@ -98,7 +99,62 @@ export function calibCard(api: AppApi): HTMLElement {
   return card;
 }
 
-/** 「更多 → 校准数据」：同一张卡放在底部面板里。 */
+function paintCamFiles(card: HTMLElement, api: AppApi, book: Book): void {
+  card.replaceChildren();
+  const dat = book.dat;
+  card.dataset.camfiles = dat ? 'remembered' : 'none';
+  const hd = el('div', 'hd');
+  if (dat) {
+    hd.append(el('b', '', '相机配方文件'), tag(camFilesRememberedLabel(dat.generation), 'ok'));
+    const note = el('p', 's', `只存在这台 ${deviceName()} 的浏览器里，不会上传。换新固件（配方库变了）时再换一份。`);
+    const acts = el('div', 'acts');
+    const replace = button('btn', book.datBusy ? '正在读取…' : '换一份…');
+    replace.dataset.act = 'camfiles-replace';
+    replace.disabled = book.datBusy;
+    replace.addEventListener('click', () => api.pickDat());
+    const forget = button('btn danger', '忘掉');
+    forget.dataset.act = 'camfiles-forget';
+    forget.disabled = book.datBusy;
+    forget.addEventListener('click', () => {
+      void book.forgetDat().catch(() => undefined);
+    });
+    acts.append(replace, forget);
+    card.append(hd, note, acts);
+  } else {
+    const emptyTag = el('span', 'tag neutral-tag', '未记住');
+    emptyTag.style.marginLeft = 'auto';
+    hd.append(el('b', '', '相机配方文件'), emptyTag);
+    const note = el('p', 's', `存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN。选一次就会留在这台 ${deviceName()}，以后只选照片。`);
+    const pick = button('btn block', book.datBusy ? '正在读取…' : '选择相机配方文件…');
+    pick.dataset.act = 'camfiles-pick';
+    pick.disabled = book.datBusy;
+    pick.addEventListener('click', () => api.pickDat());
+    card.append(hd, note, pick);
+  }
+  if (book.datError) {
+    const line = el('p', 'bad', book.datError);
+    line.dataset.state = 'camfiles-error';
+    line.setAttribute('role', 'status');
+    card.append(line);
+  }
+}
+
+/** 一张会跟着相机配方文件变化自动重画的卡（「更多 → 校准与配方文件」）。 */
+export function camFilesCard(api: AppApi): HTMLElement {
+  const book = api.book();
+  const card = el('div', 'card camfiles');
+  paintCamFiles(card, api, book);
+  const off = book.onChange(() => {
+    if (!card.isConnected) {
+      off();
+      return;
+    }
+    paintCamFiles(card, api, book);
+  });
+  return card;
+}
+
+/** 「更多 → 校准数据 / 校准与配方文件」：相机配方文件卡与校准数据卡并列。 */
 export function showCalibSheet(host: HTMLElement, api: AppApi): void {
   host.querySelector('.scrim.calib-scrim')?.remove();
   host.querySelector('.ms.calib-sheet')?.remove();
@@ -106,7 +162,7 @@ export function showCalibSheet(host: HTMLElement, api: AppApi): void {
   const sheet = el('div', 'ms calib-sheet');
   sheet.dataset.state = 'calibration';
   const row = el('div', 'hd');
-  row.append(el('h2', '', '校准数据'));
+  row.append(el('h2', '', '校准与配方文件'));
   const done = button('nb', '完成');
   const close = () => {
     scrim.remove();
@@ -115,6 +171,6 @@ export function showCalibSheet(host: HTMLElement, api: AppApi): void {
   done.addEventListener('click', close);
   scrim.addEventListener('click', close);
   row.append(done);
-  sheet.append(el('div', 'grab'), row, calibCard(api));
+  sheet.append(el('div', 'grab'), row, camFilesCard(api), calibCard(api));
   host.append(scrim, sheet);
 }
