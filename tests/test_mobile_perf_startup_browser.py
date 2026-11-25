@@ -325,9 +325,10 @@ def test_raw_only_and_unreadable_photos_with_lazy_chunks(tmp_path: Path) -> None
 
 
 def test_ipad_export_options_always_target_the_current_photo(tmp_path: Path) -> None:
-    """iPad：导出选项随点随开；换照片后打开导出选项并保存，交给共享面板的是当前这张。"""
+    """iPad：导出选项随点随开；开着时换了照片就关掉；换照片后打开导出选项并保存，交给共享面板的是当前这张。"""
     _prereq()
     row = _run_lazy(["ipad-switch-export"], tmp_path)["ipad-switch-export"]
     assert row["sheetAtOnce"] == 1, f"export options must open synchronously: {row}"
+    assert row["sheetsAfterSwitch"] == 0, f"export options for the previous photo stayed open after a photo switch: {row}"
     assert row["first"] != row["second"] == row["photo"], row
     assert row["shared"] and all(name.startswith(row["second"]) for name in row["shared"]), row

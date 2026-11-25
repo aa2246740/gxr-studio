@@ -297,18 +297,20 @@ const modes = {
     await page.locator('.editor [data-tool="more"]:visible').click();
     await page.locator('.more-panel [data-more="export"]').click();
     const sheetAtOnce = await page.locator(EXPORT_SHEET).count();
-    // iPad 上导出选项是弹出框，关闭键是「好」。
-    await page.locator(EXPORT_SHEET).getByRole('button', { name: '好', exact: true }).click();
-    await page.locator('.ipad-filmstrip button.cell:not(.cur)').first().click();
+    // 选项开着时真点胶片条会被遮罩挡住；用 DOM 事件越过遮罩换到第二张（同 r4 探针），旧照片的选项必须跟着关掉。
+    await page.locator('.ipad-filmstrip button.cell:not(.cur)').first().dispatchEvent('click');
     await page.waitForFunction((id) => document.querySelector('.screen.editor')?.dataset.photo !== id, first);
+    await nextFrames(page);
+    const sheetsAfterSwitch = await page.locator(EXPORT_SHEET).count();
     const second = await editorPhoto(page);
+    if (sheetsAfterSwitch) return { first, second, sheetAtOnce, sheetsAfterSwitch, shared: null, photo: second };
     await page.locator('.editor [data-tool="more"]:visible').click();
     await page.locator('.more-panel [data-more="export"]').click();
     await page.locator(EXPORT_SHEET).waitFor();
     await page.locator(`${EXPORT_SHEET} .go`).click();
     await page.locator('.pdock [data-act="share"]').click({ timeout: 60000 });
     await page.waitForFunction(() => window.reviewShared.length > 0, null, { timeout: 30000 });
-    return { first, second, sheetAtOnce, shared: await page.evaluate(() => window.reviewShared), photo: await editorPhoto(page) };
+    return { first, second, sheetAtOnce, sheetsAfterSwitch, shared: await page.evaluate(() => window.reviewShared), photo: await editorPhoto(page) };
   },
 };
 
