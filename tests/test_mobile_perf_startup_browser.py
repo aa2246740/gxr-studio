@@ -311,6 +311,19 @@ def test_stale_editor_loads_never_open_or_report_on_the_wrong_screen(tmp_path: P
     assert wait["sheetsWhileLoading"] == 0 and wait["sheets"] == 1 and wait["screen"] == "grid", wait
 
 
+def test_grid_selection_changes_cancel_pending_lazy_work(tmp_path: Path) -> None:
+    """等编辑器分包时改了图库多选（取消后重选、改勾选、进多选）：分包到了不弹旧导出面板、错误或编辑器；之后导出的只有当前选中的照片。"""
+    _prereq()
+    data = _run_lazy(["export-change:cancel", "export-change:reselect", "export-change:fail", "open-then-select"], tmp_path)
+    for mode in ("export-change:cancel", "export-change:reselect"):
+        row = data[mode]
+        assert row["late"] == {"sheets": 0, "dialogs": 0, "screen": "grid"}, f"{mode}: a stale export panel opened: {row}"
+        assert row["shared"] and all(name.upper().startswith(row["b"].upper()) for name in row["shared"]), f"{mode}: shared {row}"
+    assert data["export-change:fail"]["late"] == {"sheets": 0, "dialogs": 0, "screen": "grid"}, data["export-change:fail"]
+    opened = data["open-then-select"]
+    assert opened["editors"] == 0 and opened["screen"] == "grid" and opened["selecting"] is True, f"a stale open left multi-select: {opened}"
+
+
 def test_raw_only_and_unreadable_photos_with_lazy_chunks(tmp_path: Path) -> None:
     """只有 RAW 时导入期间不预取编辑器分包，落定空闲后才预取；网格分包晚到时坏图照常提示一次。"""
     _prereq()

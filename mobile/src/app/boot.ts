@@ -245,10 +245,7 @@ class App implements AppApi {
   exportPhotos(ids: string[], onStart?: () => void): void {
     const want = new Set(ids);
     const list = this.ordered().filter((photo) => want.has(photo.id)).map((photo) => photo.id);
-    if (this.editorMod && this.exporter) {
-      this.exporter.open(list, onStart);
-      return;
-    }
+    if (this.editorMod && this.exporter) return this.exporter.open(list, onStart);
     // 图库多选导出时编辑器分包（导出在里面）还没到：等它；这期间切了屏、清空了就作废。
     const ticket = this.navigate();
     this.loadEditor().then(
@@ -259,6 +256,10 @@ class App implements AppApi {
         if (ticket === this.nav) showChunkError(this.shell, 'editor', () => this.exportPhotos(ids, onStart));
       },
     );
+  }
+
+  dropPending(): void {
+    this.navigate();
   }
 
   takeCalib(file: File): void {

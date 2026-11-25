@@ -442,9 +442,7 @@ export class GridView {
     if (this.selecting) {
       if (this.selected.has(id)) this.selected.delete(id);
       else this.selected.add(id);
-      this.selectionBar();
-      this.paint();
-      this.paintHeads();
+      this.selectionChanged();
       return;
     }
     if (photo.status === 'bad') this.showUnreadable(id);
@@ -453,6 +451,7 @@ export class GridView {
   }
 
   private toggleSelect(on: boolean): void {
+    this.api.dropPending(); // 进出多选、勾选变了：还在等编辑器分包的导出或点开作废
     this.selecting = on;
     if (!on) {
       this.selected.clear();
@@ -630,13 +629,17 @@ export class GridView {
       if (all) this.selected.delete(id);
       else this.selected.add(id);
     }
-    this.selectionBar();
-    this.paint();
-    this.paintHeads();
+    this.selectionChanged();
   }
 
   private selectAll(): void {
     for (const photo of this.api.photos()) this.selected.add(photo.id);
+    this.selectionChanged();
+  }
+
+  /** 勾选变了：还在等编辑器分包的「导出 N 张」作废（AppApi.dropPending），再重画选择栏和格子。 */
+  private selectionChanged(): void {
+    this.api.dropPending();
     this.selectionBar();
     this.paint();
     this.paintHeads();

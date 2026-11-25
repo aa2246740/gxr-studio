@@ -90,6 +90,19 @@ async function openExportOptions(page) {
   await page.locator(EXPORT_SHEET).waitFor();
 }
 
+async function mockShare(page) {
+  await page.addInitScript(() => {
+    window.reviewShared = [];
+    Object.defineProperty(navigator, 'canShare', { value: () => true, configurable: true });
+    Object.defineProperty(navigator, 'share', {
+      value: async ({ files }) => {
+        window.reviewShared.push(...files.map((file) => file.name));
+      },
+      configurable: true,
+    });
+  });
+}
+
 const modes = {
   /** 网格分包失败：停在开始页，给「重试」和「刷新页面」；没恢复前重选照片也只是再提示一次；恢复后往返不再请求。 */
   async 'grid-fail'(page, url) {
@@ -215,6 +228,59 @@ const modes = {
     await page.waitForTimeout(500);
     await nextFrames(page);
     return { screen: await screen(page), exportSheets: await page.locator(EXPORT_SHEET).count(), dialogs: await page.locator(DIALOG).count() };
+  },
+
+  /**
+   * 图库多选导出在等编辑器分包时，用户改了主意（Sol v2 P1）。variant：
+   * cancel = 点「取消」退出多选、再进多选选 B；reselect = 不退出多选，取消勾 A、勾 B；fail = cancel 之后分包失败。
+   * 分包到了以后不能弹旧的导出面板或错误；之后照常导出 B，共享面板收到的只有 B。
+   */
+  async 'export-change'(page, url, variant) {
+    await mockShare(page);
+    const gate = held();
+    await watchChunk(page, EDITOR, () => gate.promise);
+    await start(page, url);
+    await picker(page).setInputFiles([jpeg, jpeg2]);
+    await drawnCells(page).nth(1).waitFor();
+    const cells = page.locator('.gscroll .cell');
+    const a = await cells.nth(0).getAttribute('data-id');
+    const b = await cells.nth(1).getAttribute('data-id');
+    const choose = page.locator('button.nb.bold');
+    await choose.click();
+    await cells.nth(0).click();
+    await page.locator('[data-act="export"]').click();
+    if (variant === 'reselect') {
+      await cells.nth(0).click();
+    } else {
+      await choose.click();
+      await choose.click();
+    }
+    await cells.nth(1).click();
+    gate.release(variant === 'fail' ? 'abort' : 'ok');
+    await page.waitForTimeout(500);
+    await nextFrames(page);
+    const late = { sheets: await page.locator(EXPORT_SHEET).count(), dialogs: await page.locator(DIALOG).count(), screen: await screen(page) };
+    if (variant === 'fail' || late.sheets) return { a, b, late, shared: null };
+    await page.locator('[data-act="export"]').click();
+    await page.locator(`${EXPORT_SHEET} .go`).click();
+    await page.locator('.pdock [data-act="share"]').click({ timeout: 60000 });
+    await page.waitForFunction(() => window.reviewShared.length > 0, null, { timeout: 30000 });
+    return { a, b, late, shared: await page.evaluate(() => window.reviewShared) };
+  },
+
+  /** 点开照片在等编辑器分包时进入多选：分包到了也不打开编辑器，留在图库多选里。 */
+  async 'open-then-select'(page, url) {
+    const gate = held();
+    await watchChunk(page, EDITOR, () => gate.promise);
+    await start(page, url);
+    await picker(page).setInputFiles([jpeg, jpeg2]);
+    await drawnCells(page).nth(1).waitFor();
+    await page.locator('.gscroll .cell').first().click();
+    await page.locator('button.nb.bold', { hasText: '选择' }).click();
+    gate.release('ok');
+    await page.waitForTimeout(500);
+    await nextFrames(page);
+    return { screen: await screen(page), editors: await page.locator('.screen.editor').count(), selecting: (await page.locator('button.nb.bold').textContent()) === '取消' };
   },
 
   /** 图库多选导出时编辑器分包还没到：等它到了，导出面板照常打开，选的是那几张。 */
