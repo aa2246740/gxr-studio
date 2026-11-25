@@ -183,3 +183,38 @@ for (const kind of ['quiet', 'visible']) {
     });
   }
 }
+
+// 换照片：每次打开照片都新建 RecipeView 和 CardBakeController。旧照片 A 的小图烘焙还在 Worker 里，销毁 A、挂上 B、
+// B 也开始烘焙，再点 B 上没烘过的卡。后台占用按整个池子算（不按控制器），A 的在途烘焙一直占着槽直到回来，
+// 所以 1、2、3 次点击（重叠或依次）都不排在任何一张照片的后台烘焙后面；A 的烘焙回来后 B 的照常派发。
+for (const aKind of ['visible', 'quiet']) {
+  for (const overlap of [true, false]) {
+    test(`N5 photo switch: A's ${aKind} bakes in flight, B mounted, 1, 2 and 3 ${overlap ? 'overlapping' : 'back-to-back'} cold taps on B on 2, 3 and 4 workers never queue behind A's or B's bakes`, async () => {
+      for (const size of [2, 3, 4]) {
+        for (const taps of [1, 2, 3]) {
+          await withPool(size, async (fx) => {
+            const label = `switch A=${aKind} size=${size} taps=${taps} ${overlap ? 'overlap' : 'back-to-back'}`;
+            const fromA = await startBackground(fx, size, aKind);
+            fx.controller.destroy();
+            const b = new CardBakeController(size);
+            try {
+              const jobs = Array.from({ length: size + 6 }, (_, i) => ({ id: `bg-B-${i}`, item: `bg-B-${i}` }));
+              b.observe(jobs.map((job) => ({ dataset: { card: job.id } })));
+              b.start(jobs, { isAlive: () => true, isBusy: () => false, run: (tag) => fx.request('bake', tag, true) });
+              await tick();
+              const inWorkers = fx.inFlight().filter(isBg);
+              await runTaps({ ...fx, controller: b }, label, taps, overlap);
+              assert.ok(inWorkers.length <= Math.max(1, size - 1), `${label}: ${inWorkers.length} background requests in workers: ${JSON.stringify(inWorkers)}`);
+              // A 的烘焙回来以后，B 在池子里等着的烘焙补进去（不会饿死）。
+              for (const tag of fromA) await fx.finishThrough(tag);
+              await tick();
+              if (size > 1) assert.ok(fx.inFlight().some((tag) => tag.startsWith('bg-B-')), `${label}: B's bakes never reached a worker after A's returned`);
+            } finally {
+              b.destroy();
+            }
+          });
+        }
+      }
+    });
+  }
+}

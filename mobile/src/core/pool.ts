@@ -23,6 +23,28 @@ type PoolRequest = CoreRequest & {
 
 type PoolWorkerMessage = CoreReply | { needWasm: true };
 
+type RequestExtra = Pick<
+  CoreRequest,
+  | 'file'
+  | 'meta'
+  | 'defaultCalib'
+  | 'resolve'
+  | 'cameraRecipe'
+  | 'check'
+  | 'frameMeta'
+  | 'frameLayout'
+  | 'logoSave'
+  | 'geom'
+  | 'finalBox'
+  | 'sizes'
+  | 'lutImport'
+  | 'lutPatch'
+  | 'lutDelete'
+  | 'lutBlob'
+  | 'lutSnapshot'
+  | 'hdrGrid'
+>;
+
 /** 必然调用 WASM 导出的请求：由池先确保单次编译完成后再一并送出。 */
 const EAGER_WASM_OPS: ReadonlySet<CoreOp> = new Set([
   'describe',
@@ -69,6 +91,10 @@ export class Pool {
   private readonly inFlight: number[];
   /** 每个槽上排着或在跑的后台请求数（配方卡小图的 resolve / bake）。前台请求全忙时不排到这些槽后面。 */
   private readonly bgInFlight: number[];
+  /** 同时进 Worker 的后台请求上限：workers - 1（只有一个 Worker 时是 1，那时没法保证点击不排队）。 */
+  private readonly bgMax: number;
+  /** 超过上限、还在池子里等的后台请求。 */
+  private readonly bgWaiting: Array<{ send: () => void; reject: (err: Error) => void }> = [];
   private next = 0;
   private seq = 1;
   private stopped = false;
@@ -83,41 +109,34 @@ export class Pool {
     this.workers = Array.from({ length: this.cap }, () => null);
     this.inFlight = Array.from({ length: this.cap }, () => 0);
     this.bgInFlight = Array.from({ length: this.cap }, () => 0);
+    this.bgMax = Math.max(1, this.cap - 1);
   }
 
   /**
    * 把 `buffer` 交给一个 Worker。`transfer` 里的东西发给对方之后这边就不能再用。
-   * `background` 标出后台请求（配方卡小图）：用户点击发起的前台请求在所有槽都忙时只排到没有后台请求的槽后面。
+   * `background` 标出后台请求（配方卡小图）。整个池子同时最多 workers - 1 个后台请求在 Worker 里（不管是哪个编辑器、
+   * 哪张照片发的，换了照片以后旧的照样占着，直到回来）；多出来的在池子里排队。所以总有一个槽没有后台请求，
+   * 用户点击发起的前台请求在所有槽都忙时只排到这种槽后面，永远不会排在配方卡小图后面。
    */
-  request(
+  request(op: CoreOp, buffer: ArrayBuffer | null, transfer: Transferable[], args: BakeArgs | null = null, extra: RequestExtra = {}, background = false): Promise<CoreResult> {
+    if (this.stopped) return Promise.reject(new Error('Worker 已停止'));
+    return new Promise((resolve, reject) => {
+      const send = () => this.dispatch(op, buffer, transfer, args, extra, background, resolve, reject);
+      if (background && this.bgTotal() >= this.bgMax) this.bgWaiting.push({ send, reject });
+      else send();
+    });
+  }
+
+  private dispatch(
     op: CoreOp,
     buffer: ArrayBuffer | null,
     transfer: Transferable[],
-    args: BakeArgs | null = null,
-    extra: Pick<
-      CoreRequest,
-      | 'file'
-      | 'meta'
-      | 'defaultCalib'
-      | 'resolve'
-      | 'cameraRecipe'
-      | 'check'
-      | 'frameMeta'
-      | 'frameLayout'
-      | 'logoSave'
-      | 'geom'
-      | 'finalBox'
-      | 'sizes'
-      | 'lutImport'
-      | 'lutPatch'
-      | 'lutDelete'
-      | 'lutBlob'
-      | 'lutSnapshot'
-      | 'hdrGrid'
-    > = {},
-    background = false,
-  ): Promise<CoreResult> {
-    if (this.stopped) return Promise.reject(new Error('Worker 已停止'));
+    args: BakeArgs | null,
+    extra: RequestExtra,
+    background: boolean,
+    resolve: (result: CoreResult) => void,
+    reject: (err: Error) => void,
+  ): void {
     const id = this.seq++;
     const eager = EAGER_WASM_OPS.has(op);
     const maybe = MAYBE_WASM_OPS.has(op);
@@ -125,39 +144,47 @@ export class Pool {
     const worker = this.workerAt(slot);
     this.inFlight[slot] += 1;
     if (background) this.bgInFlight[slot] += 1;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { slot, worker, background, resolve, reject });
-      const base: PoolRequest = { id, op, buffer, args, ...extra, wasmManaged: true };
-      if (eager && this.canPostModule && !this.wasmSent.has(worker)) {
-        if (this.wasmResolved) {
-          this.postWithModule(worker, base, transfer, this.wasmResolved);
-          return;
-        }
-        void this.getWasmModule().then(
-          (mod) => {
-            if (this.stopped || !this.pending.has(id) || this.workers[slot] !== worker) return;
-            this.postWithModule(worker, base, transfer, mod);
-          },
-          (err: unknown) => {
-            const p = this.pending.get(id);
-            if (!p) return;
-            this.pending.delete(id);
-            this.release(p);
-            p.reject(err instanceof Error ? err : new Error(String(err)));
-          },
-        );
-        return;
-      }
-      if (maybe && this.wasmResolved && this.canPostModule && !this.wasmSent.has(worker)) {
+    this.pending.set(id, { slot, worker, background, resolve, reject });
+    const base: PoolRequest = { id, op, buffer, args, ...extra, wasmManaged: true };
+    if (eager && this.canPostModule && !this.wasmSent.has(worker)) {
+      if (this.wasmResolved) {
         this.postWithModule(worker, base, transfer, this.wasmResolved);
         return;
       }
-      worker.postMessage(base, transfer);
-    });
+      void this.getWasmModule().then(
+        (mod) => {
+          if (this.stopped || !this.pending.has(id) || this.workers[slot] !== worker) return;
+          this.postWithModule(worker, base, transfer, mod);
+        },
+        (err: unknown) => {
+          const p = this.pending.get(id);
+          if (!p) return;
+          this.pending.delete(id);
+          this.release(p);
+          p.reject(err instanceof Error ? err : new Error(String(err)));
+        },
+      );
+      return;
+    }
+    if (maybe && this.wasmResolved && this.canPostModule && !this.wasmSent.has(worker)) {
+      this.postWithModule(worker, base, transfer, this.wasmResolved);
+      return;
+    }
+    worker.postMessage(base, transfer);
+  }
+
+  private bgTotal(): number {
+    return this.bgInFlight.reduce((sum, n) => sum + n, 0);
+  }
+
+  /** 一个后台请求回来了（或那个槽坏了）：池子里排着的后台请求按先后补进去，总数仍不超过 workers - 1。 */
+  private drainBackground(): void {
+    while (!this.stopped && this.bgWaiting.length && this.bgTotal() < this.bgMax) this.bgWaiting.shift()?.send();
   }
 
   stop(): void {
     this.stopped = true;
+    for (const waiting of this.bgWaiting.splice(0)) waiting.reject(new Error('Worker 已停止'));
     this.failAll('Worker 已停止');
     for (let i = 0; i < this.workers.length; i += 1) {
       this.workers[i]?.terminate();
@@ -292,7 +319,9 @@ export class Pool {
   private release(pending: Pending): void {
     if (this.workers[pending.slot] !== pending.worker) return;
     this.inFlight[pending.slot] = Math.max(0, this.inFlight[pending.slot] - 1);
-    if (pending.background) this.bgInFlight[pending.slot] = Math.max(0, this.bgInFlight[pending.slot] - 1);
+    if (!pending.background) return;
+    this.bgInFlight[pending.slot] = Math.max(0, this.bgInFlight[pending.slot] - 1);
+    this.drainBackground();
   }
 
   /** 单个 Worker 槽位发生永久错误时只拒绝该槽位的在途任务并销毁坏实例，下次请求自动新建。 */
@@ -313,6 +342,7 @@ export class Pool {
       this.pending.delete(id);
       pending.reject(new Error(message));
     }
+    this.drainBackground();
   }
 
   private failAll(message: string): void {
