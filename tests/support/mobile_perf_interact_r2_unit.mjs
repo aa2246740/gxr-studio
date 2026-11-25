@@ -308,12 +308,12 @@ async function makeRecipeFixture(cores, { twoStep = false } = {}) {
   };
 }
 
-test('R3-1 (F1+N5): idle-first WASM pool raises quiet idle cap to F1 limit max(1, workers-1) on N=2..4 without tap regression', async () => {
+test('R3-1 (F1+N5): idle-first WASM pool caps quiet idle at max(1, workers-2) on N=2..4 so consecutive cold taps never queue', async () => {
   const { quietIdleBakeCap } = await import('../../mobile/src/app/looks.ts');
   assert.equal(quietIdleBakeCap(1), 1);
   assert.equal(quietIdleBakeCap(2), 1);
-  assert.equal(quietIdleBakeCap(3), 2);
-  assert.equal(quietIdleBakeCap(4), 3);
+  assert.equal(quietIdleBakeCap(3), 1);
+  assert.equal(quietIdleBakeCap(4), 2);
 
   // 1) N=2, 3, 4 空闲优先 WASM 池：初始打开期间至少留 1 个空闲 Worker，点选离屏卡直接启动（ahead === 0）
   for (const cores of [3, 4, 8]) {
@@ -342,8 +342,8 @@ test('R3-1 (F1+N5): idle-first WASM pool raises quiet idle cap to F1 limit max(1
     }
   }
 
-  // 2) N=4 空闲优先 WASM 池（含 resolve + bake 两步）：静默离屏并发恢复至 F1 上限 3（留 1 个空闲 Worker），
-  //    点选未烘卡时 resolve 与 bake 均直落空闲 Worker（ahead === 0）
+  // 2) N=4 空闲优先 WASM 池（含 resolve + bake 两步）：静默离屏并发上限为 2（预留 2 个空闲 Worker），
+  //    连点两张未烘卡（第二张在第一张仍在烘焙时发出）均直落空闲 Worker（ahead === 0）
   const fx4 = await makeRecipeFixture(8, { twoStep: true });
   try {
     fx4.rv.start('raw:p_8');
@@ -357,26 +357,33 @@ test('R3-1 (F1+N5): idle-first WASM pool raises quiet idle cap to F1 limit max(1
     assert.ok(fx4.idleQueue.length > 0, 'off-screen cards must schedule idle work');
     fx4.idleQueue.shift()();
     await tick(6);
-    assert.equal(fx4.totalInPool(), 3, `quiet 4-worker idle concurrency must reach F1 limit 3, got ${fx4.totalInPool()}`);
+    assert.equal(fx4.totalInPool(), 2, `quiet 4-worker idle concurrency must be max(1, 4-2)=2, got ${fx4.totalInPool()}`);
 
-    const coldTap = fx4.rv.stripEl().querySelector('.rc[data-card="look:look_12"]');
-    assert.ok(coldTap, 'cold off-screen tap target must exist');
+    const coldTap1 = fx4.rv.stripEl().querySelector('.rc[data-card="look:look_11"]');
+    const coldTap2 = fx4.rv.stripEl().querySelector('.rc[data-card="look:look_12"]');
+    assert.ok(coldTap1 && coldTap2, 'cold off-screen tap targets must exist');
+    fx4.setStageCard('look:look_11');
+    coldTap1.click();
+    await tick(4);
+    assert.equal(fx4.queueDepthOnDispatch.get('look:look_11'), 0, 'first quiet idle tap queued behind background');
+    // 第一张冷点仍在烘焙时紧接着点第二张冷卡：必须直落第 4 个空闲 Worker
     fx4.setStageCard('look:look_12');
-    coldTap.click();
+    coldTap2.click();
     await tick(4);
     assert.equal(
       fx4.queueDepthOnDispatch.get('look:look_12'),
       0,
-      `quiet idle tap queued behind background on 4-worker idle-first pool (ahead=${fx4.queueDepthOnDispatch.get('look:look_12')})`,
+      `second consecutive cold tap queued behind background on 4-worker pool (ahead=${fx4.queueDepthOnDispatch.get('look:look_12')})`,
     );
     fx4.finishBake('look:look_12');
+    fx4.finishBake('look:look_11');
   } finally {
     fx4.restore();
   }
 });
 
-test('N5: 3-worker quiet idle baking leaves 1 free worker so a cold tap starts immediately without queueing', async () => {
-  const fx3 = await makeRecipeFixture(4, { twoStep: true }); // cores=4 -> workerCount=3, F1 cap=2
+test('N5: 3-worker quiet idle baking leaves 2 free workers so two consecutive cold taps start without queueing', async () => {
+  const fx3 = await makeRecipeFixture(4, { twoStep: true }); // cores=4 -> workerCount=3, quiet cap=1
   try {
     assert.equal(fx3.workerCount, 3);
     fx3.rv.start('raw:p_4');
@@ -390,29 +397,31 @@ test('N5: 3-worker quiet idle baking leaves 1 free worker so a cold tap starts i
     assert.ok(fx3.idleQueue.length > 0, '3-worker off-screen cards must schedule idle work');
     fx3.idleQueue.shift()();
     await tick(6);
-    assert.equal(fx3.totalInPool(), 2, `3-worker quiet idle concurrency must be F1 limit 2, got ${fx3.totalInPool()}`);
+    assert.equal(fx3.totalInPool(), 1, `3-worker quiet idle concurrency must be max(1, 3-2)=1, got ${fx3.totalInPool()}`);
     const idleSlots = fx3.workerQueues.map((q, idx) => (q.length === 0 ? idx : -1)).filter((idx) => idx >= 0);
-    assert.equal(idleSlots.length, 1, `expected exactly 1 free worker during 3-worker quiet idle, got slots=${idleSlots.join(',')}`);
+    assert.equal(idleSlots.length, 2, `expected 2 free workers during 3-worker quiet idle, got slots=${idleSlots.join(',')}`);
     const bgBeforeTap = fx3.activeCards();
 
-    const coldTap = fx3.rv.stripEl().querySelector('.rc[data-card="look:look_12"]');
-    assert.ok(coldTap, 'cold off-screen tap target must exist');
+    const coldTap1 = fx3.rv.stripEl().querySelector('.rc[data-card="look:look_11"]');
+    const coldTap2 = fx3.rv.stripEl().querySelector('.rc[data-card="look:look_12"]');
+    assert.ok(coldTap1 && coldTap2, 'cold off-screen tap targets must exist');
+    fx3.setStageCard('look:look_11');
+    coldTap1.click();
+    await tick(4);
+    assert.equal(fx3.queueDepthOnDispatch.get('look:look_11'), 0, '3-worker first cold tap queued behind background');
     fx3.setStageCard('look:look_12');
-    coldTap.click();
+    coldTap2.click();
     await tick(4);
     assert.equal(
       fx3.queueDepthOnDispatch.get('look:look_12'),
       0,
-      `3-worker cold tap queued behind a background bake (ahead=${fx3.queueDepthOnDispatch.get('look:look_12')})`,
+      `3-worker second consecutive cold tap queued behind background (ahead=${fx3.queueDepthOnDispatch.get('look:look_12')})`,
     );
-    assert.equal(
-      fx3.dispatchSlotByCard.get('look:look_12'),
-      idleSlots[0],
-      '3-worker cold tap must route to the idle worker slot',
-    );
-    assert.ok(fx3.activeCards().includes('look:look_12'), 'cold tap must start immediately at head of idle worker');
-    // 必须能在后台两张烘焙尚未结束前直接完成冷点任务
+    assert.ok(idleSlots.includes(fx3.dispatchSlotByCard.get('look:look_11')));
+    assert.ok(idleSlots.includes(fx3.dispatchSlotByCard.get('look:look_12')));
+    assert.notEqual(fx3.dispatchSlotByCard.get('look:look_11'), fx3.dispatchSlotByCard.get('look:look_12'));
     fx3.finishBake('look:look_12');
+    fx3.finishBake('look:look_11');
     for (const bgId of bgBeforeTap) {
       assert.ok(fx3.activeCards().includes(bgId), `background bake ${bgId} should still be running independently`);
     }
@@ -541,7 +550,7 @@ test('R3-2 (F2+N3): stage pinch/pan and toolbar taps trigger idle concurrency dr
       assert.ok(fx.idleQueue.length > 0);
       fx.idleQueue.shift()();
       await tick(6);
-      assert.equal(fx.totalInPool(), 3, `${label}: quiet idle should start at F1 limit 3`);
+      assert.equal(fx.totalInPool(), 2, `${label}: quiet idle should start at cap 2`);
 
       fx[targetKey].dispatchEvent(new Event(evType, { bubbles: true }));
       for (const id of fx.activeCards()) fx.finishBake(id);
@@ -550,7 +559,7 @@ test('R3-2 (F2+N3): stage pinch/pan and toolbar taps trigger idle concurrency dr
         fx.idleQueue.shift()();
         await tick(6);
       }
-      assert.ok(fx.totalInPool() <= 1, `${label}: idle concurrency must drop back to <= 1, got ${fx.totalInPool()}`);
+      assert.equal(fx.totalInPool(), 0, `${label}: off-screen idle must pause during input cooldown, got ${fx.totalInPool()}`);
     } finally {
       fx.restore();
     }

@@ -1,5 +1,5 @@
-// Round 4 回归驱动：覆盖 Sol r3 的 4 项懒加载与调度问题。
-// 模式：menu-race-and-fail / raw-only-prewarm / pool-idle-cold-slot / grid-fail-recovery。
+// Round 4 / Round 6 回归驱动：覆盖懒加载竞态、失败重试、模块/ExportFlow 单例复用与调度回归。
+// 模式：menu-race-and-fail / raw-only-prewarm / pool-idle-cold-slot / grid-fail-recovery / export-retry-and-reuse / reopen-single-instance。
 
 import fs from 'node:fs';
 import http from 'node:http';
@@ -378,11 +378,343 @@ async function runGridFailRecovery() {
   }
 }
 
+async function runExportRetryAndReuse() {
+  const { launchPinnedChromium } = await loadRuntime();
+  const server = await startStaticServer(manifest.distDir);
+  const browser = await launchPinnedChromium({ args: CHROMIUM_ARGS });
+  const exportJsRe = /\/assets\/export_ui-[^/?]+\.js(?:\?|$)/;
+  const exportCssRe = /\/assets\/export_ui-[^/?]+\.css(?:\?|$)/;
+  try {
+    // Part A: 仅拦截首次 export_ui-*.js 请求；编辑器不得卡死，点「导出选项」自动/重试恢复，多次重开复用同一模块与同一 ExportFlow
+    const ctxJs = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const pageJs = await ctxJs.newPage();
+    const jsErrors = [];
+    pageJs.on('pageerror', (e) => jsErrors.push(e.message));
+    const jsRequests = [];
+    await pageJs.route(exportJsRe, (route) => {
+      const search = new URL(route.request().url()).search;
+      jsRequests.push(search);
+      return jsRequests.length === 1 ? route.abort() : route.continue();
+    });
+    await pageJs.goto(`${server.url}/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await pageJs.locator('.app[data-screen="start"][data-core="1"] .start button.btn.primary').waitFor({ state: 'visible', timeout: 20000 });
+    await pageJs.locator('input.filepick:not(.calibpick)').first().setInputFiles([manifest.jpgFile]);
+    await pageJs.locator('.cell:has(canvas[data-drawn])').first().click({ timeout: 20000 });
+    const stageA = pageJs.locator('.editor .stage');
+    const retryEditorA = pageJs.locator('[data-act="retry-editor"]');
+    await stageA.or(retryEditorA).waitFor({ state: 'visible', timeout: 15000 });
+    let editorOpenedA = await stageA.isVisible();
+    if (!editorOpenedA && (await retryEditorA.isVisible())) {
+      await retryEditorA.click();
+      editorOpenedA = await stageA.waitFor({ state: 'visible', timeout: 10000 }).then(() => true, () => false);
+    }
+    let optionsOpensA = 0;
+    let requestsAfterFirstOpenA = 0;
+    let requestsAfterReopensA = 0;
+    let liveExportModulesA = [];
+    if (editorOpenedA) {
+      for (let i = 0; i < 3; i += 1) {
+        await pageJs.locator('[data-act="editor-more"]').click();
+        await pageJs.locator('.ms[data-state="editor-more"] [data-act="more-export-options"]').click();
+        const sheet = pageJs.locator('.ms.export[data-state="export-sheet"]');
+        const alert = pageJs.locator('.ms[data-state="editor-more"] [role="alert"]');
+        await sheet.or(alert).waitFor({ state: 'visible', timeout: 10000 });
+        if (!(await sheet.isVisible()) && (await pageJs.locator('.ms[data-state="editor-more"] [data-act="more-load-retry"]').isVisible())) {
+          await pageJs.locator('.ms[data-state="editor-more"] [data-act="more-load-retry"]').click();
+          await sheet.waitFor({ state: 'visible', timeout: 10000 }).catch(() => undefined);
+        }
+        if (await sheet.isVisible()) {
+          optionsOpensA += 1;
+          if (i === 0) requestsAfterFirstOpenA = jsRequests.length;
+          await sheet.getByRole('button', { name: '取消' }).click();
+          await sheet.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => undefined);
+        }
+      }
+      requestsAfterReopensA = jsRequests.length;
+      liveExportModulesA = await pageJs.evaluate(async () => {
+        const shell = document.querySelector('.app');
+        const id = document.querySelector('.editor')?.dataset.photo?.toLowerCase() ?? '';
+        const paths = [
+          ...new Set(
+            performance
+              .getEntriesByType('resource')
+              .map((e) => e.name)
+              .filter((name) => /^\/assets\/export_ui-[^/]+\.js$/.test(new URL(name).pathname)),
+          ),
+        ];
+        const mods = await Promise.allSettled(paths.map((p) => import(p)));
+        const out = [];
+        for (let i = 0; i < mods.length; i += 1) {
+          if (mods[i].status !== 'fulfilled') continue;
+          const ok = mods[i].value.openExportOptions(shell, [id]);
+          if (ok) document.querySelector('.ms.export[data-state="export-sheet"] button.nb')?.click();
+          out.push({ query: new URL(paths[i]).search, controlsFlow: ok });
+        }
+        return out;
+      });
+    }
+    const jsFailResult = {
+      editorOpened: editorOpenedA,
+      optionsOpens: optionsOpensA,
+      jsRequests: jsRequests.slice(),
+      requestsAfterFirstOpen: requestsAfterFirstOpenA,
+      requestsAfterReopens: requestsAfterReopensA,
+      liveExportModules: liveExportModulesA,
+      pageErrors: jsErrors,
+    };
+    await ctxJs.close();
+
+    // Part B: 持续拦截 export_ui-*.js 直到「导出选项」首次点击显示错误与重试，放行后点「重试」用 ?retry=N 恢复并可多次重开
+    const ctxRetry = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const pageRetry = await ctxRetry.newPage();
+    const retryErrors = [];
+    pageRetry.on('pageerror', (e) => retryErrors.push(e.message));
+    let blockExportB = true;
+    const retryRequestsB = [];
+    await pageRetry.route(exportJsRe, (route) => {
+      retryRequestsB.push(new URL(route.request().url()).search);
+      return blockExportB ? route.abort() : route.continue();
+    });
+    await pageRetry.goto(`${server.url}/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await pageRetry.locator('.app[data-screen="start"][data-core="1"] .start button.btn.primary').waitFor({ state: 'visible', timeout: 20000 });
+    await pageRetry.locator('input.filepick:not(.calibpick)').first().setInputFiles([manifest.jpgFile]);
+    await pageRetry.locator('.cell:has(canvas[data-drawn])').first().click({ timeout: 20000 });
+    const stageB = pageRetry.locator('.editor .stage');
+    const retryEditorB = pageRetry.locator('[data-act="retry-editor"]');
+    await stageB.or(retryEditorB).waitFor({ state: 'visible', timeout: 15000 });
+    let alertB = false;
+    let hasRetryB = false;
+    let recoveredOpensB = 0;
+    let countAfterRetryB = 0;
+    if (await stageB.isVisible()) {
+      await pageRetry.locator('[data-act="editor-more"]').click();
+      await pageRetry.locator('.ms[data-state="editor-more"] [data-act="more-export-options"]').click();
+      alertB = await pageRetry.locator('.ms[data-state="editor-more"] [role="alert"]').waitFor({ state: 'visible', timeout: 10000 }).then(() => true, () => false);
+      const retryBtnB = pageRetry.locator('.ms[data-state="editor-more"] [data-act="more-load-retry"]');
+      hasRetryB = await retryBtnB.isVisible();
+      if (hasRetryB) {
+        blockExportB = false;
+        await retryBtnB.click();
+        const sheetB = pageRetry.locator('.ms.export[data-state="export-sheet"]');
+        if (await sheetB.waitFor({ state: 'visible', timeout: 10000 }).then(() => true, () => false)) {
+          recoveredOpensB += 1;
+          countAfterRetryB = retryRequestsB.length;
+          await sheetB.getByRole('button', { name: '取消' }).click();
+          await sheetB.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => undefined);
+          for (let i = 0; i < 2; i += 1) {
+            await pageRetry.locator('[data-act="editor-more"]').click();
+            await pageRetry.locator('.ms[data-state="editor-more"] [data-act="more-export-options"]').click();
+            if (await sheetB.waitFor({ state: 'visible', timeout: 10000 }).then(() => true, () => false)) {
+              recoveredOpensB += 1;
+              await sheetB.getByRole('button', { name: '取消' }).click();
+              await sheetB.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => undefined);
+            }
+          }
+        }
+      }
+    }
+    const explicitRetryResult = {
+      alertVisible: alertB,
+      hasRetryBtn: hasRetryB,
+      recoveredOpens: recoveredOpensB,
+      requests: retryRequestsB.slice(),
+      countAfterRetry: countAfterRetryB,
+      countAfterReopens: retryRequestsB.length,
+      pageErrors: retryErrors,
+    };
+    await ctxRetry.close();
+
+    // Part C: 仅拦截首次 export_ui-*.css 请求（JS 已成功），重试后不得产生第二份 export_ui JS 实例，且「导出选项」可直接打开并加载样式
+    const ctxCss = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const pageCss = await ctxCss.newPage();
+    const cssErrors = [];
+    pageCss.on('pageerror', (e) => cssErrors.push(e.message));
+    const cssRequestsC = [];
+    const jsRequestsC = [];
+    await pageCss.route(exportCssRe, (route) => {
+      cssRequestsC.push(new URL(route.request().url()).search);
+      return cssRequestsC.length === 1 ? route.abort() : route.continue();
+    });
+    await pageCss.route(exportJsRe, (route) => {
+      jsRequestsC.push(new URL(route.request().url()).search);
+      return route.continue();
+    });
+    await pageCss.goto(`${server.url}/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await pageCss.locator('.app[data-screen="start"][data-core="1"] .start button.btn.primary').waitFor({ state: 'visible', timeout: 20000 });
+    await pageCss.locator('input.filepick:not(.calibpick)').first().setInputFiles([manifest.rawOnlyDng]);
+    await pageCss.getByText('只有 RAW', { exact: true }).waitFor({ state: 'visible', timeout: 20000 });
+    await pageCss.locator('.cell').first().click();
+    const stageC = pageCss.locator('.editor .stage');
+    const retryEditorC = pageCss.locator('[data-act="retry-editor"]');
+    await stageC.or(retryEditorC).waitFor({ state: 'visible', timeout: 15000 });
+    let editorOpenedC = await stageC.isVisible();
+    if (!editorOpenedC && (await retryEditorC.isVisible())) {
+      await retryEditorC.click();
+      editorOpenedC = await stageC.waitFor({ state: 'visible', timeout: 10000 }).then(() => true, () => false);
+    }
+    let optionsOpenedC = false;
+    let cssRuleCountC = 0;
+    let liveExportModulesC = [];
+    if (editorOpenedC) {
+      await pageCss.locator('[data-act="editor-more"]').click();
+      await pageCss.locator('.ms[data-state="editor-more"] [data-act="more-export-options"]').click();
+      const sheetC = pageCss.locator('.ms.export[data-state="export-sheet"]');
+      const alertC = pageCss.locator('.ms[data-state="editor-more"] [role="alert"]');
+      await sheetC.or(alertC).waitFor({ state: 'visible', timeout: 10000 });
+      if (!(await sheetC.isVisible()) && (await pageCss.locator('.ms[data-state="editor-more"] [data-act="more-load-retry"]').isVisible())) {
+        await pageCss.locator('.ms[data-state="editor-more"] [data-act="more-load-retry"]').click();
+        await sheetC.waitFor({ state: 'visible', timeout: 10000 }).catch(() => undefined);
+      }
+      optionsOpenedC = await sheetC.isVisible();
+      if (optionsOpenedC) {
+        await sheetC.getByRole('button', { name: '取消' }).click();
+        await sheetC.waitFor({ state: 'hidden', timeout: 5000 }).catch(() => undefined);
+      }
+      const cssProbe = await pageCss.evaluate(async () => {
+        const links = [...document.querySelectorAll('link[rel="stylesheet"]')].filter((l) => /\/assets\/export_ui-[^/?]+\.css/.test(l.href));
+        let rules = 0;
+        for (const l of links) {
+          try {
+            if (l.sheet) rules = Math.max(rules, l.sheet.cssRules.length);
+          } catch {}
+        }
+        const shell = document.querySelector('.app');
+        const id = document.querySelector('.editor')?.dataset.photo?.toLowerCase() ?? '';
+        const paths = [
+          ...new Set(
+            performance
+              .getEntriesByType('resource')
+              .map((e) => e.name)
+              .filter((name) => /^\/assets\/export_ui-[^/]+\.js$/.test(new URL(name).pathname)),
+          ),
+        ];
+        const mods = await Promise.allSettled(paths.map((p) => import(p)));
+        const live = [];
+        for (let i = 0; i < mods.length; i += 1) {
+          if (mods[i].status !== 'fulfilled') continue;
+          const ok = mods[i].value.openExportOptions(shell, [id]);
+          if (ok) document.querySelector('.ms.export[data-state="export-sheet"] button.nb')?.click();
+          live.push({ query: new URL(paths[i]).search, controlsFlow: ok });
+        }
+        return { rules, live };
+      });
+      cssRuleCountC = cssProbe.rules;
+      liveExportModulesC = cssProbe.live;
+    }
+    const cssFailResult = {
+      editorOpened: editorOpenedC,
+      optionsOpened: optionsOpenedC,
+      cssRequests: cssRequestsC.slice(),
+      jsRequests: jsRequestsC.slice(),
+      cssRuleCount: cssRuleCountC,
+      liveExportModules: liveExportModulesC,
+      pageErrors: cssErrors,
+    };
+    await ctxCss.close();
+
+    return { jsFailResult, explicitRetryResult, cssFailResult };
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+}
+
+async function runReopenSingleInstance() {
+  const { launchPinnedChromium } = await loadRuntime();
+  const server = await startStaticServer(manifest.distDir);
+  const browser = await launchPinnedChromium({ args: CHROMIUM_ARGS });
+  try {
+    // Part A: 关机图失败 1 次 -> 重试成功 -> 关闭并连续重开 3 次，只能有 1 个重试 URL、0 次额外请求
+    const ctxOff = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const pageOff = await ctxOff.newPage();
+    const offErrors = [];
+    pageOff.on('pageerror', (e) => offErrors.push(e.message));
+    const offRequests = [];
+    await pageOff.route(/\/assets\/off_image_sheet-[^/?]+\.js(?:\?|$)/, (route) => {
+      offRequests.push(new URL(route.request().url()).search);
+      return offRequests.length === 1 ? route.abort() : route.continue();
+    });
+    await openEditorOnPhoto(pageOff, server.url, manifest.jpgFile);
+    await pageOff.locator('[data-act="editor-more"]').click();
+    await pageOff.locator('.ms[data-state="editor-more"] [data-act="more-off-image"]').click();
+    await pageOff.locator('.ms[data-state="editor-more"] [role="alert"]').waitFor({ state: 'visible', timeout: 10000 });
+    await pageOff.locator('.ms[data-state="editor-more"] [data-act="more-load-retry"]').click();
+    await pageOff.locator('[data-state="off-image"]').waitFor({ state: 'visible', timeout: 15000 });
+    await pageOff.locator('[data-state="off-image"]').getByRole('button', { name: '关闭' }).click();
+    await pageOff.locator('[data-state="off-image"]').waitFor({ state: 'hidden', timeout: 5000 }).catch(() => undefined);
+
+    let reopenCount = 0;
+    for (let i = 0; i < 3; i += 1) {
+      await pageOff.locator('[data-act="editor-more"]').click();
+      await pageOff.locator('.ms[data-state="editor-more"] [data-act="more-off-image"]').click();
+      if (await pageOff.locator('[data-state="off-image"]').waitFor({ state: 'visible', timeout: 10000 }).then(() => true, () => false)) {
+        reopenCount += 1;
+        await pageOff.locator('[data-state="off-image"]').getByRole('button', { name: '关闭' }).click();
+        await pageOff.locator('[data-state="off-image"]').waitFor({ state: 'hidden', timeout: 5000 }).catch(() => undefined);
+      }
+    }
+    const offIdentity = await pageOff.evaluate(async () => {
+      const paths = [
+        ...new Set(
+          performance
+            .getEntriesByType('resource')
+            .map((e) => e.name)
+            .filter((name) => /^\/assets\/off_image_sheet-[^/]+\.js$/.test(new URL(name).pathname) && new URL(name).searchParams.has('retry')),
+        ),
+      ];
+      const mods = await Promise.all(paths.map((p) => import(p)));
+      return { uniqueRetryUrls: paths.length, sameModule: mods.length === 1 || mods.every((m) => m === mods[0]) };
+    });
+    const offResult = { requests: offRequests.slice(), reopenCount, ...offIdentity, pageErrors: offErrors };
+    await ctxOff.close();
+
+    // Part B: grid 分包失败 1 次 -> 重试成功 -> 进出编辑器 2 次，不再重发 grid 请求
+    const ctxGrid = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    const pageGrid = await ctxGrid.newPage();
+    const gridErrors = [];
+    pageGrid.on('pageerror', (e) => gridErrors.push(e.message));
+    let blockGrid = true;
+    const gridRequests = [];
+    await pageGrid.route(/\/assets\/grid-[^/?]+\.js(?:\?|$)/, (route) => {
+      gridRequests.push(new URL(route.request().url()).search);
+      return blockGrid ? route.abort() : route.continue();
+    });
+    await pageGrid.goto(`${server.url}/`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await pageGrid.locator('.app[data-screen="start"][data-core="1"] .start button.btn.primary').waitFor({ state: 'visible', timeout: 20000 });
+    await pageGrid.locator('input.filepick:not(.calibpick)').first().setInputFiles([manifest.jpgFile]);
+    await pageGrid.locator('[data-act="retry-grid"]').waitFor({ state: 'visible', timeout: 10000 });
+    blockGrid = false;
+    const beforeRetryCount = gridRequests.length;
+    await pageGrid.locator('[data-act="retry-grid"]').click();
+    await pageGrid.locator('.app[data-screen="grid"] .cell:has(canvas[data-drawn])').first().waitFor({ state: 'visible', timeout: 15000 });
+    for (let i = 0; i < 2; i += 1) {
+      await pageGrid.locator('.cell:has(canvas[data-drawn])').first().click();
+      await pageGrid.locator('.editor .stage').waitFor({ state: 'visible', timeout: 15000 });
+      await pageGrid.locator('button.nav-back').click();
+      await pageGrid.locator('.app[data-screen="grid"] .cell:has(canvas[data-drawn])').first().waitFor({ state: 'visible', timeout: 15000 });
+    }
+    const gridResult = {
+      requests: gridRequests.slice(),
+      beforeRetryCount,
+      afterRoundTripsCount: gridRequests.length,
+      pageErrors: gridErrors,
+    };
+    await ctxGrid.close();
+
+    return { offResult, gridResult };
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+}
+
 let output;
 if (mode === 'menu-race-and-fail') output = await runMenuRaceAndFail();
 else if (mode === 'raw-only-prewarm') output = await runRawOnlyPrewarm();
 else if (mode === 'pool-idle-cold-slot') output = await runPoolIdleColdSlot();
 else if (mode === 'grid-fail-recovery') output = await runGridFailRecovery();
+else if (mode === 'export-retry-and-reuse') output = await runExportRetryAndReuse();
+else if (mode === 'reopen-single-instance') output = await runReopenSingleInstance();
 else throw new Error(`unknown mode: ${mode}`);
 
 fs.writeFileSync(manifest.out, JSON.stringify(output, null, 2));

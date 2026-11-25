@@ -15,6 +15,8 @@ interface ChunkEntry {
 // 生产构建由 vite.config.ts 的 lazyChunkMap 替换为真实分包映射；dev 或 Node 单测下保持占位串。
 const RAW_LAZY_CHUNKS: string = '__GXR_LAZY_CHUNKS__';
 let parsedLazyChunks: Record<string, ChunkEntry> | null | undefined;
+const resolvedChunks = new Map<LazyChunkKey, unknown>();
+const inflightChunks = new Map<LazyChunkKey, Promise<unknown>>();
 const failedChunks = new Set<LazyChunkKey>();
 let retrySeq = 0;
 
@@ -29,43 +31,118 @@ function prodChunkEntry(key: LazyChunkKey): ChunkEntry | null {
   return parsedLazyChunks?.[key] ?? null;
 }
 
-function ensureStyles(files: string[], baseUrl: URL): void {
-  if (typeof document === 'undefined') return;
-  for (const file of files) {
-    const href = new URL(file, baseUrl).href;
-    if (document.querySelector(`link[rel="stylesheet"][href="${href}"], link[rel="stylesheet"][href$="/${file}"]`)) continue;
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = href;
-    document.head.append(link);
+function linkMatchesCss(link: HTMLLinkElement, file: string): boolean {
+  const raw = link.getAttribute('href') || link.href || '';
+  if (!raw) return false;
+  try {
+    const pathname = new URL(raw, location.href).pathname;
+    return pathname === `/${file}` || pathname.endsWith(`/${file}`);
+  } catch {
+    return raw.includes(file);
   }
 }
 
-/** 懒加载分包：首次走 Vite 原生动态导入；若首次失败导致浏览器缓存失败模块表，后续重试改带查询串重新请求。 */
-export async function importChunk<T>(key: LazyChunkKey, primary: () => Promise<T>, devPath: string): Promise<T> {
-  if (!failedChunks.has(key)) {
+function hasLoadedStylesheet(link: HTMLLinkElement): boolean {
+  if (!link.sheet) return false;
+  try {
+    return link.sheet.cssRules.length > 0;
+  } catch {
+    // Chromium 对加载失败的同源 <link rel="stylesheet"> 仍会挂上只读抛 SecurityError 的占位 sheet，不能误判为已加载。
     try {
-      return await primary();
-    } catch (err) {
-      failedChunks.add(key);
-      throw err;
+      return new URL(link.href, location.href).origin !== location.origin;
+    } catch {
+      return false;
     }
   }
-  const baseUrl = new URL(import.meta.env.BASE_URL || '/', location.href);
-  const entry = import.meta.env.DEV ? { js: devPath, css: [] } : prodChunkEntry(key);
-  if (!entry) return primary();
-  ensureStyles(entry.css, baseUrl);
-  retrySeq += 1;
-  const target = new URL(entry.js, baseUrl);
-  target.searchParams.set('retry', String(retrySeq));
-  return (await import(/* @vite-ignore */ target.href)) as T;
+}
+
+async function ensureStyles(files: string[], baseUrl: URL): Promise<void> {
+  if (typeof document === 'undefined' || !files.length) return;
+  const tasks: Array<Promise<void>> = [];
+  for (const file of files) {
+    const existing = [...document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')].filter((link) =>
+      linkMatchesCss(link, file),
+    );
+    if (existing.some(hasLoadedStylesheet)) continue;
+    const hadStale = existing.length > 0;
+    for (const stale of existing) stale.remove();
+    const target = new URL(file, baseUrl);
+    if (hadStale) {
+      retrySeq += 1;
+      target.searchParams.set('retry', String(retrySeq));
+    }
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = target.href;
+    tasks.push(
+      new Promise<void>((resolve, reject) => {
+        link.addEventListener('load', () => resolve(), { once: true });
+        link.addEventListener(
+          'error',
+          () => {
+            link.remove();
+            reject(new Error(`样式加载失败：${file}`));
+          },
+          { once: true },
+        );
+      }),
+    );
+    document.head.append(link);
+  }
+  if (tasks.length) await Promise.all(tasks);
+}
+
+/**
+ * 懒加载分包：并发去重并在首次成功后永久复用同一模块实例（无论来自首次加载还是重试）；
+ * 重试时先恢复缺失样式并优先尝试原 URL（处理仅样式失败而 JS 已落定的情况），仅原 URL 失败才换 `?retry=N`。
+ */
+export async function importChunk<T>(key: LazyChunkKey, primary: () => Promise<T>, devPath: string): Promise<T> {
+  if (resolvedChunks.has(key)) return resolvedChunks.get(key) as T;
+  const inflight = inflightChunks.get(key);
+  if (inflight) return inflight as Promise<T>;
+  const task = (async (): Promise<T> => {
+    const baseUrl = typeof location !== 'undefined' ? new URL(import.meta.env.BASE_URL || '/', location.href) : null;
+    const entry = import.meta.env.DEV ? { js: devPath, css: [] } : prodChunkEntry(key);
+    let mod: T;
+    if (!failedChunks.has(key)) {
+      try {
+        mod = await primary();
+        // Vite 8 预加载在仅 CSS 失败时可能吞错并返回 JS 模块；落定前显式核对样式表并在缺失时重拉。
+        if (entry && baseUrl) await ensureStyles(entry.css, baseUrl);
+      } catch (err) {
+        failedChunks.add(key);
+        throw err;
+      }
+    } else if (!entry || !baseUrl) {
+      mod = await primary();
+    } else {
+      await ensureStyles(entry.css, baseUrl);
+      const baseTarget = new URL(entry.js, baseUrl);
+      try {
+        mod = (await import(/* @vite-ignore */ baseTarget.href)) as T;
+      } catch {
+        retrySeq += 1;
+        const retryTarget = new URL(entry.js, baseUrl);
+        retryTarget.searchParams.set('retry', String(retrySeq));
+        mod = (await import(/* @vite-ignore */ retryTarget.href)) as T;
+      }
+    }
+    resolvedChunks.set(key, mod);
+    return mod;
+  })();
+  inflightChunks.set(key, task);
+  try {
+    return await task;
+  } finally {
+    if (inflightChunks.get(key) === task) inflightChunks.delete(key);
+  }
 }
 
 export function clearChunkLoadError(shell: HTMLElement): void {
   for (const node of shell.querySelectorAll('.load-err-scrim, .load-err-dlg')) node.remove();
 }
 
-const CHUNK_ERROR_COPY: Record<'grid' | 'editor', { title: string; message: string; retryAct: string }> = {
+const CHUNK_ERROR_COPY: Record<'grid' | 'editor' | 'export', { title: string; message: string; retryAct: string }> = {
   grid: {
     title: '照片页未能加载',
     message: '网络中断或资源暂时不可用，请重试；若仍打不开，请刷新页面。',
@@ -76,9 +153,14 @@ const CHUNK_ERROR_COPY: Record<'grid' | 'editor', { title: string; message: stri
     message: '网络中断或资源暂时不可用，请重试；若仍打不开，请刷新页面。',
     retryAct: 'retry-editor',
   },
+  export: {
+    title: '导出模块未能加载',
+    message: '网络中断或资源暂时不可用，请重试；若仍打不开，请刷新页面。',
+    retryAct: 'retry-export',
+  },
 };
 
-export function showChunkLoadError(shell: HTMLElement, kind: 'grid' | 'editor', onRetry: () => void): void {
+export function showChunkLoadError(shell: HTMLElement, kind: 'grid' | 'editor' | 'export', onRetry: () => void): void {
   const opts = CHUNK_ERROR_COPY[kind];
   clearChunkLoadError(shell);
   const scrim = document.createElement('div');
@@ -322,7 +404,60 @@ export class LazyModules {
     return this.exporterLoad;
   }
 
+  bindShell(shell: HTMLElement, app: ExportApp, perf: HTMLElement): void {
+    boundShells.set(shell, { lazy: this, app, perf });
+  }
+
   syncDock(shell: HTMLElement): void {
     this.syncDockFn?.(shell);
   }
+}
+
+interface BoundShell {
+  lazy: LazyModules;
+  app: ExportApp;
+  perf: HTMLElement;
+}
+
+const boundShells = new WeakMap<HTMLElement, BoundShell>();
+
+/** 编辑器与菜单共用同一导出模块与同一个 ExportFlow 实例，避免 editor 静态依赖 export_ui 导致单次失败卡死。 */
+export function syncExportDock(shell: HTMLElement): void {
+  boundShells.get(shell)?.lazy.syncDock(shell);
+}
+
+export async function loadExportOptionsOpener(
+  shell: HTMLElement,
+): Promise<(ids: string[], onStart?: () => void) => boolean> {
+  const bound = boundShells.get(shell);
+  if (bound) {
+    const flow = await bound.lazy.ensureExporter(shell, bound.app, bound.perf);
+    return (ids, onStart) => flow.openOptions(ids, onStart);
+  }
+  const mod = await importChunk('export_ui', () => import('./export_ui'), 'src/app/export_ui.ts');
+  return (ids, onStart) => mod.openExportOptions(shell, ids, onStart);
+}
+
+export function openExportOptions(shell: HTMLElement, ids: string[], onStart?: () => void): boolean {
+  const bound = boundShells.get(shell);
+  if (!bound) return false;
+  if (bound.lazy.exporterInst) return bound.lazy.exporterInst.openOptions(ids, onStart);
+  const session = bound.app.session();
+  void bound.lazy
+    .ensureExporter(shell, bound.app, bound.perf)
+    .then((flow) => { if (session === bound.app.session()) flow.openOptions(ids, onStart); })
+    .catch(() => showChunkLoadError(shell, 'export', () => { if (session === bound.app.session()) openExportOptions(shell, ids, onStart); }));
+  return true;
+}
+
+export function startQuickExport(shell: HTMLElement, ids: string[], onStart?: () => void): boolean {
+  const bound = boundShells.get(shell);
+  if (!bound) return false;
+  if (bound.lazy.exporterInst) return bound.lazy.exporterInst.startQuick(ids, onStart);
+  const session = bound.app.session();
+  void bound.lazy
+    .ensureExporter(shell, bound.app, bound.perf)
+    .then((flow) => { if (session === bound.app.session()) flow.startQuick(ids, onStart); })
+    .catch(() => showChunkLoadError(shell, 'export', () => { if (session === bound.app.session()) startQuickExport(shell, ids, onStart); }));
+  return true;
 }

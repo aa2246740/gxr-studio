@@ -157,19 +157,19 @@ export function coreWorkerCount(cores?: number): number {
 }
 
 /**
- * 静默离屏并发上限（F1 上限）：core/pool.ts 的 pickSlot 已对 WASM 任务（bake / resolve）按空闲优先路由，
- * 预留 1 个空闲 Worker 给点击即可，不再受轮询池的固定上限 2 约束。
+ * 静默离屏并发上限：预留 2 个空闲 Worker（4 槽下上限 2、3 槽下上限 1、2 槽下上限 1），
+ * 配合 core/pool.ts 的 WASM 空闲优先路由与点击后离屏暂停窗口，保证连续两次冷切（resolve + bake）均不排在后台烘焙后。
  */
 export function quietIdleBakeCap(workers: number = coreWorkerCount()): number {
-  return Math.max(1, Math.floor(workers) - 1);
+  return Math.max(1, Math.floor(workers) - 2);
 }
 
 /**
  * 配方卡可见优先与点击抢占调度器：
- * - 按实际 Worker 数量计算后台并发上限（N >= 2 时始终至少预留 1 个空闲 Worker 给用户点击）；
+ * - 按实际 Worker 数量计算可见后台并发上限（N >= 2 时始终至少预留 1 个空闲 Worker 给用户点击）；
  * - 跨 cancel() 保持真实的在途 running 计数，只在实际任务结束（resolve/reject）时递减；
  * - 用户主动点击选卡或调旋钮时立即抢占并暂停派发新的后台任务，直到所点配方落到舞台；
- * - 离屏卡片在无用户交互的空闲期按 F1 上限 max(1, workers - 1) 并行烘焙，一旦检测到编辑器任意输入立即回落至并发 1。
+ * - 离屏卡片在无用户交互的静默期按 max(1, workers - 2) 并行烘焙，一旦检测到编辑器任意输入立即暂停离屏派发直至冷却结束。
  */
 export class CardBakeController<T> {
   private readonly workers: number;
@@ -222,7 +222,7 @@ export class CardBakeController<T> {
   noteInput(cooldownMs = 1200): void {
     const until = Date.now() + cooldownMs;
     if (until > this.quietUntil) this.quietUntil = until;
-    if (this.running >= 1) this.clearIdle();
+    this.clearIdle();
     if (this.quietTimer) clearTimeout(this.quietTimer);
     this.quietTimer = setTimeout(() => {
       this.quietTimer = 0;
@@ -403,9 +403,8 @@ export class CardBakeController<T> {
   }
 
   private currentIdleLimit(): number {
-    const limit = this.bgLimit();
-    if (Date.now() < this.quietUntil) return Math.min(1, limit);
-    return Math.min(quietIdleBakeCap(this.workers), limit);
+    if (Date.now() < this.quietUntil) return 0;
+    return Math.min(quietIdleBakeCap(this.workers), this.bgLimit());
   }
 
   private flushTapWaiters(): void {

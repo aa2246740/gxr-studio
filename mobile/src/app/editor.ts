@@ -14,7 +14,7 @@ import { EditorBar, type BandTool, type BarTool } from './editor_bar';
 import { createHistWidget, drawHistCanvas, editedFlagsOf, fitGpuCanvas, observeStageBox, syncEditorBarOrder, type HistWidget, type StageBoxCache } from './editor_hist';
 import { createEditorIpadBridge, type EditorIpadBridge } from './editor_ipad_bridge';
 import { EditorMedia, NO_GPU_DETAIL, NO_GPU_TITLE, type MediaMode } from './editor_media';
-import { openExportOptions, startQuickExport, syncExportDock } from './export_ui';
+import { openExportOptions, startQuickExport, syncExportDock } from './boot_lazy';
 import { releaseFinishDrawResources } from './finish_draw';
 import { photoExportSize } from './frame_state';
 import { FrameView } from './frame_view';

@@ -92,6 +92,7 @@ class App implements AppApi {
     private readonly pageErrors: string[],
   ) {
     watchViewportLayout(shell, () => {}); // data-layout 跟着窗口走，图库和开始页上也一样（不只编辑器里）
+    this.lazy.bindShell(shell, this, perf);
   }
 
   private ensureEngine(): Promise<Engine | null> {
@@ -241,7 +242,9 @@ class App implements AppApi {
     const list = this.ordered().filter((photo) => want.has(photo.id)).map((photo) => photo.id);
     if (this.lazy.exporterInst) { this.lazy.exporterInst.open(list, onStart); return; }
     const session = this.generation;
-    void this.ensureExporter().then((flow) => { if (session === this.generation) flow.open(list, onStart); }).catch((err) => this.reportEngine(err));
+    void this.ensureExporter()
+      .then((flow) => { if (session === this.generation) flow.open(list, onStart); })
+      .catch(() => showChunkLoadError(this.shell, 'export', () => { if (session === this.generation) this.exportPhotos(ids, onStart); }));
   }
 
   takeCalib(file: File): void {

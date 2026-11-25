@@ -287,7 +287,7 @@ function lazyChunkMap(): Plugin {
 }
 
 const BOOT_CHUNK_RE =
-  /(?:^|[\\/])(?:mobile[\\/]src[\\/](?:main\.ts$|app[\\/](?:boot(?:_lazy|_shots)?|dom|export_pause|start|book|lut_book|lut_gpu|calib_ui|looks|model|queue|layout|shell\.css|ipad\.css)|core[\\/](?:api|pool|protocol)|ui[\\/]perf|wasm-pkg[\\/]|lib[\\/](?!lut_table\.ts$|frame_render\.ts$|font_loader\.ts$))|src[\\/]gxr_studio[\\/]assets[\\/]fonts[\\/])/;
+  /(?:^|[\\/])(?:mobile[\\/]src[\\/](?:main\.ts$|app[\\/](?:boot(?:_lazy|_shots)?|dom|export_pause|sheet_lifecycle|start|book|lut_book|lut_gpu|calib_ui|looks|model|queue|layout|shell\.css|ipad\.css)|core[\\/](?:api|pool|protocol)|ui[\\/]perf|wasm-pkg[\\/]|lib[\\/](?!lut_table\.ts$|frame_render\.ts$|font_loader\.ts$))|src[\\/]gxr_studio[\\/]assets[\\/]fonts[\\/])/;
 const ENGINE_CHUNK_RE = /(?:^|[\\/])frontend[\\/]src[\\/]/;
 
 export default defineConfig(({ command }) => ({

@@ -298,3 +298,65 @@ def test_grid_chunk_failure_shows_error_and_recovers_on_retry_or_repick(tmp_path
     assert retry_btn["hasRetryB"] is True, f"retry button missing after grid chunk failure: {retry_btn}"
     assert retry_btn["recoveredRetryBtn"] is True, f"clicking retry button failed to recover grid: {retry_btn}"
     assert retry_btn["gridAttemptsB"] >= 2
+
+
+def test_export_chunk_failure_recovers_and_reuses_single_flow(tmp_path: Path) -> None:
+    """导出分包 JS 或 CSS 首次失败不得卡死编辑器；重试必须换查询串恢复，后续重开复用同一模块与同一 ExportFlow。"""
+    _prereq()
+    photos = _make_synthetic_photo_pair(tmp_path / "export_retry")
+    raw_dng = _make_valid_raw_only_dng(tmp_path / "export_css_raw")
+    report = _run_driver(
+        "export-retry-and-reuse",
+        {"distDir": str(DIST), "jpgFile": photos[1], "rawOnlyDng": raw_dng},
+        tmp_path,
+        timeout=180,
+        driver=DRIVER_R4,
+    )
+
+    js_fail = report["jsFailResult"]
+    assert js_fail["pageErrors"] == [], f"jsFail pageErrors: {js_fail['pageErrors']}"
+    assert js_fail["editorOpened"] is True, f"export_ui JS failure bricked editor without reload: {js_fail}"
+    assert js_fail["optionsOpens"] == 3, f"export options did not open and reopen 3 times after JS failure: {js_fail}"
+    assert any(q.startswith("?retry=") for q in js_fail["jsRequests"]), f"retry did not cache-bust export_ui JS: {js_fail}"
+    assert js_fail["requestsAfterReopens"] == js_fail["requestsAfterFirstOpen"], f"reopening export options re-fetched chunk: {js_fail}"
+    assert len(js_fail["liveExportModules"]) == 1, f"expected single live export_ui module instance: {js_fail}"
+    assert js_fail["liveExportModules"][0]["controlsFlow"] is True, f"single export_ui module does not control ExportFlow: {js_fail}"
+
+    explicit = report["explicitRetryResult"]
+    assert explicit["pageErrors"] == [], f"explicitRetry pageErrors: {explicit['pageErrors']}"
+    assert explicit["alertVisible"] is True and explicit["hasRetryBtn"] is True, f"missing retry UI on export failure: {explicit}"
+    assert explicit["recoveredOpens"] == 3, f"clicking retry and reopening export options failed: {explicit}"
+    assert any(q.startswith("?retry=") for q in explicit["requests"]), f"explicit retry did not use ?retry=N: {explicit}"
+    assert explicit["countAfterReopens"] == explicit["countAfterRetry"], f"reopening after explicit retry made extra requests: {explicit}"
+
+    css_fail = report["cssFailResult"]
+    assert css_fail["pageErrors"] == [], f"cssFail pageErrors: {css_fail['pageErrors']}"
+    assert css_fail["editorOpened"] is True, f"export_ui CSS failure blocked editor: {css_fail}"
+    assert css_fail["optionsOpened"] is True, f"export options failed to open after export CSS failure: {css_fail}"
+    assert css_fail["cssRuleCount"] > 0, f"export_ui stylesheet was not reloaded after CSS failure: {css_fail}"
+    assert len(css_fail["liveExportModules"]) == 1, f"CSS failure split export_ui into multiple live module instances: {css_fail}"
+    assert css_fail["liveExportModules"][0]["controlsFlow"] is True, f"live export_ui module lost ExportFlow after CSS retry: {css_fail}"
+
+
+def test_retried_off_image_and_grid_chunks_reuse_single_module(tmp_path: Path) -> None:
+    """关机图与网格分包在首次失败并重试成功后，多次重开/切屏必须复用同一模块实例，不得反复请求 ?retry=N。"""
+    _prereq()
+    photos = _make_synthetic_photo_pair(tmp_path / "reopen_single")
+    report = _run_driver(
+        "reopen-single-instance",
+        {"distDir": str(DIST), "jpgFile": photos[1]},
+        tmp_path,
+        timeout=180,
+        driver=DRIVER_R4,
+    )
+
+    off = report["offResult"]
+    assert off["pageErrors"] == [], f"offResult pageErrors: {off['pageErrors']}"
+    assert off["reopenCount"] == 3, f"off-image sheet failed to reopen 3 times: {off}"
+    assert len(off["requests"]) == 2 and off["requests"][1].startswith("?retry="), f"reopening off-image re-requested chunk: {off}"
+    assert off["uniqueRetryUrls"] == 1 and off["sameModule"] is True, f"off-image created multiple live module instances: {off}"
+
+    grid = report["gridResult"]
+    assert grid["pageErrors"] == [], f"gridResult pageErrors: {grid['pageErrors']}"
+    assert grid["afterRoundTripsCount"] == grid["beforeRetryCount"] + 1, f"navigating back to grid re-requested grid chunk: {grid}"
+    assert grid["requests"][-1].startswith("?retry="), f"grid retry did not use ?retry=N: {grid}"

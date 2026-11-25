@@ -308,7 +308,7 @@ function exposeEdits(api: AppApi): void {
     if (!photo) return null;
     const { ensureCameraRecipe } = await import('./model');
     await ensureCameraRecipe(photo, api.book());
-    const { requestPhoto, cardsFor } = await import('./export_ui');
+    const { requestPhoto, cardsFor } = await import('./export_request_prep');
     const { buildRequest } = await import('../lib/export_request');
     return buildRequest(requestPhoto(photo, api.lutBook(), api.book()), cardsFor(api.book(), photo), { size: 'original', quality: 'high' }, 'dev');
   };

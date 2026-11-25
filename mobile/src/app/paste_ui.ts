@@ -13,7 +13,7 @@ import { loadExportHdr, saveExportHdr, watchExportHdr } from '../lib/prefs';
 import { adoptedSelectionOf, DEFAULT_CARD, namesOnly, photoWithAdopted, recipeUnitOf, shelf, shelves, tagAmountLevels } from '../lib/recipes';
 import { NOT_SET, NOTHING_COPIED, ONLY_SOURCE, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
 import { curveSummary, groupsPresent } from '../lib/paste';
-import { importChunk } from './boot_lazy';
+import { importChunk, loadExportOptionsOpener } from './boot_lazy';
 import { button, el, icon, ICON } from './dom';
 import { ensureCameraRecipe, needsCameraRecipe, onCameraRecipe, photoMs, type AppApi, type Knobs, type Photo } from './model';
 import { groupsAnd, groupsText, pasteState, rangeOf } from './paste_state';
@@ -612,9 +612,9 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
       detail: '尺寸、品质与 HDR 说明',
       kind: 'lazy',
       run: async () => {
-        const mod = await importChunk('export_ui', () => import('./export_ui'), 'src/app/export_ui.ts');
+        const openOptions = await loadExportOptionsOpener(host);
         return () => {
-          if (!mod.openExportOptions(host, [photo.id])) throw new Error('导出选项暂不可用');
+          if (!openOptions([photo.id])) throw new Error('导出选项暂不可用');
         };
       },
     },
