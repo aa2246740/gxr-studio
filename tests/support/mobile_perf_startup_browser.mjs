@@ -503,15 +503,7 @@ async function runImportBeforePrewarm() {
     const page = await ctx.newPage();
     page.on('pageerror', (e) => pageErrors.push(e.message));
     await page.addInitScript(() => {
-      window.__FIRST_THUMB_TRACE__ = { drawnAt: null, adapterAt: null };
-      // 显卡引擎（第一次 requestAdapter）要等第一批缩略图画好以后才建：软件 GPU 上第一次用显卡要一秒多，不能跟缩略图抢。
-      if (navigator.gpu && typeof navigator.gpu.requestAdapter === 'function') {
-        const orig = navigator.gpu.requestAdapter.bind(navigator.gpu);
-        navigator.gpu.requestAdapter = (...args) => {
-          window.__FIRST_THUMB_TRACE__.adapterAt ??= performance.now();
-          return orig(...args);
-        };
-      }
+      window.__FIRST_THUMB_TRACE__ = { drawnAt: null };
       const check = () => {
         if (window.__FIRST_THUMB_TRACE__.drawnAt !== null) return;
         const c = document.querySelector('.cell canvas[data-drawn]');
@@ -558,9 +550,6 @@ async function runImportBeforePrewarm() {
       .first()
       .waitFor({ state: 'visible', timeout: 10000 })
       .then(() => true, () => false);
-    const adapterAt = await page.evaluate(() => window.__FIRST_THUMB_TRACE__.adapterAt);
-    order.adapterAt = adapterAt;
-    order.adapterBeforeDraw = adapterAt !== null && adapterAt < drawnAt;
     // 打开编辑器和导出选项都不再请求任何分包（导出选项和编辑器在同一个分包里）。
     const lazyRequests = await page.evaluate(() =>
       performance
