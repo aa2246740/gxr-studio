@@ -23,6 +23,7 @@ import {
   paintReadyBar,
   paintRunningSlot,
   stateAnnouncement,
+  syncExportSaveButton,
   type ReadyEntry,
 } from './export_ready';
 import {
@@ -186,12 +187,10 @@ export class ExportFlow {
 
   /** 供编辑器/启动器在切屏、换图或展开/收起单带后重挂导出条。 */
   syncHost(): void {
-    if (!this.dock) {
-      this.clearSlotFlag();
-      return;
-    }
-    this.mountDock();
+    if (this.dock) this.mountDock(); else this.clearSlotFlag();
+    this.syncSave();
   }
+  private syncSave(): void { syncExportSaveButton(this.shell, this.dock, (s) => this.app.photos().some((p) => p.stem === s && this.queue.isQuickBlocked(p.id, this.batch))); }
 
   /** 现在还没撤销的对象 URL 有几个（开发服务器的测试读）。 */
   liveUrls(): number {
@@ -459,6 +458,7 @@ export class ExportFlow {
     this.dock?.remove();
     this.dock = null;
     this.shell.removeAttribute('data-export');
+    this.syncSave();
   }
 
   /** 44pt 顶槽 / 40pt 贴底导出条与「详情」底部工作表重画。 */
@@ -560,6 +560,7 @@ export class ExportFlow {
         onStop: stopNow,
         onToggleDetails: toggleDetails,
       });
+      this.syncSave();
       if (this.detailsOpen) {
         this.detailsSheet.render({
           phase,
@@ -622,6 +623,7 @@ export class ExportFlow {
       onToggleDetails: toggleDetails,
       onDismiss: () => this.dismiss(batch),
     });
+    this.syncSave();
 
     const showSheet = this.detailsOpen || (this.view === 'noshare' && entries.length > 0);
     if (showSheet) {

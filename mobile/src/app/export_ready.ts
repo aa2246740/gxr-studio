@@ -327,6 +327,38 @@ export function mountExportDock(
   return null;
 }
 
+const READY_BLUE_STATES = new Set(['ready', 'stopped-ready', 'partial-fail', 'running-ready']);
+
+/** 就绪条显示蓝色「存进相册」时把底栏「存到相册」降为次级非蓝按钮，避免同屏两个相近蓝按钮。 */
+export function syncExportSaveButton(
+  shell: HTMLElement,
+  dock: HTMLElement | null,
+  isPhotoBlocked: (stem: string) => boolean,
+): void {
+  const btn = shell.querySelector<HTMLButtonElement>('.screen.editor .toolbar [data-act="export"]');
+  if (!btn) return;
+  const readyVisible = Boolean(dock?.isConnected && READY_BLUE_STATES.has(dock.dataset.visualState ?? ''));
+  if (!readyVisible) {
+    btn.classList.add('primary');
+    btn.classList.remove('export-demoted', 'export-done');
+    btn.removeAttribute('aria-disabled');
+    btn.removeAttribute('data-export-state');
+    return;
+  }
+  const stem = shell.querySelector<HTMLElement>('.screen.editor')?.dataset.photo ?? '';
+  const currentBlocked = Boolean(stem && isPhotoBlocked(stem));
+  btn.classList.remove('primary');
+  btn.classList.add('export-demoted');
+  btn.classList.toggle('export-done', currentBlocked);
+  if (currentBlocked) {
+    btn.setAttribute('aria-disabled', 'true');
+    btn.dataset.exportState = 'ready-current';
+  } else {
+    btn.removeAttribute('aria-disabled');
+    btn.dataset.exportState = 'ready-other';
+  }
+}
+
 /** 更新导出内存与耗时观测数据到壳属性及性能条。 */
 export function paintExportMemory(
   shell: HTMLElement,
