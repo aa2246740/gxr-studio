@@ -11,7 +11,10 @@ function wasmAssetUrl(): string {
 interface Pending {
   slot: number;
   worker: Worker;
-  background: boolean;
+  /** 计算请求（EAGER_WASM_OPS）。一个 Worker 同一时间最多拿一个。 */
+  compute: boolean;
+  /** 后台计算请求的 Lane；null 是前台。升过级的 Lane 也算前台，已经在 Worker 上跑的也一样。 */
+  lane: Lane | null;
   resolve: (result: CoreResult) => void;
   reject: (err: Error) => void;
 }
@@ -23,10 +26,16 @@ type PoolRequest = CoreRequest & {
 
 type PoolWorkerMessage = CoreReply | { needWasm: true };
 
-interface Waiting {
-  send: () => void;
-  reject: (err: Error) => void;
+/** 一个请求，计算请求在交给 Worker 之前先在池子的两张单子里等。 */
+interface Job {
+  op: CoreOp;
+  buffer: ArrayBuffer | null;
+  transfer: Transferable[];
+  args: BakeArgs | null;
+  extra: RequestExtra;
   lane: Lane | null;
+  resolve: (result: CoreResult) => void;
+  reject: (err: Error) => void;
 }
 
 function asError(err: unknown): Error {
@@ -95,16 +104,24 @@ async function compileWasmModule(): Promise<WebAssembly.Module> {
   return WebAssembly.compile(await res.arrayBuffer());
 }
 
+/**
+ * 核心 Worker 池。计算请求（EAGER_WASM_OPS：describe、dat、resolve、bake……）的调度全在这里，规则见 docs/mobile.md 的 G1–G5：
+ * - 计算请求先进池子的两张单子（前台、后台，各自先来先走），只有 pump() 把它交给 Worker，而且只交给手上没有计算请求的
+ *   Worker：一个 Worker 上最多一个没回来的计算请求，前台请求交出去时前面什么都没有。
+ * - 前台先走。后台只有在前台单子空、没有前台计算在跑、在跑的后台少于 workers - 1 个时才开始，所以至少一个 Worker
+ *   总是空着给前台。
+ * - 后台请求带一个 Lane（core/protocol.ts）；用户点了同一项工作时升成前台：还在单子里的挪到前台单子末尾。
+ * - 状态都从 pending 现算，没有要对齐的计数。
+ * 其余请求（LUT、标志、校准导入、ping）照旧马上发出、严格轮询（LUT 写入屏障依赖这一点）。
+ */
 export class Pool {
   private readonly cap: number;
   private readonly workers: Array<Worker | null>;
-  private readonly inFlight: number[];
-  /** 每个槽上排着或在跑的后台请求数（配方卡小图的 resolve / bake）。前台请求全忙时不排到这些槽后面。 */
-  private readonly bgInFlight: number[];
-  /** 同时进 Worker 的后台请求上限：workers - 1（只有一个 Worker 时是 1，那时没法保证点击不排队）。 */
+  /** 同时在跑的后台计算请求上限：workers - 1（只有一个 Worker 时是 1，那时点击可能等一个后台请求）。 */
   private readonly bgMax: number;
-  /** 超过上限、还在池子里等的后台请求。 */
-  private readonly bgWaiting: Waiting[] = [];
+  /** 还没交给 Worker 的计算请求，前台、后台各一张单子，先来先走。 */
+  private readonly fgWaiting: Job[] = [];
+  private readonly bgWaiting: Job[] = [];
   private next = 0;
   private seq = 1;
   private stopped = false;
@@ -117,60 +134,143 @@ export class Pool {
   constructor() {
     this.cap = workerCount();
     this.workers = Array.from({ length: this.cap }, () => null);
-    this.inFlight = Array.from({ length: this.cap }, () => 0);
-    this.bgInFlight = Array.from({ length: this.cap }, () => 0);
     this.bgMax = Math.max(1, this.cap - 1);
   }
 
   /**
    * 把 `buffer` 交给一个 Worker。`transfer` 里的东西发给对方之后这边就不能再用。
-   * `background` 标出后台请求（配方卡小图）：`true`，或者一个 Lane（core/lane.ts，用户点了同一张卡时可以升成前台）。
-   * 整个池子同时最多 workers - 1 个后台请求在 Worker 里（不管是哪个编辑器、哪张照片发的，换了照片以后旧的照样占着，
-   * 直到回来）；多出来的在池子里排队，升成前台的马上发出。所以总有一个槽没有后台请求，用户点击发起的前台请求
-   * 在所有槽都忙时只排到这种槽后面，永远不会排在配方卡小图后面。
+   * `background`：后台计算请求（配方卡小图）。`true`，或者一个只给这一个请求用的 Lane（以后可以升成前台）。
    */
   request(op: CoreOp, buffer: ArrayBuffer | null, transfer: Transferable[], args: BakeArgs | null = null, extra: RequestExtra = {}, background: boolean | Lane = false): Promise<CoreResult> {
     if (this.stopped) return Promise.reject(new Error('Worker 已停止'));
     const lane = typeof background === 'object' ? background : background ? new Lane() : null;
+    lane?.claim();
     return new Promise((resolve, reject) => {
-      const send = () => this.dispatch(op, buffer, transfer, args, extra, lane?.background ?? false, resolve, reject);
-      if (!lane?.background || this.bgTotal() < this.bgMax) {
-        send();
+      const job: Job = { op, buffer, transfer, args, extra, lane, resolve, reject };
+      if (!EAGER_WASM_OPS.has(op)) {
+        const slot = this.next % this.cap;
+        this.next += 1;
+        this.start(job, slot, false);
         return;
       }
-      const waiting: Waiting = { send, reject, lane };
-      this.bgWaiting.push(waiting);
-      lane.onPromote(() => {
-        const at = this.bgWaiting.indexOf(waiting);
-        if (at < 0) return;
-        this.bgWaiting.splice(at, 1);
-        if (!this.stopped) send();
-      });
+      if (lane?.background) {
+        this.bgWaiting.push(job);
+        lane.onPromote(() => {
+          const at = this.bgWaiting.indexOf(job);
+          if (at < 0) return;
+          this.bgWaiting.splice(at, 1);
+          this.fgWaiting.push(job);
+          this.pump();
+        });
+      } else this.fgWaiting.push(job);
+      this.pump();
     });
   }
 
-  /** 发给一个 Worker。新建 Worker 或 postMessage 同步抛错（比如可转移对象已经交出去了）时，只结算这一个请求并放回槽。 */
-  private dispatch(
-    op: CoreOp,
-    buffer: ArrayBuffer | null,
-    transfer: Transferable[],
-    args: BakeArgs | null,
-    extra: RequestExtra,
-    background: boolean,
-    resolve: (result: CoreResult) => void,
-    reject: (err: Error) => void,
-  ): void {
+  stop(): void {
+    this.stopped = true;
+    for (const job of [...this.fgWaiting.splice(0), ...this.bgWaiting.splice(0)]) {
+      job.lane?.onPromote(null);
+      job.reject(new Error('Worker 已停止'));
+    }
+    for (const [id, pending] of this.pending) {
+      this.pending.delete(id);
+      pending.reject(new Error('Worker 已停止'));
+    }
+    for (let i = 0; i < this.workers.length; i += 1) {
+      this.workers[i]?.terminate();
+      this.workers[i] = null;
+    }
+    this.wasmPromise = null;
+    this.wasmResolved = null;
+  }
+
+  /** 唯一把计算请求交给 Worker 的地方。新请求、升级、回包、请求失败、Worker 坏掉之后都调一次。 */
+  private pump(): void {
+    while (!this.stopped) {
+      const fg = this.fgWaiting.length > 0;
+      if (!fg && !this.mayStartBackground()) return;
+      const slot = this.freeSlot();
+      if (slot < 0) return;
+      const job = (fg ? this.fgWaiting : this.bgWaiting).shift() as Job;
+      job.lane?.onPromote(null);
+      this.start(job, slot, true);
+    }
+  }
+
+  /** 后台可以开始：前台单子空（调用方查过）、没有前台计算在跑、在跑的后台少于 workers - 1 个。 */
+  private mayStartBackground(): boolean {
+    if (!this.bgWaiting.length) return false;
+    let running = 0;
+    for (const pending of this.live()) {
+      if (!pending.compute) continue;
+      if (!pending.lane?.background) return false;
+      running += 1;
+    }
+    return running < this.bgMax;
+  }
+
+  /** 还在活着的 Worker 上的请求（坏掉换掉的 Worker 上的不算）。 */
+  private *live(): Generator<Pending> {
+    for (const pending of this.pending.values()) if (this.workers[pending.slot] === pending.worker) yield pending;
+  }
+
+  private load(slot: number): { all: number; compute: number } {
+    let all = 0;
+    let compute = 0;
+    for (const pending of this.live()) {
+      if (pending.slot !== slot) continue;
+      all += 1;
+      if (pending.compute) compute += 1;
+    }
+    return { all, compute };
+  }
+
+  /**
+   * 手上没有计算请求的 Worker；都有就是 -1，请求留在单子里。顺序和以前一样：装好 WASM 的空闲 Worker、别的空闲 Worker、
+   * 还没建的 Worker，最后是手上只有非计算请求的 Worker（挑在途最少的）。
+   */
+  private freeSlot(): number {
+    for (let i = 0; i < this.cap; i += 1) {
+      const w = this.workers[i];
+      if (w && this.load(i).all === 0 && this.wasmSent.has(w)) return i;
+    }
+    for (let i = 0; i < this.cap; i += 1) {
+      const idx = (this.next + i) % this.cap;
+      if (this.workers[idx] && this.load(idx).all === 0) {
+        this.next = idx + 1;
+        return idx;
+      }
+    }
+    for (let i = 0; i < this.cap; i += 1) {
+      const idx = (this.next + i) % this.cap;
+      if (!this.workers[idx]) {
+        this.next = idx + 1;
+        return idx;
+      }
+    }
+    let best = -1;
+    let bestLoad = Infinity;
+    for (let i = 0; i < this.cap; i += 1) {
+      const idx = (this.next + i) % this.cap;
+      const load = this.load(idx);
+      if (load.compute > 0 || load.all >= bestLoad) continue;
+      best = idx;
+      bestLoad = load.all;
+    }
+    if (best >= 0) this.next = best + 1;
+    return best;
+  }
+
+  /** 把一个请求交给 `slot` 上的 Worker。新建 Worker 或 postMessage 同步抛错（比如可转移对象已经交出去了）时只结算这一个。 */
+  private start(job: Job, slot: number, compute: boolean): void {
+    const { op, buffer, transfer, args, extra, lane, resolve, reject } = job;
     const id = this.seq++;
     try {
-      const eager = EAGER_WASM_OPS.has(op);
-      const maybe = MAYBE_WASM_OPS.has(op);
-      const slot = this.pickSlot(eager, background);
       const worker = this.workerAt(slot);
-      this.inFlight[slot] += 1;
-      if (background) this.bgInFlight[slot] += 1;
-      this.pending.set(id, { slot, worker, background, resolve, reject });
+      this.pending.set(id, { slot, worker, compute, lane: compute ? lane : null, resolve, reject });
       const base: PoolRequest = { id, op, buffer, args, ...extra, wasmManaged: true };
-      if (eager && this.canPostModule && !this.wasmSent.has(worker)) {
+      if (compute && this.canPostModule && !this.wasmSent.has(worker)) {
         if (this.wasmResolved) {
           this.postWithModule(worker, base, transfer, this.wasmResolved);
           return;
@@ -188,93 +288,24 @@ export class Pool {
         );
         return;
       }
-      if (maybe && this.wasmResolved && this.canPostModule && !this.wasmSent.has(worker)) {
+      if (MAYBE_WASM_OPS.has(op) && this.wasmResolved && this.canPostModule && !this.wasmSent.has(worker)) {
         this.postWithModule(worker, base, transfer, this.wasmResolved);
         return;
       }
       worker.postMessage(base, transfer);
     } catch (err) {
-      if (this.pending.has(id)) this.failRequest(id, err);
+      if (this.pending.has(id)) this.failRequest(id, err, true);
       else reject(asError(err));
     }
   }
 
-  /** 这一个请求失败：结算它、放回它占的槽，再让排队的后台请求补进来。 */
-  private failRequest(id: number, err: unknown): void {
+  /** 这一个请求失败：结算它，再让单子里的请求补上。`inPump`：从 pump() 里来的，循环会接着走，不要再进去。 */
+  private failRequest(id: number, err: unknown, inPump = false): void {
     const pending = this.pending.get(id);
     if (!pending) return;
     this.pending.delete(id);
-    this.release(pending);
     pending.reject(asError(err));
-    this.drainBackground();
-  }
-
-  private bgTotal(): number {
-    return this.bgInFlight.reduce((sum, n) => sum + n, 0);
-  }
-
-  /** 一个后台请求回来了（或那个槽坏了）：池子里排着的后台请求按先后补进去，总数仍不超过 workers - 1。发不出去的各自失败。 */
-  private drainBackground(): void {
-    while (!this.stopped && this.bgWaiting.length && this.bgTotal() < this.bgMax) {
-      const next = this.bgWaiting.shift();
-      next?.lane?.onPromote(null);
-      next?.send();
-    }
-  }
-
-  stop(): void {
-    this.stopped = true;
-    for (const waiting of this.bgWaiting.splice(0)) {
-      waiting.lane?.onPromote(null);
-      waiting.reject(new Error('Worker 已停止'));
-    }
-    this.failAll('Worker 已停止');
-    for (let i = 0; i < this.workers.length; i += 1) {
-      this.workers[i]?.terminate();
-      this.workers[i] = null;
-    }
-    this.wasmPromise = null;
-    this.wasmResolved = null;
-  }
-
-  /**
-   * 必然用 WASM 的请求优先复用已装好 WASM 且空闲的 Worker，其次选任意空闲槽（含未启动冷槽），全忙时选在途最少槽；
-   * 全忙时前台请求只在没有后台请求的槽里挑（后台并发最多 workers - 1，总有这样的槽），不会排到配方卡小图后面。
-   * 其余请求保持轮询（LUT 写入屏障依赖这一点）。
-   */
-  private pickSlot(eagerWasm: boolean, background: boolean): number {
-    if (eagerWasm) {
-      for (let i = 0; i < this.cap; i += 1) {
-        const w = this.workers[i];
-        if (w && this.inFlight[i] === 0 && this.wasmSent.has(w)) return i;
-      }
-      for (let i = 0; i < this.cap; i += 1) {
-        const idx = (this.next + i) % this.cap;
-        if (this.workers[idx] && this.inFlight[idx] === 0) {
-          this.next = idx + 1;
-          return idx;
-        }
-      }
-      for (let i = 0; i < this.cap; i += 1) {
-        const idx = (this.next + i) % this.cap;
-        if (!this.workers[idx]) {
-          this.next = idx + 1;
-          return idx;
-        }
-      }
-      const clear = !background && this.bgInFlight.some((n) => n === 0);
-      let best = -1;
-      for (let i = 0; i < this.cap; i += 1) {
-        const idx = (this.next + i) % this.cap;
-        if (clear && this.bgInFlight[idx] > 0) continue;
-        if (best < 0 || this.inFlight[idx] < this.inFlight[best]) best = idx;
-      }
-      this.next = best + 1;
-      return best;
-    }
-    const slot = this.next % this.cap;
-    this.next += 1;
-    return slot;
+    if (!inPump) this.pump();
   }
 
   private workerAt(slot: number): Worker {
@@ -351,30 +382,19 @@ export class Pool {
     this.finish(data as CoreReply);
   }
 
+  /** 回包先落地，再让单子里的请求补上。 */
   private finish(reply: CoreReply): void {
     const pending = this.pending.get(reply.id);
     if (!pending) return;
     this.pending.delete(reply.id);
-    this.release(pending);
     if (reply.ok) pending.resolve({ json: reply.json, buffers: reply.buffers });
     else pending.reject(reply.code ? new CoreError(reply.code, reply.message) : new Error(reply.message));
-    this.drainBackground();
+    this.pump();
   }
 
-  /** 放回这个请求占的槽。不在这里补队列：调用方先结算这个请求，再补（回包先落地）。 */
-  private release(pending: Pending): void {
-    if (this.workers[pending.slot] !== pending.worker) return;
-    this.inFlight[pending.slot] = Math.max(0, this.inFlight[pending.slot] - 1);
-    if (pending.background) this.bgInFlight[pending.slot] = Math.max(0, this.bgInFlight[pending.slot] - 1);
-  }
-
-  /** 单个 Worker 槽位发生永久错误时只拒绝该槽位的在途任务并销毁坏实例，下次请求自动新建。 */
+  /** 一个 Worker 坏了：只拒绝它手上的请求（最多一个计算请求），丢掉它，下次要用时新建。单子里的请求不受影响。 */
   private failSlot(slot: number, worker: Worker, message: string): void {
-    if (this.workers[slot] === worker) {
-      this.workers[slot] = null;
-      this.inFlight[slot] = 0;
-      this.bgInFlight[slot] = 0;
-    }
+    if (this.workers[slot] === worker) this.workers[slot] = null;
     this.wasmSent.delete(worker);
     try {
       worker.terminate();
@@ -386,15 +406,6 @@ export class Pool {
       this.pending.delete(id);
       pending.reject(new Error(message));
     }
-    this.drainBackground();
-  }
-
-  private failAll(message: string): void {
-    this.inFlight.fill(0);
-    this.bgInFlight.fill(0);
-    for (const [id, pending] of this.pending) {
-      pending.reject(new Error(message));
-      this.pending.delete(id);
-    }
+    this.pump();
   }
 }

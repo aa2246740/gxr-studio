@@ -1,7 +1,8 @@
 // N5 同一张卡的换图回归：真实 Book、Pool 和 CardBakeController。照片 A 的后台烘焙占满 workers - 1 个槽，
 // 换到 B，B 的配方卡先按后台在池子里排队（Book 缓存了这些 resolve 的 Promise），再点这几张卡。
-// 点击命中还在排队的后台项时要升成前台：resolve 马上进保留槽，随后的 bake 也按前台发，不等 A 的烘焙回来。
-// 1、2、3 次点击（重叠或依次），2、3、4 个 Worker。GXR_TEST_CHECKOUT 换成旧版本的检出目录做负对照。
+// 点击命中还在排队的后台项时要升成前台（只升这一项的 Lane）：resolve 进那个不带后台的 Worker，随后的 bake 也按前台发，
+// 不等 A 的烘焙回来。每一步之后断言 G1–G4（docs/mobile.md）：重叠点击多出来的在池子里等，等的时候每个 Worker 都有活、
+// 至少一个是前台。1、2、3 次点击（重叠或依次），2、3、4 个 Worker。GXR_TEST_CHECKOUT 换成旧版本的检出目录做负对照。
 
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
@@ -47,6 +48,9 @@ async function scenario(size, taps, overlap) {
   globalThis.fetch = async () => new Response(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0), { headers: { 'content-type': 'application/wasm' } });
   const workers = [];
   const log = [];
+  const asked = new Set(); // 交给池子、还没到 Worker 上的
+  const tapped = new Set(); // 点过的卡的 resolve-/bake- tag：前台
+  const g4 = [];
   globalThis.Worker = class ControlledWorker {
     constructor() {
       this.slot = workers.length;
@@ -56,6 +60,9 @@ async function scenario(size, taps, overlap) {
     postMessage(msg) {
       if (!msg?.op) return;
       log.push({ slot: this.slot, tag: msg.frameMeta, ahead: this.queue.map((m) => m.frameMeta) });
+      asked.delete(msg.frameMeta);
+      const fg = [...asked, ...workers.flatMap((w) => w.queue.map((m) => m.frameMeta))].filter((t) => tapped.has(t));
+      if (!tapped.has(msg.frameMeta) && fg.length) g4.push(`${msg.frameMeta} posted while foreground ${fg} waited or ran`);
       this.queue.push(msg);
     }
     terminate() {}
@@ -77,10 +84,12 @@ async function scenario(size, taps, overlap) {
     calibCheck: async ({ iso }) => ({ model_iso: iso, ctx: 'ctx', ring: 'ring' }),
     resolve: async (_dat, selection, _library, background) => {
       const slot = JSON.parse(selection).slot;
+      asked.add(`resolve-${slot}`);
       const { json } = await pool.request('resolve', null, [], null, { frameMeta: `resolve-${slot}` }, background);
       return { entrySha256: json, entry: new Uint8Array([slot]) };
     },
     bake: async (args, background) => {
+      asked.add(`bake-${new Uint8Array(args.entry)[0]}`);
       await pool.request('bake', null, [], null, { frameMeta: `bake-${new Uint8Array(args.entry)[0]}` }, background);
       return { meta: { nx: 1, ny: 1, origin: [0, 0], step: 0.375 }, data: new ArrayBuffer(16), fullMeta: {} };
     },
@@ -89,8 +98,22 @@ async function scenario(size, taps, overlap) {
   const assertClear = (tag) => {
     const row = log.findLast((r) => r.tag === tag);
     assert.ok(row, `${label}: ${tag} never reached a worker while A's bakes were in flight (${JSON.stringify(log.map((r) => r.tag))})`);
-    const behind = row.ahead.filter(isBg);
-    assert.deepEqual(behind, [], `${label}: ${tag} queued behind A's background bake ${JSON.stringify(behind)} on slot ${row.slot}`);
+    assert.deepEqual(row.ahead, [], `${label}: ${tag} queued behind ${JSON.stringify(row.ahead)} on slot ${row.slot}`);
+  };
+  const queues = () => JSON.stringify(workers.map((w) => w.queue.map((m) => m.frameMeta)));
+  /** G1–G4，每一步之后看。 */
+  const assertSched = (when) => {
+    for (const w of workers) assert.ok(w.queue.length <= 1, `${label} ${when}: G1 slot ${w.slot} holds ${queues()}`);
+    const waiting = [...asked].filter((t) => tapped.has(t));
+    if (waiting.length) {
+      assert.ok(workers.length === size && workers.every((w) => w.queue.length), `${label} ${when}: G2 ${waiting} waits with a free worker ${queues()}`);
+      assert.ok(workers.some((w) => w.queue.some((m) => tapped.has(m.frameMeta))), `${label} ${when}: G2 ${waiting} waits while every worker runs background ${queues()}`);
+    }
+    assert.ok(workers.length < size || workers.some((w) => w.queue.every((m) => tapped.has(m.frameMeta))), `${label} ${when}: G3 every worker holds background ${queues()}`);
+    assert.deepEqual(g4, [], `${label} ${when}: G4`);
+  };
+  const settle = async () => {
+    for (let i = 0; i < 50; i += 1) await tick();
   };
   try {
     await book.restore();
@@ -115,10 +138,15 @@ async function scenario(size, taps, overlap) {
     for (let i = 0; i < taps; i += 1) {
       const card = cards[i];
       b.beginStage(`tap-${card.id}`, card.id, true);
+      tapped.add(`resolve-${card.slot}`).add(`bake-${card.slot}`);
       done.push(book.bake(card, 'jlaunch', 200).then(() => b.endStage(`tap-${card.id}`, card.id)));
+      if (overlap) {
+        await settle();
+        assertSched(`after tap ${card.id}`);
+        continue;
+      }
       await until(() => log.some((r) => r.tag === `resolve-${card.slot}`), `${card.id}'s resolve`);
       assertClear(`resolve-${card.slot}`);
-      if (overlap) continue;
       reply(`resolve-${card.slot}`, `sha-${card.id}`);
       await until(() => log.some((r) => r.tag === `bake-${card.slot}`), `${card.id}'s bake`);
       assertClear(`bake-${card.slot}`);
@@ -126,12 +154,18 @@ async function scenario(size, taps, overlap) {
       await done.at(-1);
     }
     if (overlap) {
-      for (const card of cards) {
-        reply(`resolve-${card.slot}`, `sha-${card.id}`);
-        await until(() => log.some((r) => r.tag === `bake-${card.slot}`), `${card.id}'s bake`);
-        assertClear(`bake-${card.slot}`);
+      // 多出来的点击在池子里等（G2 允许）。每次回最早上 Worker 的前台请求，直到都落地；上 Worker 时前面都是空的（G1）。
+      let landed = 0;
+      for (const p of done) void p.then(() => { landed += 1; });
+      for (let guard = 0; landed < taps; guard += 1) {
+        assert.ok(guard < 4 * taps, `${label}: taps never landed ${queues()}`);
+        const head = log.find((r) => tapped.has(r.tag) && workers.some((w) => w.queue[0]?.frameMeta === r.tag))?.tag;
+        assert.ok(head, `${label}: ${taps - landed} tap(s) pending but no foreground job on any worker ${queues()}`);
+        assertClear(head);
+        reply(head, head.startsWith('resolve-') ? `sha-B${Number(head.slice(8)) - 10}` : '{}');
+        await settle();
+        assertSched(`after reply ${head}`);
       }
-      for (const card of cards) reply(`bake-${card.slot}`);
       await Promise.all(done);
     }
     // A 的烘焙一直没回来：点击全程没等它们。
@@ -149,7 +183,7 @@ async function scenario(size, taps, overlap) {
 }
 
 for (const overlap of [true, false]) {
-  test(`N5 same card after a photo switch: tapping B's queued background cards (real Book, Pool, CardBakeController) promotes resolve and bake, 1, 2 and 3 ${overlap ? 'overlapping' : 'back-to-back'} taps on 2, 3 and 4 workers`, async () => {
+  test(`N5 → G1–G4 same card after a photo switch: tapping B's queued background cards (real Book, Pool, CardBakeController) promotes that entry's resolve and bake, 1, 2 and 3 ${overlap ? 'overlapping' : 'back-to-back'} taps on 2, 3 and 4 workers`, async () => {
     for (const size of [2, 3, 4]) for (const taps of [1, 2, 3]) await scenario(size, taps, overlap);
   });
 }

@@ -24,7 +24,7 @@ async function until(condition, what) {
   assert.ok(condition(), `timed out waiting for ${what}`);
 }
 
-/** 3 个 Worker（hardwareConcurrency 4 → 3），后台上限 2；postMessage 走真实 structuredClone，所以交出去的 ArrayBuffer 会抛 DataCloneError。 */
+/** 2 个 Worker（hardwareConcurrency 3 → 2），后台最多占 1 个；postMessage 走真实 structuredClone，所以交出去的 ArrayBuffer 会抛 DataCloneError。 */
 function harness() {
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { hardwareConcurrency: 3 } });
   globalThis.fetch = async () => new Response(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0), { headers: { 'content-type': 'application/wasm' } });
@@ -72,8 +72,9 @@ function harness() {
   return { pool, workers, sent, results, post, failNextConstruction: () => { failConstruction = true; } };
 }
 
-test('pool recovery: a failed slot is replaced in FIFO order and stop() rejects in-flight and queued requests', async () => {
+test('pool recovery: a failed slot is replaced in FIFO order, background waits for the running tap (G4), and stop() rejects in-flight and queued requests', async () => {
   const { pool, workers, sent, results, post } = harness();
+  const holder = (tag) => workers.find((w) => !w.terminated && w.messages.some((m) => m.frameMeta === tag));
   post('A');
   post('B');
   post('C');
@@ -82,13 +83,16 @@ test('pool recovery: a failed slot is replaced in FIFO order and stop() rejects 
   await until(() => sent.length === 2, 'tap');
   assert.deepEqual(sent, ['A', 'tap']);
   workers[0].die();
+  await settle();
+  assert.equal(workers[0].terminated, true);
+  assert.equal(results.A, 'rejected: injected worker failure');
+  assert.deepEqual(sent, ['A', 'tap'], 'G4: no background job starts while the tap runs');
+  holder('tap').finish();
   await until(() => sent.length === 3, 'B');
   assert.equal(sent[2], 'B');
-  assert.equal(workers[0].terminated, true);
-  workers[2].finish();
+  holder('B').finish();
   await until(() => sent.length === 4, 'C');
   assert.equal(sent[3], 'C');
-  workers[1].finish();
   post('D');
   pool.stop();
   await settle();

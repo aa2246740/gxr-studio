@@ -157,19 +157,20 @@ export function coreWorkerCount(cores?: number): number {
 }
 
 /**
- * 静默期离屏小图的并发上限：workers - 2（最少 0），总留两个空闲 Worker，连着两次重叠的冷切都能直接落到空槽。
- * 更多次重叠的点击由 core/pool.ts 保证：全忙时前台请求只排到没有后台请求的槽后面。
+ * 静默期离屏小图的并发上限：workers - 2（最少 0）。这只是吞吐量的取舍（机主定的：跟手优先），不是点击的保证：
+ * 点击不排在后台后面由 core/pool.ts 保证（G1–G5，见 docs/mobile.md），和这里的数字无关。
  */
 export function quietIdleBakeCap(workers: number = coreWorkerCount()): number {
   return Math.max(0, Math.floor(workers) - 2);
 }
 
 /**
- * 配方卡可见优先与点击抢占调度器：
- * - 按实际 Worker 数量计算后台并发上限（N >= 2 时始终至少预留 1 个空闲 Worker 给用户点击）；
+ * 配方卡小图的后台请求：先可见的、后离屏的，一次要几张。它只决定小图的吞吐量；Worker 怎么分配、点击会不会等后台，
+ * 全由 core/pool.ts 决定（这里不给点击预留 Worker）。
+ * - 可见卡同时最多 workers - 1 张（舞台在烘焙时再少一张）；
  * - 跨 cancel() 保持真实的在途 running 计数，只在实际任务结束（resolve/reject）时递减；
- * - 用户主动点击选卡或调旋钮时立即抢占并暂停派发新的后台任务，直到所点配方落到舞台；
- * - 离屏卡片在无用户交互的空闲期按 min(workers - 2, bgLimit) 并行烘焙；编辑器任意输入后到冷却结束，不再派发新的离屏烘焙。
+ * - 用户点卡或调旋钮后暂停要新的小图，直到所点配方落到舞台；
+ * - 离屏卡片在无用户交互的空闲期按 min(workers - 2, 可见上限) 并行；编辑器任意输入后到冷却结束，不再要新的离屏小图。
  */
 export class CardBakeController<T> {
   private readonly workers: number;

@@ -195,11 +195,12 @@ export interface CoreResult {
   buffers: ArrayBuffer[];
 }
 
-// 一个请求的优先级。配方卡小图的 resolve / bake 先按后台发出（core/pool.ts 给后台留着上限）。
-// 用户点了同一张卡、等的正是这个请求（Book 的缓存命中）时调 promote()：还在池子里排队的马上按前台发出；
-// 已经在 Worker 里跑的不动。同一张卡的 resolve 和随后的 bake 用同一个 Lane，升级一次两步都按前台走。
+// 一个后台计算请求的优先级，一个 Lane 只给一个请求用（池子第二次收到同一个 Lane 就抛错）。
+// Book 给每个缓存项（一次 resolve、一次 bake）各配一个。用户点了卡、等的正是这一项时调 promote()：还在池子单子里的
+// 挪到前台单子末尾；已经在 Worker 上跑的就算前台（core/pool.ts 据此不再开始新的后台请求）。升级是单向的。
 export class Lane {
   private up = false;
+  private used = false;
   private hook: (() => void) | null = null;
 
   /** 还是后台请求（没人点过）。 */
@@ -215,7 +216,13 @@ export class Lane {
     hook?.();
   }
 
-  /** 池子用：请求在池子里排队时登记，升级时叫；发出去以后清掉。 */
+  /** 池子用：收下这个 Lane 的唯一一个请求。 */
+  claim(): void {
+    if (this.used || this.hook) throw new Error('一个 Lane 只能用于一个请求');
+    this.used = true;
+  }
+
+  /** 池子用：请求在单子里等着时登记，升级时叫；交给 Worker 时清掉。 */
   onPromote(hook: (() => void) | null): void {
     this.hook = hook;
   }

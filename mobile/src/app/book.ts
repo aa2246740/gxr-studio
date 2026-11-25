@@ -517,22 +517,24 @@ export class Book {
   /** （模型、选择）→ 烘焙表的键；resolve 过一次以后才知道（条目 sha256 要 resolve 才有）。 */
   private readonly keyOfSel = new Map<string, string>();
 
-  /** 后台请求的 Lane（resolve 和 bake 的缓存 Promise → 发它的那个 Lane）。点击命中还在等的后台项时把它升成前台。 */
+  /** 每个后台缓存项（一次 resolve、一次 bake）自己的 Lane。前台调用命中还没落定的项时只升这一项（core/pool.ts）。 */
   private readonly laneOf = new WeakMap<Promise<unknown>, Lane>();
 
-  private resolveSel(sel: Record<string, unknown>, lane: Lane | null = null): Promise<Resolved> {
+  private resolveSel(sel: Record<string, unknown>, background = false): Promise<Resolved> {
     const dat = this.dat;
     if (!dat) return Promise.reject(new Error('找不到这个配方。请重新选择。'));
     const id = `${this.generation}|${selectionKey(sel)}`;
     let job = this.resolved.get(id);
     if (!job) {
+      // 这一项自己的 Lane（只给这一个 resolve 用）：后台发起的项，前台调用命中时只升这一项。
+      const lane = background ? new Lane() : null;
       job = this.io.resolve(dat.read.bytes.slice(0), JSON.stringify(sel), dat.library ? dat.library.slice(0) : null, lane ?? false);
       if (lane) this.laneOf.set(job, lane);
       this.resolved.set(id, job);
       job.catch(() => {
         if (this.resolved.get(id) === job) this.resolved.delete(id);
       });
-    } else if (!lane) this.laneOf.get(job)?.promote();
+    } else if (!background) this.laneOf.get(job)?.promote();
     return job;
   }
 
@@ -553,9 +555,7 @@ export class Book {
     const generation = this.generation;
     const model = modelIso(iso);
     const sel = selection(card, unit, levels);
-    // 后台烘焙一张卡：resolve 和 bake 共用一个 Lane。用户点了这张卡、命中还在等的后台项时就升成前台（两步都算）。
-    const lane = background ? new Lane() : null;
-    const got = await this.resolveSel(sel, lane);
+    const got = await this.resolveSel(sel, background);
     if (generation !== this.generation) throw new Error('相机配方文件或校准数据换了');
     const key = `bake:${generation}:${unit}:${model}:${got.entrySha256}`;
     this.keyOfSel.set(`${generation}|${model}|${selectionKey(sel)}`, key);
@@ -566,6 +566,8 @@ export class Book {
       if (!stock || !files) throw new Error(TEXT.filesMissing);
       // 导出跑着时新的烘焙先等它停（UI-M3）；等完再核对一次相机配方文件和校准有没有换。
       const entry = got.entry;
+      // 这张表自己的 Lane，按表的键（模型、条目），不按先来要的那张卡。导出暂停期间点了卡，也先记成前台。
+      const lane = background ? new Lane() : null;
       job = whenExportIdle().then(() => {
         if (generation !== this.generation) throw new Error('相机配方文件或校准数据换了');
         return this.io.bake({ entry: copy(entry), stock: copy(stock), menu: '', ctx: copy(files.ctx), ring: copy(files.ring), params: '{"step":0.375}' }, lane ?? false);
@@ -580,7 +582,7 @@ export class Book {
           if (this.bakes.get(key) === job) this.bakes.delete(key);
         },
       );
-    } else if (!lane) this.laneOf.get(job)?.promote();
+    } else if (!background) this.laneOf.get(job)?.promote();
     await job;
     return key;
   }
