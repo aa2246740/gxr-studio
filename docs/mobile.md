@@ -543,7 +543,7 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 
 ### 点卡和配方卡小图怎么分 Worker（`core/pool.ts`，perf-startup 第 8 轮）
 
-计算请求（`EAGER_WASM_OPS`：resolve、bake 等）先进池子里的两张先来先走的单子，前台一张、后台一张。只有 `pump()` 把计算请求交给 Worker，新请求、升级、回包、请求失败、Worker 坏掉和建 Worker 失败之后各调一次。状态全从在途请求（`pending`）算，不另外记数。配方卡小图的请求是后台的。Book 给每个缓存项（一次 resolve、一次 bake）配一个自己的 `Lane`，一个 Lane 只给一个请求用（池子收到用过的 Lane 就抛错）。前台调用命中还没落定的项时只升这一项：还在单子里的挪到前台单子末尾，已经在 Worker 上的从此算前台。后台调用不改优先级。`CardBakeController`（`app/looks.ts`）只管吞吐量：可见卡同时最多 workers − 1 张，静默期离屏最多 workers − 2 张（最少 0，加上输入后的冷却），不给点击留 Worker。保证都在池子里：
+计算请求（`EAGER_WASM_OPS`：resolve、bake 等）先进池子里的两张先来先走的单子，前台一张、后台一张。只有 `pump()` 把计算请求交给 Worker，新请求、升级、回包、请求失败、Worker 坏掉和建 Worker 失败之后各调一次。状态全从在途请求（`pending`）算，不另外记数。共享的 WASM 模块还没编好（第一次用）时，计算请求都留在单子里、不先占 Worker；编好以后 `pump()` 按那一刻的单子重新挑，前台先。编译失败时单子里的计算请求都以这个错误结束，下一个请求重新下载。配方卡小图的请求是后台的。Book 给每个缓存项（一次 resolve、一次 bake）配一个自己的 `Lane`，一个 Lane 只给一个请求用（池子收到用过的 Lane 就抛错）。前台调用命中还没落定的项时只升这一项：还在单子里的挪到前台单子末尾，已经在 Worker 上的从此算前台。后台调用不改优先级。`CardBakeController`（`app/looks.ts`）只管吞吐量：可见卡同时最多 workers − 1 张，静默期离屏最多 workers − 2 张（最少 0，加上输入后的冷却），不给点击留 Worker。保证都在池子里：
 
 - **G1，前面没有别的**：一个 Worker 手上的计算请求最多一个。点击的请求到了 Worker 上，前面就没有计算请求。
 - **G2，点击在等**：点击的请求还在单子里时，每个 Worker 都有计算请求，而且至少一个是前台的。
@@ -555,11 +555,12 @@ export-source 的显示域 LUT 和桌面在这台 Mac 上有差：numpy 的矩�
 
 - 只有 1 个 Worker 时，点击可以等一个正在跑的后台请求；
 - 点的这张卡自己的后台请求已经在跑时，等它跑完（升级不打断）；
-- 导出跑着时 bake 等导出停（`whenExportIdle`）；
+- 导出跑着时 bake 等导出停（`whenExportIdle`），resolve 照样发；
+- 第一次用 WASM 时，计算请求等共享模块下载、编好，这期间点击不在 Worker 上（G2 不适用，G1、G3、G4 照样成立）；
 - 前台之间只按先来先走；
 - 非计算请求（LUT、标志、校准导入、ping）照旧严格轮流发，不进单子。
 
-`tests/support/mobile_sched_check.mjs`（`tests/test_mobile_sched_check.py`，在 `make check` 里）用真实的 Pool、Book 和 CardBakeController、假 Worker 和假时钟核对 G1–G5：每个以前的发现一个固定日程，1–4 个 Worker 上各 375 个随机日程（回包、出错、Worker 坏掉、点卡、后台小图、换照片、输入和冷却、导出暂停、换 DAT 或校准、建 Worker 抛错、可转移对象已交出、`stop()`）。日程没造出来的拒绝也算违例。失败时打印种子和事件记录。`GXR_SCHED_SEEDS`、`GXR_SCHED_FROM`、`GXR_SCHED_STEPS`、`GXR_SCHED_SIZES` 调规模，`GXR_SCHED_CHECKOUT` 换成别的检出做负对照，`GXR_SCHED_PATCH` 换掉 `pool.ts`、`book.ts`、`protocol.ts` 做变异。
+`tests/support/mobile_sched_check.mjs`（`tests/test_mobile_sched_check.py`，在 `make check` 里）用真实的 Pool、Book 和 CardBakeController、假 Worker 和假时钟核对 G1–G5：每个以前的发现一个固定日程，1–4 个 Worker 上各 375 个随机日程（回包、出错、Worker 坏掉、点卡、后台小图、换照片、输入和冷却、导出暂停、换 DAT 或校准、建 Worker 抛错、可转移对象已交出、`stop()`、挂好以后滚动（观察者报来新的可见卡）、同一个控制器重新开始，三成的日程从冷启动开始、WASM 下载扣着等日程放行或回 503）。G4 按后台请求交出去那一刻的快照查，只有在这之前已经同步被拒掉的前台请求不算在等。日程没造出来的拒绝也算违例。失败时打印种子和事件记录。`GXR_SCHED_SEEDS`、`GXR_SCHED_FROM`、`GXR_SCHED_STEPS`、`GXR_SCHED_SIZES` 调规模，`GXR_SCHED_CHECKOUT` 换成别的检出做负对照，`GXR_SCHED_PATCH` 换掉 `pool.ts`、`book.ts`、`protocol.ts` 做变异。
 
 ### 还没做的
 

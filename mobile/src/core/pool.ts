@@ -111,6 +111,8 @@ async function compileWasmModule(): Promise<WebAssembly.Module> {
  * - 前台先走。后台只有在前台单子空、没有前台计算在跑、在跑的后台少于 workers - 1 个时才开始，所以至少一个 Worker
  *   总是空着给前台。
  * - 后台请求带一个 Lane（core/protocol.ts）；用户点了同一项工作时升成前台：还在单子里的挪到前台单子末尾。
+ * - 共享的 WASM 模块还没编好时，计算请求都留在单子里，不先占 Worker；编好以后 pump() 按那一刻的单子重新挑（前台先）。
+ *   编译失败时单子里的计算请求都以这个错误结束，下一个请求重新下载。
  * - 状态都从 pending 现算，没有要对齐的计数。
  * 其余请求（LUT、标志、校准导入、ping）照旧马上发出、严格轮询（LUT 写入屏障依赖这一点）。
  */
@@ -125,6 +127,8 @@ export class Pool {
   private next = 0;
   private seq = 1;
   private stopped = false;
+  /** 已经在等共享模块编好（只挂一次）。 */
+  private moduleWait = false;
   private readonly pending = new Map<number, Pending>();
   private wasmPromise: Promise<WebAssembly.Module> | null = null;
   private wasmResolved: WebAssembly.Module | null = null;
@@ -183,6 +187,7 @@ export class Pool {
     }
     this.wasmPromise = null;
     this.wasmResolved = null;
+    this.moduleWait = false;
   }
 
   /** 唯一把计算请求交给 Worker 的地方。新请求、升级、回包、请求失败、Worker 坏掉之后都调一次。 */
@@ -192,10 +197,34 @@ export class Pool {
       if (!fg && !this.mayStartBackground()) return;
       const slot = this.freeSlot();
       if (slot < 0) return;
+      if (this.canPostModule && !this.wasmResolved) {
+        this.awaitModule();
+        return;
+      }
       const job = (fg ? this.fgWaiting : this.bgWaiting).shift() as Job;
       job.lane?.onPromote(null);
       this.start(job, slot, true);
     }
+  }
+
+  /** 共享模块编好（或编译失败）以后再 pump() 一次。失败时单子里的计算请求都以这个错误结束。 */
+  private awaitModule(): void {
+    if (this.moduleWait) return;
+    this.moduleWait = true;
+    this.getWasmModule().then(
+      () => {
+        this.moduleWait = false;
+        this.pump();
+      },
+      (err: unknown) => {
+        this.moduleWait = false;
+        if (this.stopped) return;
+        for (const job of [...this.fgWaiting.splice(0), ...this.bgWaiting.splice(0)]) {
+          job.lane?.onPromote(null);
+          job.reject(asError(err));
+        }
+      },
+    );
   }
 
   /** 后台可以开始：前台单子空（调用方查过）、没有前台计算在跑、在跑的后台少于 workers - 1 个。 */
@@ -270,42 +299,17 @@ export class Pool {
       const worker = this.workerAt(slot);
       this.pending.set(id, { slot, worker, compute, lane: compute ? lane : null, resolve, reject });
       const base: PoolRequest = { id, op, buffer, args, ...extra, wasmManaged: true };
-      if (compute && this.canPostModule && !this.wasmSent.has(worker)) {
-        if (this.wasmResolved) {
-          this.postWithModule(worker, base, transfer, this.wasmResolved);
-          return;
-        }
-        void this.getWasmModule().then(
-          (mod) => {
-            if (this.stopped || !this.pending.has(id) || this.workers[slot] !== worker) return;
-            try {
-              this.postWithModule(worker, base, transfer, mod);
-            } catch (err) {
-              this.failRequest(id, err);
-            }
-          },
-          (err: unknown) => this.failRequest(id, err),
-        );
-        return;
-      }
-      if (MAYBE_WASM_OPS.has(op) && this.wasmResolved && this.canPostModule && !this.wasmSent.has(worker)) {
+      // pump() 只在模块编好以后交计算请求，所以这里总是同步发出。没编好的（不会发生）照样发，Worker 会自己要模块。
+      if ((compute || MAYBE_WASM_OPS.has(op)) && this.wasmResolved && this.canPostModule && !this.wasmSent.has(worker)) {
         this.postWithModule(worker, base, transfer, this.wasmResolved);
         return;
       }
       worker.postMessage(base, transfer);
     } catch (err) {
-      if (this.pending.has(id)) this.failRequest(id, err, true);
-      else reject(asError(err));
+      // 只结算这一个；从 pump() 来的，循环接着发下一个（非计算请求不占单子，不用再 pump）。
+      this.pending.delete(id);
+      reject(asError(err));
     }
-  }
-
-  /** 这一个请求失败：结算它，再让单子里的请求补上。`inPump`：从 pump() 里来的，循环会接着走，不要再进去。 */
-  private failRequest(id: number, err: unknown, inPump = false): void {
-    const pending = this.pending.get(id);
-    if (!pending) return;
-    this.pending.delete(id);
-    pending.reject(asError(err));
-    if (!inPump) this.pump();
   }
 
   private workerAt(slot: number): Worker {
