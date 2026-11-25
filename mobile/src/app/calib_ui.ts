@@ -85,6 +85,15 @@ function paint(card: HTMLElement, api: AppApi, book: Book): void {
 }
 
 /** 一张会跟着校准数据变化自己重画的卡。离开页面后不再重画。 */
+/** 网格「更多」里「校准数据」那一行的小字（从 grid.ts 原样移来）。 */
+export function calibDetail(api: AppApi): string {
+  const book = api.book();
+  const pack = book.pack;
+  if (pack?.kind === 'default') return DEFAULT_LABEL;
+  if (pack) return `已导入：${pack.units.map((row) => UNIT_LABEL[row.unit]).join('、')}`;
+  return book.loadingDefault ? '正在加载默认校准…' : '未校准';
+}
+
 export function calibCard(api: AppApi): HTMLElement {
   const book = api.book();
   const card = el('div', 'card calib');

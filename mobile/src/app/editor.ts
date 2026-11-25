@@ -25,7 +25,7 @@ import { LutView } from './lut_view';
 import { zeroKnobs, type AppApi, type Photo } from './model';
 import { openMoreSheet } from './more_sheet';
 import { pasteState } from './paste_state';
-import { mountEditorNav, type EditorNavHandle } from './paste_ui';
+import { mountEditorNav, type EditorNavHandle } from './editor_nav';
 import { RecipeView } from './recipe_view';
 import { ScrubPill } from './scrub_pill';
 import { cancelHostSheets } from './sheet_lifecycle';

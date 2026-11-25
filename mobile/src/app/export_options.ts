@@ -29,6 +29,7 @@ import { ensureFontPack } from './font_loader';
 import { logoStore } from './logo_store';
 import type { LutBook } from './lut_book';
 import { ensureCameraRecipe, ensureCameraRecipes, photoMs, type Photo } from './model';
+import { registerSheet } from './sheet_lifecycle';
 
 declare const __GXR_BUILD__: string;
 
@@ -244,6 +245,8 @@ export function mountExportSheet(
     sheet.append(el('div', 'grab'), head, el('p', 'lead', timeRange(photos)), form, go, foot);
   }
   host.shell.append(scrim, sheet);
+  // 换照片、退出编辑器或清空时（cancelHostSheets）一并关掉：选项面板永远只对着当前这张。
+  const unregister = registerSheet(host.shell, () => host.onClose());
 
   if (n === 1) {
     const photo = photos[0];
@@ -296,6 +299,7 @@ export function mountExportSheet(
     nodes: [scrim, sheet],
     cleanup: () => {
       active = false;
+      unregister();
       offHdr();
     },
   };

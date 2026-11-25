@@ -2,32 +2,12 @@
 // 也在这里：读相机配方文件（camdata_*）、读校准数据 zip 并核对、做烘焙表（color_bake）。
 
 import init, {
-  camdata_camera_recipe,
-  camdata_entries,
-  camdata_parse,
-  color_bake,
-  color_calib_check,
-  color_calib_pack,
-  color_listing,
-  color_resolve,
-  dng_describe,
-  export_meta_photo,
-  export_output_sizes,
-  frame_layout,
-  hdr_gain,
-  hdr_luma,
-  hdrtrack_begin,
-  hdrtrack_box,
-  hdrtrack_frame,
-  hdrtrack_stamp,
-  hdrtrack_to_grid,
-  hdrtrack_warp,
-  geom_crop_write,
-  geom_final_box,
-  geom_geometry_write,
-  lut_identify,
-  lut_parse,
-  stamp_layout,
+  camdata_camera_recipe, camdata_entries, camdata_parse,
+  color_bake, color_calib_check, color_calib_pack, color_listing, color_resolve,
+  dng_describe, export_meta_photo, export_output_sizes, frame_layout,
+  geom_crop_write, geom_final_box, geom_geometry_write,
+  hdr_gain, hdr_luma, hdrtrack_begin, hdrtrack_box, hdrtrack_frame, hdrtrack_stamp, hdrtrack_to_grid, hdrtrack_warp,
+  lut_identify, lut_parse, stamp_layout,
 } from '../wasm-pkg/gxr_wasm.js';
 import wasmUrl from '../wasm-pkg/gxr_wasm_bg.wasm?url';
 import { checkPack } from '../lib/calib';
@@ -94,10 +74,43 @@ const fontCache = new Map<FontKey, Uint8Array>();
 
 const EMPTY = new Uint8Array(0);
 let ready: Promise<unknown> | null = null;
+let sharedModule: WebAssembly.Module | null = null;
+let poolManaged = false;
+let wasmFallback = false;
+let moduleWait: { p: Promise<WebAssembly.Module | null>; ok: (m: WebAssembly.Module | null) => void; err: (e: Error) => void } | null = null;
+
+function settleModule(mod: WebAssembly.Module | null, err?: Error): void {
+  const wait = moduleWait;
+  moduleWait = null;
+  if (err) wait?.err(err);
+  else wait?.ok(mod);
+}
+
+function requestSharedModule(): Promise<WebAssembly.Module | null> {
+  if (sharedModule) return Promise.resolve(sharedModule);
+  if (wasmFallback || !poolManaged) return Promise.resolve(null);
+  if (!moduleWait) {
+    let okFn!: (m: WebAssembly.Module | null) => void;
+    let errFn!: (e: Error) => void;
+    const p = new Promise<WebAssembly.Module | null>((resolve, reject) => { okFn = resolve; errFn = reject; });
+    moduleWait = { p, ok: okFn, err: errFn };
+    self.postMessage({ needWasm: true });
+  }
+  return moduleWait.p;
+}
 
 function load(): Promise<unknown> {
-  ready ??= init({ module_or_path: wasmUrl });
-  return ready;
+  if (ready) return ready;
+  const attempt = (async () => {
+    const mod = sharedModule ?? (await requestSharedModule());
+    return mod ? init({ module_or_path: mod }) : init({ module_or_path: wasmUrl });
+  })();
+  const tracked = attempt.catch((err: unknown) => {
+    if (ready === tracked) ready = null;
+    throw err;
+  });
+  ready = tracked;
+  return tracked;
 }
 
 /** 核心的错误是 JSON 文本（kind、message）；拿出 code 和 message，拿不出就原样。 */
@@ -235,6 +248,7 @@ async function checkZip(id: number, buffer: ArrayBuffer, extra: Record<string, u
   }
   // 存之前先跑核心的包级检查（gxr-cli color-calib-check --dir 不带 --unit 的同一段代码）：版本、单元、每个单元
   // 的文件清单和 SHA-256。旧版本、单元为空或不认得的包在这里就拒收，不会存下来再显示「已导入」（Sol r3）。
+  await load();
   let units: Array<{ unit: string }>;
   try {
     const { manifest, index, blob } = packBlob(zip.entries);
@@ -288,7 +302,7 @@ async function calibRestore(id: number): Promise<void> {
 async function calibDefault(id: number, args: { url: string; sha256: string }): Promise<void> {
   let buffer: ArrayBuffer;
   try {
-    const res = await fetch(args.url);
+    const res = await fetch(args.url, { priority: 'low' } as RequestInit);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     // 先看声明的长度：不像校准包的大文件一个字节都不读。
     if (Number(res.headers.get('content-length') ?? 0) > ZIP_LIMITS.bytes) {
@@ -577,6 +591,7 @@ async function lutImport(id: number, args: LutImportArgs): Promise<void> {
     ok(id, JSON.stringify({ ok: false, reason: 'unreadable', message: LUT_ERRORS.cube_unreadable }));
     return;
   }
+  await load();
   let parsed: ParsedCubeSummary;
   let identified: IdentifyReport;
   try {
@@ -666,30 +681,30 @@ async function lutSnapshot(id: number, args: LutSnapshotArgs): Promise<void> {
 
 async function run(id: number, op: CoreOp, req: CoreRequest): Promise<void> {
   const { buffer, args, file, meta } = req;
+  if (op === 'calib-file' && file && meta) { await calibFile(id, file, meta); return; }
+  if (op === 'calib-restore') { await calibRestore(id); return; }
+  if (op === 'calib-default' && req.defaultCalib) { await calibDefault(id, req.defaultCalib); return; }
+  if (op === 'logo-preview' && file) { await logoPreview(id, file); return; }
+  if (op === 'logo-save' && file && req.logoSave) { await logoSave(id, file, req.logoSave); return; }
+  if (op === 'lut-import' && req.lutImport) { await lutImport(id, req.lutImport); return; }
+  if (op === 'lut-restore') { await lutRestore(id); return; }
+  if (op === 'lut-patch' && req.lutPatch) { await lutPatch(id, req.lutPatch); return; }
+  if (op === 'lut-delete' && req.lutDelete) { await lutDelete(id, req.lutDelete); return; }
+  if (op === 'lut-blob' && req.lutBlob) { await lutBlob(id, req.lutBlob); return; }
+  if (op === 'lut-snapshot' && req.lutSnapshot) { await lutSnapshot(id, req.lutSnapshot); return; }
   await load();
   if (op === 'describe' && buffer) describe(id, buffer);
   else if (op === 'dat' && buffer) dat(id, buffer, req.resolve?.library ?? null);
-  else if (op === 'calib-file' && file && meta) await calibFile(id, file, meta);
-  else if (op === 'calib-restore') await calibRestore(id);
-  else if (op === 'calib-default' && req.defaultCalib) await calibDefault(id, req.defaultCalib);
   else if (op === 'bake' && args) bake(id, args);
   else if (op === 'resolve' && req.resolve) resolve(id, req.resolve);
   else if (op === 'camera-recipe' && req.cameraRecipe) cameraRecipe(id, req.cameraRecipe);
   else if (op === 'calib-check' && req.check) calibCheck(id, req.check);
   else if (op === 'frame-meta' && req.frameMeta) await frameMeta(id, req.frameMeta);
   else if (op === 'frame-layout' && req.frameLayout) await frameLayoutOp(id, req.frameLayout);
-  else if (op === 'logo-preview' && file) await logoPreview(id, file);
-  else if (op === 'logo-save' && file && req.logoSave) await logoSave(id, file, req.logoSave);
   else if (op === 'geom-crop-write' && req.geom) geomCropWrite(id, req.geom.side, req.geom.payload);
   else if (op === 'geom-geometry-write' && req.geom) geomGeometryWrite(id, req.geom.side, req.geom.payload);
   else if (op === 'geom-final-box' && req.finalBox) geomFinalBox(id, req.finalBox.w, req.finalBox.h, req.finalBox.geometry, req.finalBox.crop);
   else if (op === 'export-output-sizes' && req.sizes) outputSizes(id, req.sizes.w, req.sizes.h, req.sizes.side, req.sizes.rect, req.sizes.preset);
-  else if (op === 'lut-import' && req.lutImport) await lutImport(id, req.lutImport);
-  else if (op === 'lut-restore') await lutRestore(id);
-  else if (op === 'lut-patch' && req.lutPatch) await lutPatch(id, req.lutPatch);
-  else if (op === 'lut-delete' && req.lutDelete) await lutDelete(id, req.lutDelete);
-  else if (op === 'lut-blob' && req.lutBlob) await lutBlob(id, req.lutBlob);
-  else if (op === 'lut-snapshot' && req.lutSnapshot) await lutSnapshot(id, req.lutSnapshot);
   else if (op === 'hdr-preview-grid' && buffer && req.hdrGrid) hdrPreview(id, buffer, req.hdrGrid);
   else throw new Error('未知请求');
 }
@@ -743,11 +758,24 @@ function hdrPreview(
   ok(id, JSON.stringify({ ok: true, width: grid.width, height: grid.height, meta: grid.meta }), [codes]);
 }
 
-self.onmessage = (event: MessageEvent<CoreRequest>) => {
-  const { id, op } = event.data;
-  if (op === 'ping') {
-    ok(id, '{}');
+type IncomingMessage =
+  | (CoreRequest & { wasmManaged?: boolean; wasmModule?: WebAssembly.Module })
+  | { wasmModule?: WebAssembly.Module; wasmFallback?: boolean; wasmError?: string };
+
+self.onmessage = (event: MessageEvent<IncomingMessage>) => {
+  const data = event.data;
+  if (!data || typeof data !== 'object') return;
+  if ('wasmModule' in data && data.wasmModule instanceof WebAssembly.Module) {
+    sharedModule = data.wasmModule;
+    settleModule(sharedModule);
+    if (!('op' in data)) return;
+  }
+  if (!('op' in data)) {
+    if ('wasmFallback' in data && data.wasmFallback) { wasmFallback = true; settleModule(null); }
+    else if ('wasmError' in data && typeof data.wasmError === 'string') settleModule(null, new Error(data.wasmError));
     return;
   }
-  run(id, op, event.data).catch((err: unknown) => failed(id, err));
+  if (data.wasmManaged) poolManaged = true;
+  if (data.op === 'ping') { ok(data.id, '{}'); return; }
+  run(data.id, data.op, data).catch((err: unknown) => failed(data.id, err));
 };

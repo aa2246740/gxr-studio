@@ -1,8 +1,15 @@
 // 手机上的三屏：起始、网格、编辑。不碰历史记录，返回就是回到网格。
+// 首屏只有开始页；网格和编辑器（连同导出、⋯ 菜单、关机图和显卡引擎）是两个懒加载分包，见 boot_lazy.ts。
 
-import { Engine, type RawLayout, type Scene } from '../../../frontend/src/index';
+// 全部样式随首屏一次加载，顺序与拆包前的单包一致：分包里没有样式，加载失败时只需重新请求一个 JS。
+import './export.css';
+import './lut_deck.css';
+import './paste.css';
+import './frame.css';
+import './ipad.css';
+import './shell.css';
+import type { Engine, RawLayout, Scene } from '../../../frontend/src/index';
 import { zeroGeometry } from '../lib/crop';
-import { neutralBake, NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
@@ -10,10 +17,14 @@ import { bakeIn, calibCheck, importCalib, loadDefaultCalib, readDat, resolveReci
 import { camFilesIo, deletePack, loadWatermark } from '../lib/idb';
 import { Book } from './book';
 import { lookCache } from './looks';
+import { afterFirstPaint, bindPickers, Chunk, clearChunkError, createBootDom, createEngine, scheduleIdle, showChunkError } from './boot_lazy';
+import type { ShotHost } from './boot_shots';
 import { showCalibSheet } from './calib_ui';
-import { EditorView } from './editor';
-import { ExportFlow, syncExportDock } from './export_ui';
-import { GridView } from './grid';
+import type { EditorView } from './editor';
+import type * as EditorChunk from './editor_chunk';
+import type { ExportFlow } from './export_ui';
+import type * as GridChunk from './grid';
+import type { GridView } from './grid';
 import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
 import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
@@ -22,7 +33,6 @@ import { ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
 import type { ThumbFail, ThumbOk } from '../workers/thumb';
-import './shell.css';
 import { watchViewportLayout } from './layout';
 
 type Reply = ThumbOk | ThumbFail;
@@ -37,6 +47,20 @@ class App implements AppApi {
   private grid: GridView | null = null;
   private editor: EditorView | null = null;
   private engine: Engine | null = null;
+  /** 网格分包：开始页画好后空闲时预取。照片都要等它到了才进来（take），所以有照片就一定有网格。 */
+  private readonly gridChunk = new Chunk<typeof GridChunk>('grid', () => import('./grid'));
+  /** 编辑器分包：第一批缩略图画好后预取，点开照片时还没到就等它。 */
+  private readonly editorChunk = new Chunk<typeof EditorChunk>('editor', () => import('./editor_chunk'));
+  /** 编辑器分包到了、导出流程建好、显卡引擎也定下来（有或没有）以后才不是 null。 */
+  private editorMod: typeof EditorChunk | null = null;
+  private editorLoad: Promise<typeof EditorChunk> | null = null;
+  private engineLoad: Promise<Engine | null> | null = null;
+  /** 选照片时网格分包还没到：先记下，到了再一起导入。 */
+  private pendingFiles: File[] = [];
+  /** 切屏、换照片、清空都加一。在路上的分包回来时不是同一次，就什么也不做（不弹旧照片，不报旧错误）。 */
+  private nav = 0;
+  private rawWarm = 0;
+  private restored: Promise<void> = Promise.resolve();
   private frameWatch: { stop: () => PerfStats } | null = null;
   private warm: { id: string; version: number; bytes: ArrayBuffer } | null = null;
   private interval = 16.7;
@@ -68,8 +92,8 @@ class App implements AppApi {
   /** 3 槽 GPU 3D LUT 纹理队列与短命 lut_table Worker 调度。 */
   private readonly lutGpuQueue = new LutGpu(() => this.engine);
 
-  /** 导出进相册（UI-M3）：导出面板、贴底的进度和结果、共享面板。 */
-  private readonly exporter: ExportFlow;
+  /** 导出进相册（UI-M3）：导出面板、贴底的进度和结果、共享面板。在编辑器分包里，第一次加载时建一个。 */
+  private exporter: ExportFlow | null = null;
 
   constructor(
     private readonly shell: HTMLElement,
@@ -81,17 +105,14 @@ class App implements AppApi {
     private readonly perfOn: boolean,
     private readonly pageErrors: string[],
   ) {
-    this.exporter = new ExportFlow(shell, this, perf);
     watchViewportLayout(shell, () => {}); // data-layout 跟着窗口走，图库和开始页上也一样（不只编辑器里）
   }
 
-  async start(engine: Engine | null): Promise<void> {
-    this.engine = engine;
+  start(): void {
     registerCameraRecipeReader(async (file) => {
       const reply = await this.reader.read(new File([file.slice(0, 262144)], file.name));
       return reply.ok ? reply.bytes : null;
     });
-    this.recipeBook.attach(engine);
     this.lutGpuQueue.attach(() => this.engine);
     // 相机配方文件、校准数据变了：网格的那一行跟着变。编辑器和校准卡自己订阅。
     let generation = this.recipeBook.generationId();
@@ -103,8 +124,6 @@ class App implements AppApi {
       }
       if (this.screen === 'grid') this.grid?.refresh();
     });
-    const restored = this.recipeBook.restore().catch(() => undefined);
-    const lutsRestored = this.lutBookStore.restore().catch(() => undefined);
     if (this.perfOn) {
       this.perf.hidden = false;
       void measureInterval().then((value) => {
@@ -112,95 +131,63 @@ class App implements AppApi {
       });
     }
     this.showStart();
-    if (!import.meta.env.DEV) return;
-    (window as unknown as { __gxrBook?: Book }).__gxrBook = this.recipeBook;
-    (window as unknown as { __gxrLooks?: typeof lookCache }).__gxrLooks = lookCache;
-    (window as unknown as { __gxrLutBook?: LutBook }).__gxrLutBook = this.lutBookStore;
-    (window as unknown as { __gxrLutGpu?: LutGpu }).__gxrLutGpu = this.lutGpuQueue;
-    await Promise.all([restored, lutsRestored]);
+    // 开始页先画出来；本机存的校准、LUT、网格分包和显卡引擎（WebGPU 初始化可能要几百毫秒）都排在后面。
+    this.restored = new Promise<void>((done) =>
+      afterFirstPaint(() => {
+        done(Promise.all([this.recipeBook.restore().catch(() => undefined), this.lutBookStore.restore().catch(() => undefined)]).then(() => undefined));
+        scheduleIdle(() => {
+          void this.gridChunk.load().catch(() => undefined);
+          void this.ensureEngine();
+        });
+      }),
+    );
+  }
+
+  /** 只在开发服务器里：两个分包都先加载好（测试和截图照旧同步切屏），标上 data-core，再跑 ?shot= 截图。 */
+  async startDev(ready: () => void): Promise<void> {
+    if (!import.meta.env.DEV) return ready();
+    Object.assign(window, { __gxrBook: this.recipeBook, __gxrLooks: lookCache, __gxrLutBook: this.lutBookStore, __gxrLutGpu: this.lutGpuQueue });
+    await Promise.all([this.gridChunk.load(), this.loadEditor(), this.restored]);
+    ready();
     const shot = new URLSearchParams(location.search).get('shot');
     if (!shot) return;
-    const { sampleFiles, reportShot, aliasFile } = await import('./shots');
-    // UI-M2 的几屏：校准数据和相机配方文件也走样本端点（截图用的临时样本目录里起了 zz- 开头的别名）。
-    const lutShotMode = shot === 'lut' || shot === 'lut-space';
-    const recipeShot = ['recipe', 'nocal', 'nodat', 'jpg'].includes(shot);
-    const cropShot = shot === 'crop' || shot === 'crop-editor';
-    if (shot === 'calib' || shot === 'recipe' || cropShot || lutShotMode) {
-      const pack = await aliasFile('zz-calib.dng', 'GXR 校准数据.zip');
-      if (pack) await this.recipeBook.importPack(pack);
-    } else if (recipeShot) await this.recipeBook.removePack();
-    if (shot !== 'start' && shot !== 'calib') {
-      let files = shot === 'jpg' ? [] : await sampleFiles();
-      const extra =
-        shot === 'jpg'
-          ? await aliasFile('zz-jpg.dng', 'R9990002.JPG')
-          : shot === 'recipe' || shot === 'nocal' || cropShot || lutShotMode
-            ? await aliasFile('zz-dat.dng', 'GXRCE.DAT')
-            : null;
-      if (extra) files = [...files, extra];
-      if (shot.endsWith('-hdr')) files = [...files, ...(await (await import('./export_shots')).hdrShotFiles(files))];
-      if (files.length) {
-        this.ingest(files);
-        await this.settle();
-      }
-      for (let i = 0; i < 100 && (this.recipeBook.datBusy || this.recipeBook.packBusy); i++) await new Promise((done) => setTimeout(done, 100));
-    }
-    if ((shot === 'editor' || shot === 'drag' || recipeShot || cropShot || lutShotMode) && this.byId.size) {
-      const first = this.ordered()[0];
-      if (first) this.open(first.id);
-      await this.editor?.settled;
-      if (shot === 'drag') this.editor?.forceDrag();
-      if (recipeShot) {
-        this.view.querySelector<HTMLButtonElement>('.toolbar [data-tool="recipe"]')?.click();
-        await new Promise((done) => setTimeout(done, 1500));
-        if (shot === 'recipe') this.view.querySelector<HTMLButtonElement>('.strip[data-recipes] .rc[data-card="builtin:7"]')?.click();
-        await new Promise((done) => setTimeout(done, 800));
-      }
-      if (cropShot) {
-        this.view.querySelector<HTMLButtonElement>('.strip[data-recipes] .rc[data-card="builtin:7"]')?.click();
-        this.view.querySelector<HTMLButtonElement>('.toolbar [data-tool="crop"]')?.click();
-        await new Promise((done) => setTimeout(done, 400));
-        this.view.querySelector<HTMLButtonElement>('.crop-panel .chips button[data-preset="xpan-65-24"]')?.click();
-        for (let i = 0; i < 60 && first?.crop?.preset !== 'xpan-65-24'; i++) await new Promise((done) => setTimeout(done, 100));
-        await new Promise((done) => setTimeout(done, 800));
-        if (shot === 'crop-editor') {
-          this.view.querySelector<HTMLButtonElement>('.toolbar [data-tool="recipe"]')?.click();
-          await new Promise((done) => setTimeout(done, 1200));
-        }
-      }
-      if (lutShotMode) {
-        const { lutShot } = await import('./lut_shots');
-        await lutShot(shot, this, this.shell);
-      }
-    }
-    // M3 复制 / 套用那几屏（04a–04e、02a 带剪贴板）。
-    if (shot.startsWith('paste-') && this.byId.size) await (await import('./paste_shots')).pasteShot(shot, this, this.shell);
-    if (shot.startsWith('export-') && this.byId.size) {
-      const { exportShot } = await import('./export_shots');
-      await exportShot(shot, this.ordered().map((photo) => photo.id), this.exporter, this.shell);
-    }
-    if (shot.startsWith('frame') && this.byId.size) {
-      const first = this.ordered()[0];
-      if (first) this.open(first.id);
-      await this.editor?.settled;
-      const { frameShot } = await import('./frame_shots');
-      await frameShot(shot, this.shell, this.view);
-    }
-    await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
-    this.shell.dataset.shot = shot;
-    await reportShot(shot, {
-      screen: this.screen,
-      gpu: this.engine !== null,
-      drag: this.shell.dataset.drag,
-      photos: this.ordered().map((photo) => ({
-        stem: photo.stem,
-        status: photo.status,
-        jpg: photo.jpg !== null,
-        bitmap: photo.bitmap ? [photo.bitmap.width, photo.bitmap.height] : null,
-        captureMs: photo.captureMs,
-      })),
-      errors: this.pageErrors.slice(0, 10),
+    const host: ShotHost = { api: this, shell: this.shell, view: this.view, pageErrors: this.pageErrors, book: this.recipeBook,
+      screen: () => this.screen, editor: () => this.editor, exporter: () => this.exporter, ingest: (files) => this.ingest(files) };
+    await (await import('./boot_shots')).runShot(shot, host);
+  }
+
+  /** 显卡引擎只建一次（建不起来就是 null，不会失败）；开始页空闲时就开始，编辑器等它定下来。 */
+  private ensureEngine(): Promise<Engine | null> {
+    this.engineLoad ??= createEngine(this.shell, (err) => this.reportEngine(err)).then((engine) => {
+      this.engine = engine;
+      this.recipeBook.attach(engine);
+      this.shell.dataset.gpu = engine ? '1' : '0';
+      if (import.meta.env.DEV) (window as unknown as { __gxrEngine?: Engine | null }).__gxrEngine = engine; // 测试看显卡里有几份源
+      return engine;
     });
+    return this.engineLoad;
+  }
+
+  /** 编辑器分包：只加载一次；到了就建导出流程，再等显卡引擎定下来。失败了下次再调会重新请求。 */
+  private loadEditor(): Promise<typeof EditorChunk> {
+    if (this.editorMod) return Promise.resolve(this.editorMod);
+    if (this.editorLoad) return this.editorLoad;
+    const task = this.editorChunk.load().then(async (mod) => {
+      this.exporter ??= new mod.ExportFlow(this.shell, this, this.perf);
+      await this.ensureEngine();
+      this.editorMod ??= mod;
+      return mod;
+    });
+    this.editorLoad = task;
+    task.catch(() => { if (this.editorLoad === task) this.editorLoad = null; }); // 下次再请求（Chunk 会换地址）
+    return task;
+  }
+
+  /** 切屏、换照片、清空：在路上的分包加载作废，开着的加载失败提示关掉。 */
+  private navigate(): number {
+    this.nav += 1;
+    clearChunkError(this.shell);
+    return this.nav;
   }
 
   photos(): Photo[] {
@@ -252,19 +239,28 @@ class App implements AppApi {
   }
 
   showCalib(): void {
+    this.navigate();
     showCalibSheet(this.shell, this);
   }
 
   exportPhotos(ids: string[], onStart?: () => void): void {
     const want = new Set(ids);
-    this.exporter.open(
-      this.ordered()
-        .filter((photo) => want.has(photo.id))
-        .map((photo) => photo.id),
-      onStart,
+    const list = this.ordered().filter((photo) => want.has(photo.id)).map((photo) => photo.id);
+    if (this.editorMod && this.exporter) return this.exporter.open(list, onStart);
+    // 图库多选导出时编辑器分包（导出在里面）还没到：等它；这期间切了屏、清空了就作废。
+    const ticket = this.navigate();
+    this.loadEditor().then(
+      () => {
+        if (ticket === this.nav) this.exporter?.open(list, onStart);
+      },
+      () => {
+        if (ticket === this.nav) showChunkError(this.shell, 'editor', () => this.exportPhotos(ids, onStart));
+      },
     );
   }
 
+  /** 图库里改了多选或打开了面板：在等分包的点开和导出作废（AppApi.dropPending）。 */
+  readonly dropPending = (): void => void this.navigate();
   takeCalib(file: File): void {
     void this.recipeBook.importPack(file);
   }
@@ -353,18 +349,38 @@ class App implements AppApi {
   }
 
   showHelp(): void {
+    this.navigate(); // 在等编辑器分包的点开或导出作废，不在帮助后面切屏
     renderHelp(this.shell);
   }
 
   open(id: string): void {
     const photo = this.byId.get(id);
     if (!photo || !openable(photo)) return;
+    const ticket = this.navigate();
+    if (this.editorMod) {
+      this.mountEditor(this.editorMod, photo);
+      return;
+    }
+    // 编辑器分包还没到：留在当前这一屏等它。等的时候又点了别的、返回了、清空了，这次就作废。
+    const version = photo.version;
+    this.loadEditor().then(
+      (mod) => {
+        if (ticket === this.nav && this.current(id, version, photo) && openable(photo)) this.mountEditor(mod, photo);
+      },
+      () => {
+        if (ticket === this.nav) showChunkError(this.shell, 'editor', () => this.open(id));
+      },
+    );
+  }
+
+  private mountEditor(mod: typeof EditorChunk, photo: Photo): void {
+    this.cancelRawWarm();
     this.grid?.destroy(); this.grid = null;
     this.closeEditor();
     this.resetPerf();
     this.screen = 'editor';
     this.shell.dataset.screen = 'editor';
-    this.editor = new EditorView(this.view, this.shell, this, this.engine);
+    this.editor = new mod.EditorView(this.view, this.shell, this, this.engine);
     this.editor.open(photo);
   }
 
@@ -411,8 +427,9 @@ class App implements AppApi {
 
   clear(): void {
     this.generation += 1;
+    this.pendingFiles = [];
     // 导出这一批停下，做好的文件丢掉，晚到的结果不会再交给共享面板。
-    this.exporter.clear();
+    this.exporter?.clear();
     this.queue.cancel();
     this.lutGpuQueue.clear();
     this.closeEditor();
@@ -454,29 +471,86 @@ class App implements AppApi {
   }
 
   take(files: File[]): void {
-    this.ingest(files);
+    const photos = classify(files.map((file) => ({ name: file.name, lastModified: file.lastModified }))).photos.length;
+    if (!photos || this.gridChunk.loaded) return this.ingest(files);
+    // 网格分包还没到（一般开始页空闲时就预取好了）：照片先记下，到了再导入，失败可以重试。
+    this.pendingFiles.push(...files);
+    this.takePending();
+  }
+
+  private takePending(): void {
+    const session = this.generation;
+    this.gridChunk.load().then(
+      () => {
+        if (session !== this.generation) return;
+        const files = this.pendingFiles.splice(0);
+        if (files.length) this.ingest(files);
+      },
+      () => {
+        if (session === this.generation && this.pendingFiles.length) showChunkError(this.shell, 'grid', () => this.takePending());
+      },
+    );
   }
 
   private showStart(): void {
+    this.navigate();
+    this.cancelRawWarm();
     this.closeEditor();
     this.resetPerf();
     this.screen = 'start';
     this.shell.dataset.screen = 'start';
     this.grid?.destroy(); this.grid = null;
     renderStart(this.view, this);
-    syncExportDock(this.shell);
+    this.syncDock();
   }
 
   private showGrid(remount: boolean): void {
+    const mod = this.gridChunk.loaded;
+    // 照片都是网格分包到了以后才导入的，有照片就有网格；万一没有，就回开始页。
+    if (!mod) return this.showStart();
+    this.navigate();
     this.closeEditor();
     this.shell.dataset.screen = 'grid';
     if (this.screen !== 'grid') this.resetPerf();
     if (!this.grid || remount || this.screen !== 'grid') {
-      this.grid?.destroy(); this.grid = new GridView(this.view, this);
+      this.grid?.destroy(); this.grid = new mod.GridView(this.view, this);
       this.grid.show();
     } else this.grid.refresh();
     this.screen = 'grid';
-    syncExportDock(this.shell);
+    this.syncDock();
+    this.prewarmEditor();
+  }
+
+  private syncDock(): void {
+    this.editorMod?.syncExportDock(this.shell);
+  }
+
+  /**
+   * 第一批缩略图（最多 8 张）读完、画出至少一张以后，空出这一帧再预取编辑器分包。
+   * 只有 RAW、没有能画的缩略图时：全部读完、再静一会儿（1.5 秒加空闲）才预取。点开照片随时都会按需加载。
+   */
+  private prewarmEditor(): void {
+    if (this.editorMod || this.editorLoad || this.screen !== 'grid') return;
+    const { done, total } = this.loading();
+    if (!total || done < Math.min(total, 8)) return;
+    if (this.view.querySelector('.cell canvas[data-drawn]')) {
+      this.cancelRawWarm();
+      afterFirstPaint(() => void this.loadEditor().catch(() => undefined));
+      return;
+    }
+    if (done < total || this.rawWarm || ![...this.byId.values()].some((photo) => openable(photo))) return;
+    const session = this.generation;
+    this.rawWarm = window.setTimeout(() => {
+      this.rawWarm = 0;
+      scheduleIdle(() => {
+        if (session === this.generation && this.screen === 'grid') void this.loadEditor().catch(() => undefined);
+      });
+    }, 1500);
+  }
+
+  private cancelRawWarm(): void {
+    window.clearTimeout(this.rawWarm);
+    this.rawWarm = 0;
   }
 
   private resetPerf(): void {
@@ -658,6 +732,7 @@ class App implements AppApi {
   private afterRead(photo: Photo): void {
     if (this.screen === 'grid') this.grid?.update(photo.id);
     if (photo.status === 'bad' && this.screen === 'grid') this.grid?.showUnreadable(photo.id);
+    this.prewarmEditor();
   }
 
   /**
@@ -703,88 +778,22 @@ class App implements AppApi {
     this.grid?.refresh();
   }
 
-  private settle(): Promise<void> {
-    return new Promise((resolve) => {
-      const deadline = performance.now() + 20_000;
-      const tick = () => {
-        const { done, total } = this.loading();
-        if ((total > 0 && done >= total) || performance.now() > deadline) resolve();
-        else window.setTimeout(tick, 200);
-      };
-      tick();
-    });
-  }
-
   reportEngine(err: unknown): void {
     this.pageErrors.push(err instanceof Error ? err.message : String(err));
   }
 }
 
 export async function bootApp(root: HTMLElement, pageErrors: string[]): Promise<void> {
-  const shell = document.createElement('div');
-  shell.className = 'app';
-  shell.dataset.screen = 'start';
-  shell.dataset.drag = '0';
-  const picker = document.createElement('input');
-  picker.type = 'file';
-  picker.multiple = true;
-  picker.className = 'filepick';
-  // 校准数据 zip 单独一个选择框，也不加 accept（「文件」里按类型过滤会把文件变灰）。
-  const calibPicker = document.createElement('input');
-  calibPicker.type = 'file';
-  calibPicker.className = 'filepick calibpick';
-  // .cube LUT 也不加 accept（iOS 「文件」按扩展名过滤会把 .cube 变灰），允许多选。
-  const lutPicker = document.createElement('input');
-  lutPicker.type = 'file';
-  lutPicker.multiple = true;
-  lutPicker.className = 'lutpick';
-  const view = document.createElement('div');
-  view.className = 'view';
-  const perf = document.createElement('p');
-  perf.className = 'perf';
-  perf.hidden = true;
-  shell.append(picker, calibPicker, lutPicker, view, perf);
-  root.replaceChildren(shell);
+  // 核心 Worker 先连上（只 ping，不拉 WASM），和开始页并行。
   const coreReady = warmCore();
-
+  const dom = createBootDom(root);
   const perfOn = new URLSearchParams(location.search).get('perf') === '1';
-  const app = new App(shell, view, picker, calibPicker, lutPicker, perf, perfOn, pageErrors);
-  picker.addEventListener('change', () => {
-    const files = picker.files ? Array.from(picker.files) : [];
-    picker.value = '';
-    if (files.length) app.take(files);
-  });
-  calibPicker.addEventListener('change', () => {
-    const file = calibPicker.files?.[0] ?? null;
-    calibPicker.value = '';
-    if (file) app.takeCalib(file);
-  });
-  lutPicker.addEventListener('change', () => {
-    const files = lutPicker.files ? Array.from(lutPicker.files) : [];
-    lutPicker.value = '';
-    if (files.length) app.takeLuts(files);
-  });
-
-  let engine: Engine | null = null;
-  if (navigator.gpu) {
-    try {
-      engine = await Engine.create();
-    } catch (err) {
-      app.reportEngine(err);
-      engine = null;
-    }
-  }
-  if (engine) {
-    const bake = neutralBake();
-    engine.addBake(NEUTRAL_BAKE_KEY, bake.meta, bake.data);
-    engine.onFrame = () => {
-      shell.dataset.frame = '1';
-    };
-  }
-  shell.dataset.gpu = engine ? '1' : '0';
-  // 只在开发服务器里：测试要看显卡里有几份源，确认重开同一张不会多出一份。
-  if (import.meta.env.DEV) (window as unknown as { __gxrEngine?: Engine | null }).__gxrEngine = engine;
+  const app = new App(dom.shell, dom.view, dom.picker, dom.calibPicker, dom.lutPicker, dom.perf, perfOn, pageErrors);
+  bindPickers(dom, app);
+  app.start();
   await coreReady;
-  shell.dataset.core = '1';
-  await app.start(engine);
+  // 开发服务器：两个分包和显卡引擎都到了才标 data-core，测试照旧在那之后切屏。
+  await app.startDev(() => {
+    dom.shell.dataset.core = '1';
+  });
 }

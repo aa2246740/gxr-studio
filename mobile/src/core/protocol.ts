@@ -194,3 +194,36 @@ export interface CoreResult {
   json: string;
   buffers: ArrayBuffer[];
 }
+
+// 一个后台计算请求的优先级，一个 Lane 只给一个请求用（池子第二次收到同一个 Lane 就抛错）。
+// Book 给每个缓存项（一次 resolve、一次 bake）各配一个。用户点了卡、等的正是这一项时调 promote()：还在池子单子里的
+// 挪到前台单子末尾；已经在 Worker 上跑的就算前台（core/pool.ts 据此不再开始新的后台请求）。升级是单向的。
+export class Lane {
+  private up = false;
+  private used = false;
+  private hook: (() => void) | null = null;
+
+  /** 还是后台请求（没人点过）。 */
+  get background(): boolean {
+    return !this.up;
+  }
+
+  promote(): void {
+    if (this.up) return;
+    this.up = true;
+    const hook = this.hook;
+    this.hook = null;
+    hook?.();
+  }
+
+  /** 池子用：收下这个 Lane 的唯一一个请求。 */
+  claim(): void {
+    if (this.used || this.hook) throw new Error('一个 Lane 只能用于一个请求');
+    this.used = true;
+  }
+
+  /** 池子用：请求在单子里等着时登记，升级时叫；交给 Worker 时清掉。 */
+  onPromote(hook: (() => void) | null): void {
+    this.hook = hook;
+  }
+}

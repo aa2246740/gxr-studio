@@ -220,6 +220,8 @@ export interface AppApi {
   showCalib(): void;
   /** 打开导出面板（05a）。`ids` 按网格的顺序导出；点了「存到相册」时调 `onStart`。 */
   exportPhotos(ids: string[], onStart?: () => void): void;
+  /** 图库多选变了（进出多选、勾选变了）：还在等分包的点开、导出连同它们的错误提示和重试一起作废。 */
+  dropPending(): void;
 }
 
 type HeadReader = (file: File) => Promise<ArrayBuffer | null>;
