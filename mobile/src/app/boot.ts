@@ -17,7 +17,7 @@ import { bakeIn, calibCheck, importCalib, loadDefaultCalib, readDat, resolveReci
 import { camFilesIo, deletePack, loadWatermark } from '../lib/idb';
 import { Book } from './book';
 import { lookCache } from './looks';
-import { afterFirstPaint, bindPickers, Chunk, clearChunkError, createBootDom, createEngine, scheduleIdle, showChunkError } from './boot_lazy';
+import { afterFirstPaint, bindPickers, Chunk, clearChunkError, createBootDom, scheduleIdle, showChunkError } from './boot_lazy';
 import type { ShotHost } from './boot_shots';
 import { showCalibSheet } from './calib_ui';
 import type { EditorView } from './editor';
@@ -131,14 +131,12 @@ class App implements AppApi {
       });
     }
     this.showStart();
-    // 开始页先画出来；本机存的校准、LUT、网格分包和显卡引擎（WebGPU 初始化可能要几百毫秒）都排在后面。
+    // 开始页先画出来；本机存的校准、LUT 和网格分包都排在后面。显卡引擎跟编辑器分包一起建（第一批缩略图画好以后），
+    // 不跟开始页和缩略图抢：软件 GPU 上第一次用显卡要一秒多。
     this.restored = new Promise<void>((done) =>
       afterFirstPaint(() => {
         done(Promise.all([this.recipeBook.restore().catch(() => undefined), this.lutBookStore.restore().catch(() => undefined)]).then(() => undefined));
-        scheduleIdle(() => {
-          void this.gridChunk.load().catch(() => undefined);
-          void this.ensureEngine();
-        });
+        scheduleIdle(() => void this.gridChunk.load().catch(() => undefined));
       }),
     );
   }
@@ -156,26 +154,24 @@ class App implements AppApi {
     await (await import('./boot_shots')).runShot(shot, host);
   }
 
-  /** 显卡引擎只建一次（建不起来就是 null，不会失败）；开始页空闲时就开始，编辑器等它定下来。 */
-  private ensureEngine(): Promise<Engine | null> {
-    this.engineLoad ??= createEngine(this.shell, (err) => this.reportEngine(err)).then((engine) => {
-      this.engine = engine;
-      this.recipeBook.attach(engine);
-      this.shell.dataset.gpu = engine ? '1' : '0';
-      if (import.meta.env.DEV) (window as unknown as { __gxrEngine?: Engine | null }).__gxrEngine = engine; // 测试看显卡里有几份源
-      return engine;
-    });
-    return this.engineLoad;
-  }
-
-  /** 编辑器分包：只加载一次；到了就建导出流程，再等显卡引擎定下来。失败了下次再调会重新请求。 */
+  /**
+   * 编辑器分包：只加载一次；到了就建导出流程和显卡引擎（只建一次，建不起来就是 null，不会失败）。
+   * 引擎不等着色器编译完（软件 GPU 上要一两秒），点开照片不用等它。分包失败了下次再调会重新请求。
+   */
   private loadEditor(): Promise<typeof EditorChunk> {
     if (this.editorMod) return Promise.resolve(this.editorMod);
     if (this.editorLoad) return this.editorLoad;
     const task = this.editorChunk.load().then(async (mod) => {
       this.exporter ??= new mod.ExportFlow(this.shell, this, this.perf);
-      await this.ensureEngine();
-      this.editorMod ??= mod;
+      this.engineLoad ??= mod.createEngine(this.shell, (err) => this.reportEngine(err));
+      const engine = await this.engineLoad;
+      if (!this.editorMod) {
+        this.engine = engine;
+        this.recipeBook.attach(engine);
+        this.shell.dataset.gpu = engine ? '1' : '0';
+        if (import.meta.env.DEV) (window as unknown as { __gxrEngine?: Engine | null }).__gxrEngine = engine; // 测试看显卡里有几份源
+        this.editorMod = mod;
+      }
       return mod;
     });
     this.editorLoad = task;
