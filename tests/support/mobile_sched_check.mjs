@@ -4,7 +4,9 @@
 // 日程从这些事件里抽：控制器发起的后台卡、直接发起的后台卡、点卡（beginStage、Book.bake、endStage）、别的前台计算、
 // 非计算请求（ping）、回包（成功或出错）、Worker onerror、换照片（销毁控制器，在另一个 ISO 上挂新的：resolve 共用、
 // bake 不共用）、新的相机配方文件或校准（generation 变）、导出暂停开关、时间流逝（冷却、空闲回调）、
-// 下一个 Worker 构造抛错、可转移对象发出前已经交出去、中途 stop()。Worker 数 1、2、3、4。
+// 下一个 Worker 构造抛错、可转移对象发出前已经交出去、中途 stop()、挂好的控制器上滚动（IntersectionObserver 报来新的
+// 可见卡，唤醒调度）、同一个控制器重新开始（cancel + start）、冷启动时扣住 WASM 下载再放行（成功或 503）。
+// Worker 数 1、2、3、4。
 //
 // 「前台」：没带 Lane 的计算请求，或 Lane 已升级的；对一次点击，是它在等的 resolve，之后是 bake。
 //   need(T) := T 的 resolve，直到这次 resolve 的成功回包送到；之后是 T 的 bake（模型、条目）
@@ -14,12 +16,14 @@
 //   J 不在任何 Worker 上 -> 每个 Worker 都有计算请求，且有一个 Worker 上全是前台          G2
 // 一直成立：没有 Worker 同时拿着两个计算请求（G1）；2 个以上 Worker 时总有一个 Worker 上没有后台计算（G3）；
 //   同一个 resolve 或 bake 不会同时在两个 Worker 上。
-// 后台计算请求交给 Worker 的那一刻：没有前台计算在等，也没有前台计算在 Worker 上（G4）。
+// 后台计算请求交给 Worker 的那一刻：没有前台计算在等，也没有前台计算在 Worker 上（G4）。「在等」按交出去那一刻的
+//   快照算；只有在这一刻之前已经同步被拒掉的前台请求不算（它的拒绝回调排在检查之前）。
 // 回包都到了、stop() 以后、Worker 坏掉以后：没有还没结算的请求（G5）。
 //
 // 例外（docs/mobile.md「不保证」）：先记下点击再调 Book.bake（它的请求可能在调用里就发出）；resolve 回包正在送的
 // 那一轮，点了这张卡的还没要 bake，不算在等；1 个 Worker 时点击可以等一个在跑的后台请求（G2 后半）；导出暂停时
-// bake 等导出（还没要的不算在等）。
+// 只有 bake 等导出（还没要的 bake 不算在等；resolve 照样要）；首次用 WASM 时计算请求等共享模块编好（下载扣着时
+// G2 不适用，G1、G3、G4 照样查）。
 //
 // 环境变量：GXR_SCHED_SEEDS（每种 Worker 数的随机日程数，默认 375）、GXR_SCHED_FROM、GXR_SCHED_STEPS（默认 40）、
 // GXR_SCHED_SIZES（默认 1,2,3,4）、GXR_SCHED_CHECKOUT（换成别的检出目录做负对照）、GXR_SCHED_PATCH（目录里的 pool.ts、
@@ -125,17 +129,41 @@ const ISOS = [200, 1600];
 
 class Violation extends Error {}
 /** 日程自己造出来的失败（回包出错、Worker 坏掉、构造抛错、可转移对象已交出、stop()、换 DAT/校准）。别的拒绝都算违例。 */
-const INJECTED = new Set(['injected', 'crashed', 'injected Worker constructor failure', 'Worker 已停止', '相机配方文件或校准数据换了']);
+const INJECTED = new Set(['injected', 'crashed', 'injected Worker constructor failure', 'Worker 已停止', '相机配方文件或校准数据换了', 'WASM HTTP 503']);
+const wasmBytes = () => Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0);
 const injected = (err) => err?.name === 'DataCloneError' || INJECTED.has(err?.message);
 
 /**
  * 跑一个日程。`next(ctx)` 返回下一个事件（随机或固定脚本），null 结束。返回 null（通过）或违例。
  * 事件：{bg, card, iso} {tap, card} {fg} {ping} {reply|error, tag?} {crash, tag?} {mount, iso, visible} {input}
- *       {time, ms} {pause, on} {gen} {ctorThrow} {detached, background} {stop} {raw}
+ *       {time, ms} {pause, on} {gen} {ctorThrow} {detached, background} {stop} {raw} {scroll, flip, input} {restart}
+ *       {release, ok}（只在冷启动时有用：放行扣住的 WASM 下载）
+ * `cold`：不先热身，WASM 下载一直扣着，等日程放行（最后收尾时也放行）。
  */
-async function runSchedule(size, label, next) {
+async function runSchedule(size, label, next, cold = false) {
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { hardwareConcurrency: size + 1 } });
-  globalThis.fetch = async () => new Response(Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0), { headers: { 'content-type': 'application/wasm' } });
+  const held = []; // 扣住的 WASM 下载
+  globalThis.fetch = () => {
+    const ok = () => new Response(wasmBytes(), { headers: { 'content-type': 'application/wasm' } });
+    if (!cold) return Promise.resolve(ok());
+    return new Promise((resolve) => held.push((pass) => resolve(pass ? ok() : new Response('', { status: 503 }))));
+  };
+  // 编译在微任务里完成，日程好控制。
+  const realCompile = { compile: WebAssembly.compile, compileStreaming: WebAssembly.compileStreaming };
+  WebAssembly.compile = async (bytes) => new WebAssembly.Module(bytes);
+  WebAssembly.compileStreaming = async (res) => new WebAssembly.Module(await (await res).arrayBuffer());
+  const observers = [];
+  globalThis.IntersectionObserver = class FakeIntersectionObserver {
+    constructor(cb) {
+      this.cb = cb;
+      this.dead = false;
+      observers.push(this);
+    }
+    observe() {}
+    disconnect() {
+      this.dead = true;
+    }
+  };
   const clock = installClock();
   const workers = [];
   const trace = [];
@@ -147,6 +175,8 @@ async function runSchedule(size, label, next) {
   let paused = false;
   let failCtor = false;
   let lateBackground = null;
+  let stamp = 0; // 交出去和拒绝回调的先后
+  const rejectedAt = new Map(); // tag -> 最近一次拒绝回调的 stamp
   let n = 0;
   globalThis.Worker = class FakeWorker {
     constructor() {
@@ -174,14 +204,15 @@ async function runSchedule(size, label, next) {
       if (isFg(tag)) return;
       const running = live().flatMap((w) => w.q).filter((m) => m.op !== 'ping' && m.tag !== tag && isFg(m.tag, true)).map((m) => m.tag);
       if (running.length) lateBackground = `${tag} posted to w${this.n} while foreground ${running} was running`;
-      // 「前台在等」等一个微任务再看：同一次 pump() 里刚刚因为同步抛错被拒掉的前台请求已经不在等了，
-      // 它的拒绝在这之前排进了微任务队列（asked 在那时删掉）。
-      // 只看这一刻已经要了的：之后才要的前台请求（比如导出结束时排在后面的点击的 bake）不算。
+      // 「前台在等」按这一刻的快照：之后才要的前台请求（比如导出结束时排在后面的点击的 bake）不算；之后才发出去的
+      // 照样算在等（r4 P2：冷编译时后台先发、前台后发）。唯一的例外是这一刻之前已经同步被拒掉的（同一次 pump()
+      // 里建 Worker 抛错、可转移对象已交出）：它的拒绝回调在下面这个检查之前跑，stamp 比这一刻大。
       const where = this.n;
+      const at = ++stamp;
       const fgAsked = [...asked].filter((t) => isFg(t, true));
       queueMicrotask(() => {
         if (lateBackground) return;
-        const waiting = fgAsked.filter((t) => asked.has(t));
+        const waiting = fgAsked.filter((t) => !((rejectedAt.get(t) ?? 0) > at));
         if (waiting.length) lateBackground = `${tag} posted to w${where} while foreground ${waiting} waited`;
       });
     }
@@ -191,7 +222,7 @@ async function runSchedule(size, label, next) {
     }
   };
   const live = () => workers.filter((w) => !w.dead);
-  const pendingTaps = () => calls.filter((c) => c.kind === 'tap' && !c.done);
+  const pendingTaps = () => calls.filter((c) => c.kind === 'tap' && !c.done && !c.settled);
   const key = (tap) => `${tap.gen}|${tap.slot}`;
   /** 点击现在在等的计算请求。 */
   const need = (tap) => (sha.has(key(tap)) ? `B${tap.iso}:${sha.get(key(tap))}g${tap.gen}` : `R${tap.slot}g${tap.gen}`);
@@ -219,7 +250,10 @@ async function runSchedule(size, label, next) {
   function ask(tag, op, background = false, buffer = null) {
     asked.add(tag);
     const done = pool.request(op, buffer, buffer ? [buffer] : [], null, { frameMeta: tag }, background);
-    done.then(() => asked.delete(tag), () => asked.delete(tag));
+    done.then(() => asked.delete(tag), () => {
+      asked.delete(tag);
+      rejectedAt.set(tag, ++stamp);
+    });
     return done;
   }
   /** 先记下这一行再调 `start`：调用里就发出的请求已经算这一行的。 */
@@ -228,7 +262,7 @@ async function runSchedule(size, label, next) {
     calls.push(row);
     let p;
     try {
-      p = Promise.resolve(start());
+      p = Promise.resolve(start(row));
     } catch (err) {
       p = Promise.reject(err);
     }
@@ -246,11 +280,28 @@ async function runSchedule(size, label, next) {
       ctrl.c.destroy();
     }
     const c = new CardBakeController(size);
-    const me = { c, iso, alive: true };
+    const nodes = CARDS.map((card) => ({ dataset: { card: card.id } }));
+    c.observe(nodes);
+    const io = observers.at(-1);
+    const me = { c, iso, alive: true, io, nodes, visible: [...visible] };
     ctrl = me;
+    // 观察者报一次初始可见性（开始前）；之后的变化由 scroll 事件报，像真的 IntersectionObserver 那样唤醒调度。
+    io?.cb(nodes.map((target, i) => ({ target, isIntersecting: visible[i] })));
+    startCtrl(me);
+  }
+  /** 开始（或在同一个控制器上重新开始）四张卡。和 recipe_view 一样，导出时控制器先停（isBusy）。 */
+  function startCtrl(me) {
     const jobs = CARDS.map((card) => ({ id: card.id, item: card }));
-    c.observe(jobs.filter((_, i) => visible[i]).map((job) => ({ dataset: { card: job.id } })));
-    c.start(jobs, { isAlive: () => me.alive, isBusy: () => false, run: (card) => track('bg', `ctrl ${card.id}@${iso}`, () => book.bake(card, 'jlaunch', iso, undefined, true)).promise });
+    me.c.start(jobs, { isAlive: () => me.alive, isBusy: () => paused, run: (card) => track('bg', `ctrl ${card.id}@${me.iso}`, () => book.bake(card, 'jlaunch', me.iso, undefined, true)).promise });
+  }
+  /** 放行扣住的 WASM 下载。 */
+  async function releaseWasm(pass) {
+    const go = held.shift();
+    if (!go) return false;
+    trace.push(`release WASM ${pass ? 'ok' : '503'}`);
+    go(pass);
+    await flush();
+    return true;
   }
   const fail = (kind, detail, step) => {
     throw new Violation(JSON.stringify({ kind, size, label, step, detail, queues: live().map((w) => `w${w.n}:[${w.q.map((m) => m.tag)}]`), waiting: pendingTaps().map((t) => `${t.text}->${need(t)}`) }));
@@ -270,10 +321,12 @@ async function runSchedule(size, label, next) {
         const ahead = at.q.slice(0, at.q.findIndex((m) => m.tag === job)).filter((m) => m.op !== 'ping');
         if (ahead.length) fail('G1-tap-behind-compute', `${tap.text} needs ${job} on w${at.n}, behind ${ahead.map((m) => m.tag)}`, step);
       } else if (asked.has(job)) {
+        // 首次用 WASM、模块还在下载或编译：点击等的是模块，不是 Worker（「不保证」），G2 不适用。
+        if (held.length) continue;
         const busy = live().filter((w) => compute(w).length > 0).length;
         if (busy < size) fail('G2-tap-waits-with-free-worker', `${tap.text} needs ${job}, ${size - busy} worker(s) without compute`, step);
         if (size >= 2 && !live().some((w) => compute(w).every((m) => isFg(m.tag)))) fail('G2-tap-waits-all-workers-background', `${tap.text} needs ${job}`, step);
-      } else if (!paused) {
+      } else if (!(paused && job.startsWith('B'))) {
         fail('tap-job-never-requested', `${tap.text} needs ${job}, not asked of the pool`, step);
       }
     }
@@ -286,6 +339,7 @@ async function runSchedule(size, label, next) {
     // 导出总会结束：bake 等导出是「不保证」里的，不算没结算。
     paused = false;
     setExportPaused(false);
+    while (await releaseWasm(true));
     await flush();
     await clock.advance(5000);
     await flush();
@@ -336,14 +390,18 @@ async function runSchedule(size, label, next) {
       await clock.advance(10);
     }
     assert.equal(book.unitState('jlaunch').state, 'ready', 'fixture calibration never became ready');
-    const warm = ask('Fwarm', 'describe');
-    for (let i = 0; i < 2000 && !workers[0]?.q.length; i += 1) await flush();
-    answer(workers[0], true);
-    await warm;
-    await flush();
+    if (!cold) {
+      const warm = ask('Fwarm', 'describe');
+      for (let i = 0; i < 2000 && !workers[0]?.q.length; i += 1) await flush();
+      if (!workers[0]?.q.length) fail('G5-never-settled', 'the warm-up describe never reached a worker', 'warm-up');
+      answer(workers[0], true);
+      await warm;
+      await flush();
+    }
     trace.length = 0;
+    if (cold) trace.push('cold start: WASM download held');
     let fgN = 0;
-    const ctx = { size, workers: () => live(), ctrlIso: () => ctrl?.iso ?? 200 };
+    const ctx = { size, workers: () => live(), ctrlIso: () => ctrl?.iso ?? 200, held: () => held.length > 0 };
     for (let step = 0; ; step += 1) {
       const ev = next(ctx, step);
       if (!ev) break;
@@ -372,7 +430,13 @@ async function runSchedule(size, label, next) {
           trace.push(`tap ${ev.card.id}@${iso}`);
           ctrl?.c.beginStage(`tap-${step}`, ev.card.id, true);
           const owner = ctrl;
-          track('tap', `tap ${ev.card.id}@${iso}`, () => book.bake(ev.card, 'jlaunch', iso).finally(() => owner?.c.endStage(`tap-${step}`, ev.card.id)), { slot: ev.card.slot, iso, gen });
+          // Book.bake 落定的那一刻点击就不再等了（在 endStage 之前标上：endStage 会唤醒控制器，它可能马上用同一个 tag
+          // 按后台重新要这张卡）。
+          const settle = (row) => () => { row.settled = true; };
+          track('tap', `tap ${ev.card.id}@${iso}`, (row) => book.bake(ev.card, 'jlaunch', iso).then(
+            (v) => { settle(row)(); return v; },
+            (err) => { settle(row)(); throw err; },
+          ).finally(() => owner?.c.endStage(`tap-${step}`, ev.card.id)), { slot: ev.card.slot, iso, gen });
           break;
         }
         case 'fg':
@@ -425,6 +489,30 @@ async function runSchedule(size, label, next) {
           track(ev.background ? 'bg' : 'fg', tag, () => ask(tag, ev.background ? 'bake' : 'describe', Boolean(ev.background), buf));
           break;
         }
+        case 'release':
+          await releaseWasm(ev.ok !== false);
+          break;
+        case 'scroll': {
+          // 挂好的控制器上滚动：先有输入（冷却），再由观察者报来变化。
+          const me = ctrl;
+          if (!me || !me.io || me.io.dead) break;
+          if (ev.input) me.c.noteInput();
+          const entries = [];
+          ev.flip.forEach((f, i) => {
+            if (!f) return;
+            me.visible[i] = !me.visible[i];
+            entries.push({ target: me.nodes[i], isIntersecting: me.visible[i] });
+          });
+          trace.push(`scroll${ev.input ? ' (input)' : ''} visible=${me.visible.map(Number).join('')}`);
+          if (entries.length) me.io.cb(entries);
+          break;
+        }
+        case 'restart':
+          if (!ctrl) break;
+          trace.push('restart the same controller');
+          ctrl.c.cancel();
+          startCtrl(ctrl);
+          break;
         case 'stop':
           trace.push('stop');
           pool.stop();
@@ -442,6 +530,7 @@ async function runSchedule(size, label, next) {
     let quiet = 0;
     // 连着 20 轮（6 秒，长过冷却和空闲回调）没有新请求才算完。
     for (let i = 0; i < 4000 && quiet < 20; i += 1) {
+      while (await releaseWasm(true));
       await flush();
       await clock.advance(300);
       const w = live().find((x) => x.q.length);
@@ -462,36 +551,44 @@ async function runSchedule(size, label, next) {
     setExportPaused(false);
     pool.stop();
     clock.restore();
+    Object.assign(WebAssembly, realCompile);
+    delete globalThis.IntersectionObserver;
   }
 }
 
-/** 随机日程。 */
+/** 随机日程。三成从冷启动开始（WASM 下载扣着，日程里放行）。 */
 function randomSchedule(seed, size) {
   const rand = rng(seed * 7919 + size * 104729);
   const pick = (list) => list[Math.floor(rand() * list.length)];
-  return (ctx, step) => {
+  const flips = () => CARDS.map(() => rand() < 0.4);
+  const next = (ctx, step) => {
     if (step >= STEPS) return null;
     if (step === 0) return { t: 'mount', iso: pick(ISOS), visible: CARDS.map(() => rand() < 0.5) };
     const r = rand();
     const withPick = (t) => ({ t, pick });
-    if (r < 0.30) return withPick('reply');
-    if (r < 0.33) return withPick('error');
-    if (r < 0.345) return withPick('crash');
-    if (r < 0.46) return { t: 'tap', card: pick(CARDS) };
-    if (r < 0.56) return { t: 'bg', card: pick(CARDS), iso: pick(ISOS) };
-    if (r < 0.61) return { t: 'fg' };
-    if (r < 0.64) return { t: 'ping' };
-    if (r < 0.67) return { t: 'raw' };
-    if (r < 0.71) return { t: 'mount', iso: pick(ISOS), visible: CARDS.map(() => rand() < 0.5) };
-    if (r < 0.75) return { t: 'input' };
-    if (r < 0.83) return { t: 'time', ms: pick([30, 200, 700, 1300, 2500]) };
-    if (r < 0.86) return { t: 'pause', on: rand() < 0.5 };
-    if (r < 0.88) return { t: 'gen' };
-    if (r < 0.90) return { t: 'ctorThrow' };
-    if (r < 0.93) return { t: 'detached', background: rand() < 0.5 };
-    if (r < 0.935) return { t: 'stop' };
+    if (r < 0.28) return withPick('reply');
+    if (r < 0.31) return withPick('error');
+    if (r < 0.325) return withPick('crash');
+    if (r < 0.44) return { t: 'tap', card: pick(CARDS) };
+    if (r < 0.53) return { t: 'bg', card: pick(CARDS), iso: pick(ISOS) };
+    if (r < 0.58) return { t: 'fg' };
+    if (r < 0.61) return { t: 'ping' };
+    if (r < 0.64) return { t: 'raw' };
+    if (r < 0.68) return { t: 'mount', iso: pick(ISOS), visible: CARDS.map(() => rand() < 0.5) };
+    if (r < 0.71) return { t: 'input' };
+    if (r < 0.78) return { t: 'time', ms: pick([30, 200, 700, 1300, 2500]) };
+    if (r < 0.81) return { t: 'pause', on: rand() < 0.5 };
+    if (r < 0.83) return { t: 'gen' };
+    if (r < 0.85) return { t: 'ctorThrow' };
+    if (r < 0.88) return { t: 'detached', background: rand() < 0.5 };
+    if (r < 0.885) return { t: 'stop' };
+    if (r < 0.92) return { t: 'scroll', flip: flips(), input: rand() < 0.5 };
+    if (r < 0.94) return { t: 'restart' };
+    if (r < 0.97 && ctx.held()) return { t: 'release', ok: rand() < 0.8 };
     return withPick('reply');
   };
+  next.cold = rand() < 0.3;
+  return next;
 }
 
 /** 固定日程：每个以前的发现一个。`events` 里的函数按当时状态生成事件。 */
@@ -552,6 +649,39 @@ const FIXED = {
     { t: 'reply', pick: (ws) => ws.find((w) => /^X/.test(w.q[0]?.tag)) ?? ws[0] },
     { t: 'reply', pick: (ws) => ws[0] },
   ],
+  // r4 P2：冷编译。后台先要、前台在编译时要；模块好了以后前台先发（G4，交出去那一刻）。
+  'r4-P2-cold-compile-background-first': { cold: true, build: () => [{ t: 'raw' }, { t: 'fg' }, { t: 'release', ok: true }] },
+  // r4 P2：冷编译时控制器先要了卡，再点另一张卡（Book 的 resolve 前台），然后放行。
+  'r4-P2-cold-compile-card-then-tap': {
+    cold: true,
+    build: () => [{ t: 'mount', iso: 200, visible: [true, true, false, false] }, { t: 'bg', card: C.C4, iso: 200 }, { t: 'tap', card: C.C3 }, { t: 'release', ok: true }],
+  },
+  // r4 P2：编译失败（503），之后没有新请求：等它的请求也都要结束（G5）。
+  'r4-P2-cold-compile-fails': { cold: true, build: () => [{ t: 'raw' }, { t: 'fg' }, { t: 'release', ok: false }, { t: 'time', ms: 300 }] },
+  // r4 P2：编译失败（503）：等它的请求都结束；下一个请求重新下载。
+  'r4-P2-cold-compile-fails-then-retry': {
+    cold: true,
+    build: () => [{ t: 'raw' }, { t: 'fg' }, { t: 'release', ok: false }, { t: 'fg' }, { t: 'raw' }, { t: 'release', ok: true }],
+  },
+  // r4：同步拒绝。前台请求在 pump() 里交出去时抛错（可转移对象已交出）被拒，同一次 pump() 接着发后台：不算 G4。
+  'r4-sync-rejection-then-background': (size) => [...fillWithBackground(size), { t: 'detached', background: false }, { t: 'raw' }, { t: 'reply', pick: (ws) => ws[0] }],
+  // r4：同步拒绝。补位时建 Worker 抛错，等着的前台请求被拒，后台接着发。
+  'r4-ctor-rejection-then-background': (size) => [{ t: 'raw' }, { t: 'fg' }, { t: 'raw' }, { t: 'ctorThrow' }, { t: 'crash', pick: (ws) => ws[0] }],
+  // r4 P3：挂好以后滚动：观察者报来新的可见卡（冷却中、前台在跑、导出暂停、同一个控制器重新开始）。
+  'r4-P3-scroll-after-mount': () => [
+    { t: 'mount', iso: 200, visible: [false, false, false, false] },
+    { t: 'input' },
+    { t: 'scroll', flip: [false, false, true, false], input: true },
+    { t: 'fg' },
+    { t: 'tap', card: C.C3 },
+    { t: 'pause', on: true },
+    { t: 'scroll', flip: [false, false, false, true], input: false },
+    { t: 'restart' },
+    { t: 'pause', on: false },
+    { t: 'time', ms: 1300 },
+    { t: 'scroll', flip: [true, false, true, false], input: true },
+    { t: 'reply', pick: (ws) => ws[0] },
+  ],
   // r3 P1：一个 Worker 在做旧的后台 bake、别的 Worker 各有前台请求时要了当前照片的卡的 resolve，再点同一张卡。
   'r3-P1-background-posted-to-busy-worker': (size) => [
     { t: 'raw' },
@@ -577,14 +707,15 @@ function report(name, schedules, started) {
 }
 
 if (ONLY !== 'random') {
-  test('scheduling G1–G5: fixed schedules for every past finding (r1 P1, r2 P1, r2 P2 ×2, r3 P1 ×2) on 1–4 workers', async () => {
+  test('scheduling G1–G5: fixed schedules for every past finding (r1 P1, r2 P1, r2 P2 ×2, r3 P1 ×2, r4 P2 ×4, sync rejection ×2, r4 P3) on 1–4 workers', async () => {
     violations.clear();
     const started = Date.now();
     let schedules = 0;
-    for (const [name, build] of Object.entries(FIXED)) {
+    for (const [name, spec] of Object.entries(FIXED)) {
+      const { build, cold = false } = typeof spec === 'function' ? { build: spec } : spec;
       for (const size of SIZES) {
         schedules += 1;
-        const bad = await runSchedule(size, name, script(build(size)));
+        const bad = await runSchedule(size, name, script(build(size)), cold);
         if (bad) record(bad);
       }
     }
@@ -602,7 +733,8 @@ if (ONLY !== 'fixed') {
     for (const size of SIZES) {
       for (let seed = FROM; seed < FROM + SEEDS; seed += 1) {
         schedules += 1;
-        const bad = await runSchedule(size, `seed ${seed}`, randomSchedule(seed, size));
+        const sched = randomSchedule(seed, size);
+        const bad = await runSchedule(size, `seed ${seed}${sched.cold ? ' (cold)' : ''}`, sched, sched.cold);
         if (bad) {
           failing += 1;
           record(bad);
