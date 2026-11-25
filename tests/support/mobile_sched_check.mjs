@@ -124,6 +124,9 @@ const CARDS = [1, 2, 3, 4].map((slot) => ({ id: `C${slot}`, kind: 'builtin', slo
 const ISOS = [200, 1600];
 
 class Violation extends Error {}
+/** 日程自己造出来的失败（回包出错、Worker 坏掉、构造抛错、可转移对象已交出、stop()、换 DAT/校准）。别的拒绝都算违例。 */
+const INJECTED = new Set(['injected', 'crashed', 'injected Worker constructor failure', 'Worker 已停止', '相机配方文件或校准数据换了']);
+const injected = (err) => err?.name === 'DataCloneError' || INJECTED.has(err?.message);
 
 /**
  * 跑一个日程。`next(ctx)` 返回下一个事件（随机或固定脚本），null 结束。返回 null（通过）或违例。
@@ -230,7 +233,10 @@ async function runSchedule(size, label, next) {
       p = Promise.reject(err);
     }
     row.promise = p;
-    p.then(() => { row.done = true; }, () => { row.done = true; });
+    p.then(() => { row.done = true; }, (err) => {
+      row.done = true;
+      if (!injected(err)) row.unexpected = `${err?.name}: ${err?.message}`;
+    });
     return row;
   }
   let ctrl = null;
@@ -252,6 +258,8 @@ async function runSchedule(size, label, next) {
   function check(step) {
     transit = null;
     if (lateBackground) fail('G4-background-started-during-foreground', lateBackground, step);
+    const odd = calls.find((c) => c.unexpected);
+    if (odd) fail('unexpected-rejection', `${odd.text}: ${odd.unexpected}`, step);
     const compute = (w) => w.q.filter((m) => m.op !== 'ping');
     const over = live().find((w) => compute(w).length > 1);
     if (over) fail('G1-two-compute-jobs-on-one-worker', `w${over.n}: ${compute(over).map((m) => m.tag)}`, step);
@@ -283,6 +291,8 @@ async function runSchedule(size, label, next) {
     await flush();
     const stuck = calls.filter((c) => !c.done);
     if (stuck.length) fail('G5-never-settled', `${why}: ${stuck.map((c) => c.text)}`, step);
+    const odd = calls.find((c) => c.unexpected);
+    if (odd) fail('unexpected-rejection', `${why}, ${odd.text}: ${odd.unexpected}`, step);
   };
   /** 回包、出错或让 Worker 坏掉。`tag`：指定那个请求（固定日程用）；没有就挑一个有活的 Worker 的头一个。 */
   function headOf(tag, pick) {
