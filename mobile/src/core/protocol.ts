@@ -194,3 +194,29 @@ export interface CoreResult {
   json: string;
   buffers: ArrayBuffer[];
 }
+
+// 一个请求的优先级。配方卡小图的 resolve / bake 先按后台发出（core/pool.ts 给后台留着上限）。
+// 用户点了同一张卡、等的正是这个请求（Book 的缓存命中）时调 promote()：还在池子里排队的马上按前台发出；
+// 已经在 Worker 里跑的不动。同一张卡的 resolve 和随后的 bake 用同一个 Lane，升级一次两步都按前台走。
+export class Lane {
+  private up = false;
+  private hook: (() => void) | null = null;
+
+  /** 还是后台请求（没人点过）。 */
+  get background(): boolean {
+    return !this.up;
+  }
+
+  promote(): void {
+    if (this.up) return;
+    this.up = true;
+    const hook = this.hook;
+    this.hook = null;
+    hook?.();
+  }
+
+  /** 池子用：请求在池子里排队时登记，升级时叫；发出去以后清掉。 */
+  onPromote(hook: (() => void) | null): void {
+    this.hook = hook;
+  }
+}

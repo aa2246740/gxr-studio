@@ -12,6 +12,7 @@ import { selection, selectionKey, shelves, unitIndex, type Card, type Shelves } 
 import { ZIP_LIMITS, type ZipFail } from '../lib/zip';
 import { CamFilesController, type Dat, type PhotoDatTarget } from './book_camfiles';
 import { whenExportIdle } from './export_pause';
+import { Lane } from '../core/protocol';
 
 export type { Dat, PhotoDatTarget };
 
@@ -63,10 +64,10 @@ export interface BookIo {
   /** 校准数据 zip：大小检查、读取、核对、存 IndexedDB 都在 Worker 里，主线程不碰整包。 */
   importCalib(file: File, savedAt: number): Promise<CalibRead>;
   restoreCalib(): Promise<CalibRestored>;
-  /** `background`：配方卡小图的后台烘焙（见 core/pool.ts，点击发起的请求不排在它后面）。 */
-  bake(args: BakeArgs, background?: boolean): Promise<Bake>;
+  /** `background`：配方卡小图的后台烘焙（见 core/pool.ts，点击发起的请求不排在它后面）；Lane 可以后来升成前台。 */
+  bake(args: BakeArgs, background?: boolean | Lane): Promise<Bake>;
   /** `color_resolve`：配方选择 → 条目（旋钮已经套上）。`library` 是同卡的 GXRFX.BIN。 */
-  resolve(dat: ArrayBuffer, recipe: string, library?: ArrayBuffer | null, background?: boolean): Promise<Resolved>;
+  resolve(dat: ArrayBuffer, recipe: string, library?: ArrayBuffer | null, background?: boolean | Lane): Promise<Resolved>;
   /** `color_calib_check`：这个单元、这个 ISO 的 model_for 检查。 */
   calibCheck(args: CalibCheckArgs): Promise<CalibPick>;
   /** 记一个删除时间；比它早的导入不会再写进去。 */
@@ -516,18 +517,22 @@ export class Book {
   /** （模型、选择）→ 烘焙表的键；resolve 过一次以后才知道（条目 sha256 要 resolve 才有）。 */
   private readonly keyOfSel = new Map<string, string>();
 
-  private resolveSel(sel: Record<string, unknown>, background = false): Promise<Resolved> {
+  /** 后台请求的 Lane（resolve 和 bake 的缓存 Promise → 发它的那个 Lane）。点击命中还在等的后台项时把它升成前台。 */
+  private readonly laneOf = new WeakMap<Promise<unknown>, Lane>();
+
+  private resolveSel(sel: Record<string, unknown>, lane: Lane | null = null): Promise<Resolved> {
     const dat = this.dat;
     if (!dat) return Promise.reject(new Error('找不到这个配方。请重新选择。'));
     const id = `${this.generation}|${selectionKey(sel)}`;
     let job = this.resolved.get(id);
     if (!job) {
-      job = this.io.resolve(dat.read.bytes.slice(0), JSON.stringify(sel), dat.library ? dat.library.slice(0) : null, background);
+      job = this.io.resolve(dat.read.bytes.slice(0), JSON.stringify(sel), dat.library ? dat.library.slice(0) : null, lane ?? false);
+      if (lane) this.laneOf.set(job, lane);
       this.resolved.set(id, job);
       job.catch(() => {
         if (this.resolved.get(id) === job) this.resolved.delete(id);
       });
-    }
+    } else if (!lane) this.laneOf.get(job)?.promote();
     return job;
   }
 
@@ -548,7 +553,9 @@ export class Book {
     const generation = this.generation;
     const model = modelIso(iso);
     const sel = selection(card, unit, levels);
-    const got = await this.resolveSel(sel, background);
+    // 后台烘焙一张卡：resolve 和 bake 共用一个 Lane。用户点了这张卡、命中还在等的后台项时就升成前台（两步都算）。
+    const lane = background ? new Lane() : null;
+    const got = await this.resolveSel(sel, lane);
     if (generation !== this.generation) throw new Error('相机配方文件或校准数据换了');
     const key = `bake:${generation}:${unit}:${model}:${got.entrySha256}`;
     this.keyOfSel.set(`${generation}|${model}|${selectionKey(sel)}`, key);
@@ -561,8 +568,9 @@ export class Book {
       const entry = got.entry;
       job = whenExportIdle().then(() => {
         if (generation !== this.generation) throw new Error('相机配方文件或校准数据换了');
-        return this.io.bake({ entry: copy(entry), stock: copy(stock), menu: '', ctx: copy(files.ctx), ring: copy(files.ring), params: '{"step":0.375}' }, background);
+        return this.io.bake({ entry: copy(entry), stock: copy(stock), menu: '', ctx: copy(files.ctx), ring: copy(files.ring), params: '{"step":0.375}' }, lane ?? false);
       });
+      if (lane) this.laneOf.set(job, lane);
       this.bakes.set(key, job);
       job.then(
         (made) => {
@@ -572,7 +580,7 @@ export class Book {
           if (this.bakes.get(key) === job) this.bakes.delete(key);
         },
       );
-    }
+    } else if (!lane) this.laneOf.get(job)?.promote();
     await job;
     return key;
   }

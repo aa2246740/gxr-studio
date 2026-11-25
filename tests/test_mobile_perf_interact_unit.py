@@ -12,6 +12,8 @@ REPO = Path(__file__).resolve().parents[1]
 UNIT = REPO / "tests" / "support" / "mobile_perf_interact_unit.mjs"
 UNIT_R2 = REPO / "tests" / "support" / "mobile_perf_interact_r2_unit.mjs"
 UNIT_N5 = REPO / "tests" / "support" / "mobile_perf_interact_n5_unit.mjs"
+UNIT_N5_BOOK = REPO / "tests" / "support" / "mobile_perf_interact_n5_book_unit.mjs"
+UNIT_POOL = REPO / "tests" / "support" / "mobile_pool_recovery_unit.mjs"
 
 
 def test_perf_interact_units() -> None:
@@ -19,7 +21,7 @@ def test_perf_interact_units() -> None:
     if node is None:
         pytest.skip("node is required")
     result = subprocess.run(
-        [node, "--experimental-strip-types", "--test", str(UNIT), str(UNIT_R2), str(UNIT_N5)],
+        [node, "--experimental-strip-types", "--test", str(UNIT), str(UNIT_R2), str(UNIT_N5), str(UNIT_N5_BOOK), str(UNIT_POOL)],
         cwd=REPO,
         check=False,
         capture_output=True,
