@@ -233,6 +233,61 @@ function buildId(command: string): string {
   }
 }
 
+/** 生产构建把 main.ts 对 ./app/boot 的动态导入改成静态导入：首屏少一次 main -> boot 的串行往返。开发服务器不变（dev.html 走 devshell）。 */
+function prodStaticBoot(): Plugin {
+  const mainFile = path.resolve(root, 'src', 'main.ts');
+  return {
+    name: 'gxr-prod-static-boot',
+    apply: 'build',
+    enforce: 'pre',
+    transform(code, id) {
+      if (path.resolve(id.split('?')[0]) !== mainFile) return null;
+      const needle = "const { bootApp } = await import('./app/boot');";
+      if (!code.includes(needle)) throw new Error('gxr-prod-static-boot: main.ts no longer imports ./app/boot the expected way');
+      return `import { bootApp } from './app/boot';\n${code.replace(needle, '')}`;
+    },
+  };
+}
+
+/** 首屏之后只懒加载这两个分包（见 src/app/boot_lazy.ts）。 */
+const LAZY_ENTRIES: Record<string, string> = {
+  grid: path.resolve(root, 'src', 'app', 'grid.ts'),
+  editor: path.resolve(root, 'src', 'app', 'editor_chunk.ts'),
+};
+
+/**
+ * 生产构建：把两个懒加载分包的文件名写进主包（boot_lazy.ts 的占位串），加载失败后换查询串重新请求要用。
+ * 同时检查分包只有 JS、只静态依赖主包：这样重新请求一个文件就能整份拿到，不会卡在某个记住了失败的共享依赖上。
+ */
+function lazyChunkNames(): Plugin {
+  return {
+    name: 'gxr-lazy-chunk-names',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const chunks = Object.values(bundle).filter((item) => item.type === 'chunk');
+      const mainFile = path.resolve(root, 'src', 'main.ts');
+      // 主包：装着 main.ts 和首屏代码的那一块（两个 HTML 入口各有一个小门面，都静态导入它）。
+      const entry = chunks.find((item) => item.moduleIds.includes(mainFile));
+      if (!entry) throw new Error('gxr-lazy-chunk-names: main chunk not found');
+      const files: Record<string, string> = {};
+      for (const [key, file] of Object.entries(LAZY_ENTRIES)) {
+        const chunk = chunks.find((item) => item.facadeModuleId === file);
+        if (!chunk || !chunk.isDynamicEntry) throw new Error(`gxr-lazy-chunk-names: ${key} is not a lazy chunk`);
+        const extra = chunk.imports.filter((dep) => dep !== entry.fileName);
+        if (extra.length) throw new Error(`gxr-lazy-chunk-names: ${key} chunk also depends on ${extra.join(', ')}`);
+        const css = (chunk as { viteMetadata?: { importedCss?: Set<string> } }).viteMetadata?.importedCss;
+        if (css?.size) throw new Error(`gxr-lazy-chunk-names: ${key} chunk carries CSS ${[...css].join(', ')}`);
+        files[key] = path.posix.relative(path.posix.dirname(entry.fileName), chunk.fileName);
+      }
+      const lazy = chunks.filter((item) => item.isDynamicEntry && !item.isEntry);
+      const unexpected = lazy.filter((item) => !Object.values(LAZY_ENTRIES).includes(item.facadeModuleId ?? ''));
+      if (unexpected.length) throw new Error(`gxr-lazy-chunk-names: unexpected lazy chunks ${unexpected.map((item) => item.fileName).join(', ')}`);
+      if (!entry.code.includes('__GXR_LAZY_CHUNKS__')) throw new Error('gxr-lazy-chunk-names: placeholder missing from the main chunk');
+      entry.code = entry.code.replace(/(['"`])__GXR_LAZY_CHUNKS__\1/g, JSON.stringify(JSON.stringify(files)));
+    },
+  };
+}
+
 export default defineConfig(({ command }) => ({
   root,
   define: { __GXR_BUILD__: JSON.stringify(buildId(command)) },
@@ -246,12 +301,17 @@ export default defineConfig(({ command }) => ({
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: false,
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         main: path.resolve(root, 'index.html'),
         dev: path.resolve(root, 'dev.html'),
       },
+      output: {
+        // 首屏静态依赖的模块、以及网格和编辑器两个分包都用到的模块，全部放进主包。
+        // 两个分包因此只依赖主包（lazyChunkNames 在构建时核对）：失败后重新请求一个文件就能整份拿到。
+        codeSplitting: { groups: [{ name: 'main', minShareCount: 2 }] },
+      },
     },
   },
-  plugins: [devSamples(), defaultCalibSwitch()],
+  plugins: [prodStaticBoot(), lazyChunkNames(), devSamples(), defaultCalibSwitch()],
 }));
