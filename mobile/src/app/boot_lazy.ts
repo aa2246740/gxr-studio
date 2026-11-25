@@ -2,6 +2,9 @@
 // 分包只有 JS：样式全部随首屏加载（见 boot.ts 顶部）；分包也只静态依赖主包（构建时 vite.config.ts 检查）。
 // 所以加载失败以后，换个查询串重新请求那一个文件，就能整份拿到。
 
+import { Engine } from '../../../frontend/src/index';
+import { neutralBake, NEUTRAL_BAKE_KEY } from '../lib/neutral';
+
 export type ChunkKey = 'grid' | 'editor';
 
 // 生产构建由 vite.config.ts 的 lazyChunkNames 换成两个分包相对主包的文件名；开发服务器和 Node 单测里保持占位串。
@@ -166,4 +169,23 @@ export function bindPickers(dom: BootDom, app: { take(files: File[]): void; take
     dom.lutPicker.value = '';
     if (files.length) app.takeLuts(files);
   });
+}
+
+/** 显卡引擎（WebGPU）。建不起来就是 null，编辑器只显示相机 JPG；出错交给 `report`。 */
+export async function createEngine(shell: HTMLElement, report: (err: unknown) => void): Promise<Engine | null> {
+  if (!navigator.gpu) return null;
+  let engine: Engine | null;
+  try {
+    engine = await Engine.create();
+  } catch (err) {
+    report(err);
+    return null;
+  }
+  if (!engine) return null;
+  const bake = neutralBake();
+  engine.addBake(NEUTRAL_BAKE_KEY, bake.meta, bake.data);
+  engine.onFrame = () => {
+    shell.dataset.frame = '1';
+  };
+  return engine;
 }

@@ -222,11 +222,7 @@ export class Engine {
   onFrame: ((f: FrameInfo) => void) | null = null;
   onLost: ((reason: string) => void) | null = null;
 
-  /**
-   * `shaders: 'background'`（手机版用）：管线交给 GPU 编译以后马上返回，不等编译结果（软件 GPU 上要一两秒），
-   * 着色器有错时打一行错误并按设备丢失处理（`isLost`、`onLost`）。默认照旧等编译检查通过再返回，出错就抛。
-   */
-  static async create(opts: { shaders?: 'await' | 'background' } = {}): Promise<Engine | null> {
+  static async create(): Promise<Engine | null> {
     if (!('gpu' in navigator) || !navigator.gpu) return null;
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!adapter) return null;
@@ -234,21 +230,8 @@ export class Engine {
       requiredLimits: { maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize, maxBufferSize: adapter.limits.maxBufferSize },
     });
     const engine = new Engine(device, adapter);
-    if (opts.shaders === 'background') {
-      void engine.compileMessages().then((msgs) => engine.failOnShaderError(msgs), () => undefined);
-      return engine;
-    }
     for (const msg of await engine.compileMessages()) if (msg.type === 'error') throw new Error(`WGSL ${msg.lineNum}: ${msg.message}`);
     return engine;
-  }
-
-  private failOnShaderError(msgs: GPUCompilationMessage[]): void {
-    const bad = msgs.find((msg) => msg.type === 'error');
-    if (!bad) return;
-    const reason = `WGSL ${bad.lineNum}: ${bad.message}`;
-    console.error(reason);
-    this.lost = true;
-    this.onLost?.(reason);
   }
 
   private readonly modules: GPUShaderModule[];
