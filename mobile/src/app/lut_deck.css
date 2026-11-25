@@ -221,19 +221,27 @@
   border-color: rgba(255, 190, 90, 0.42);
 }
 
-/* 空库说明换行写在缩略图上沿，不跟卡片抢 390pt，也不切字、不压卡名。 */
+/* 空库说明放在「不用 LUT」右侧剩余空间（正常 flex 流），320–440pt 均不盖住导入瓷砖或卡片。 */
+.app[data-layout="phone-portrait"] .panel.lut[data-lut-empty="1"] > .lut-strip-wrap,
+.app:not([data-layout]) .panel.lut[data-lut-empty="1"] > .lut-strip-wrap {
+  flex: 0 0 auto;
+}
 .app[data-layout="phone-portrait"] .panel.lut > .lut-foot,
 .app:not([data-layout]) .panel.lut > .lut-foot {
-  position: absolute;
-  left: 98px;
-  right: 8px;
-  top: 2px;
-  bottom: auto;
-  flex: none;
-  margin: 0;
-  max-height: 22px;
-  overflow: hidden;
+  position: static;
+  flex: 1 1 0;
+  min-width: 0;
+  align-self: center;
+  margin: 0 8px 0 4px;
+  max-height: none;
+  overflow: visible;
   pointer-events: none;
   font-size: 10px;
-  line-height: 11px;
+  line-height: 13px;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+.app[data-layout="phone-portrait"] .panel.lut > .lut-foot[hidden],
+.app:not([data-layout]) .panel.lut > .lut-foot[hidden] {
+  display: none;
 }

@@ -54,7 +54,7 @@ const LANDSCAPE_VPS = [
 const STEMS = [manifest.isoOutStem, manifest.secondStem].filter(Boolean);
 const failures = [];
 const pageErrors = [];
-const summary = { fix1: {}, fix2: {}, fix3: {}, shots: [] };
+const summary = { fix1: {}, fix2: {}, fix3: {}, lutFoot: {}, reparent: {}, shots: [] };
 
 function redact(text) {
   let out = String(text).replace(/\/(?:Volumes|Users|private|var\/folders|tmp)\/\S+/g, '[path]');
@@ -402,7 +402,7 @@ try {
       await page.waitForFunction(() => !document.querySelector('.recipe-info-sheet'), null, { timeout: 10_000 });
       await frame(page, 2);
 
-      // 切到 LUT 再查一次切换键同 x 且无重叠
+      // 切到 LUT 查切换键同 x、无重叠，且空库说明不盖住导入瓷砖与「不用 LUT」卡
       await page.locator('.editor .panel.recipe > .mode-switch [data-mode="lut"]').tap();
       await page.waitForFunction(() => !document.querySelector('.editor .panel.lut')?.hidden, null, { timeout: 10_000 });
       await frame(page, 2);
@@ -411,7 +411,8 @@ try {
         const rect = (el) => {
           if (!el) return null;
           const b = el.getBoundingClientRect();
-          return { x: r1(b.left), y: r1(b.top), right: r1(b.right), bottom: r1(b.bottom) };
+          if (b.width <= 0 || b.height <= 0) return null;
+          return { x: r1(b.left), y: r1(b.top), w: r1(b.width), h: r1(b.height), right: r1(b.right), bottom: r1(b.bottom) };
         };
         const overlap = (a, b) => {
           if (!a || !b) return 0;
@@ -420,19 +421,171 @@ try {
         const sw = rect(document.querySelector('.editor .panel.lut > .mode-switch'));
         const wrap = rect(document.querySelector('.editor .panel.lut .lut-strip-wrap'));
         const strip = rect(document.querySelector('.editor .panel.lut .strip'));
-        return { swX: sw?.x ?? null, wrapOverlap: overlap(sw, wrap), stripOverlap: overlap(sw, strip) };
+        const pin = rect(document.querySelector('.editor .panel.lut .lut-pin'));
+        const footEl = document.querySelector('.editor .panel.lut .lut-foot');
+        const foot = footEl && !footEl.hidden ? rect(footEl) : null;
+        const cards = [...document.querySelectorAll('.editor .panel.lut .strip .rc')].map(rect).filter(Boolean);
+        const footOverlapCards = cards.reduce((acc, c) => acc + overlap(foot, c), 0);
+        const footClipped = footEl ? footEl.scrollWidth - footEl.clientWidth > 1 || footEl.scrollHeight - footEl.clientHeight > 1 : false;
+        return {
+          swX: sw?.x ?? null,
+          wrapOverlap: overlap(sw, wrap),
+          stripOverlap: overlap(sw, strip),
+          foot,
+          footClipped,
+          footOverlapSwitch: overlap(foot, sw),
+          footOverlapPin: overlap(foot, pin),
+          footOverlapCards: r1(footOverlapCards),
+        };
       });
-      summary.fix2.lut440 = lutCheck;
+      summary.fix2.lut440 = { swX: lutCheck.swX, wrapOverlap: lutCheck.wrapOverlap, stripOverlap: lutCheck.stripOverlap };
+      summary.lutFoot['440x956'] = {
+        foot: lutCheck.foot,
+        footClipped: lutCheck.footClipped,
+        footOverlapSwitch: lutCheck.footOverlapSwitch,
+        footOverlapPin: lutCheck.footOverlapPin,
+        footOverlapCards: lutCheck.footOverlapCards,
+      };
       check(
         lutCheck.swX !== null && f2.swRect && Math.abs(lutCheck.swX - f2.swRect.x) <= 0.5,
         `fix2 440x956: LUT switch x=${lutCheck.swX} differs from recipe switch x=${f2.swRect?.x}`,
       );
       check(lutCheck.wrapOverlap <= 0.5 && lutCheck.stripOverlap <= 0.5, `fix2 440x956: LUT strip overlaps switch: ${JSON.stringify(lutCheck)}`);
+      check(
+        Boolean(lutCheck.foot) &&
+          !lutCheck.footClipped &&
+          lutCheck.footOverlapSwitch <= 0.5 &&
+          lutCheck.footOverlapPin <= 0.5 &&
+          lutCheck.footOverlapCards <= 0.5,
+        `p3-2 lut-foot 440x956: empty LUT note clips or overlaps tiles (${JSON.stringify(summary.lutFoot['440x956'])})`,
+      );
+      await page.locator('.editor .panel.lut > .mode-switch [data-mode="recipe"]').tap();
+      await page.waitForFunction(() => !document.querySelector('.editor .panel.recipe')?.hidden, null, { timeout: 10_000 });
+      await frame(page, 2);
+    }
+
+    if (vp.label === '320x568' || vp.label === '375x667' || vp.label === '390x844') {
+      await page.locator('.editor .panel.recipe > .mode-switch [data-mode="lut"]').tap();
+      await page.waitForFunction(() => !document.querySelector('.editor .panel.lut')?.hidden, null, { timeout: 10_000 });
+      await frame(page, 3);
+      const lf = await page.evaluate(() => {
+        const r1 = (n) => Math.round(n * 10) / 10;
+        const rect = (el) => {
+          if (!el) return null;
+          const b = el.getBoundingClientRect();
+          if (b.width <= 0 || b.height <= 0) return null;
+          return { x: r1(b.left), y: r1(b.top), w: r1(b.width), h: r1(b.height), right: r1(b.right), bottom: r1(b.bottom) };
+        };
+        const overlap = (a, b) => {
+          if (!a || !b) return 0;
+          return r1(Math.max(0, Math.min(a.right, b.right) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.y, b.y)));
+        };
+        const sw = rect(document.querySelector('.editor .panel.lut > .mode-switch'));
+        const pin = rect(document.querySelector('.editor .panel.lut .lut-pin'));
+        const footEl = document.querySelector('.editor .panel.lut .lut-foot');
+        const foot = footEl && !footEl.hidden ? rect(footEl) : null;
+        const cards = [...document.querySelectorAll('.editor .panel.lut .strip .rc')].map(rect).filter(Boolean);
+        const footOverlapCards = r1(cards.reduce((acc, c) => acc + overlap(foot, c), 0));
+        const footClipped = footEl ? footEl.scrollWidth - footEl.clientWidth > 1 || footEl.scrollHeight - footEl.clientHeight > 1 : false;
+        return {
+          foot,
+          footClipped,
+          footOverlapSwitch: overlap(foot, sw),
+          footOverlapPin: overlap(foot, pin),
+          footOverlapCards,
+        };
+      });
+      summary.lutFoot[vp.label] = lf;
+      if (vp.label === '320x568') {
+        const prefix = manifest.shotsPrefix || 'shot';
+        await saveBandCrop(page, `${prefix}-p3-2-lut-320`);
+      }
+      check(
+        Boolean(lf.foot) && !lf.footClipped && lf.footOverlapSwitch <= 0.5 && lf.footOverlapPin <= 0.5 && lf.footOverlapCards <= 0.5,
+        `p3-2 lut-foot ${vp.label}: empty LUT note clips or overlaps tiles (${JSON.stringify(lf)})`,
+      );
       await page.locator('.editor .panel.lut > .mode-switch [data-mode="recipe"]').tap();
       await page.waitForFunction(() => !document.querySelector('.editor .panel.recipe')?.hidden, null, { timeout: 10_000 });
       await frame(page, 2);
     }
   }
+
+  // P3-3) iPad -> phone 回归：配方与 LUT 模式下切去 iPad 再回手机竖屏，panel 子顺序仍为 [mode-switch, strip-wrap, ...] 且零重叠
+  const inspectReparent = () =>
+    page.evaluate(() => {
+      const r1 = (n) => Math.round(n * 10) / 10;
+      const rect = (el) => {
+        if (!el) return null;
+        const b = el.getBoundingClientRect();
+        if (b.width <= 0 || b.height <= 0) return null;
+        return { x: r1(b.left), y: r1(b.top), right: r1(b.right), bottom: r1(b.bottom) };
+      };
+      const ov = (a, b) =>
+        a && b ? r1(Math.max(0, Math.min(a.right, b.right) - Math.max(a.x, b.x)) * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.y, b.y))) : 0;
+      const inspect = (kind) => {
+        const panel = document.querySelector(`.editor .panel.${kind}`);
+        const kids = panel ? [...panel.children].map((c) => c.className.split(' ')[0]) : [];
+        const sw = rect(panel?.querySelector(':scope > .mode-switch'));
+        const wrap = rect(panel?.querySelector(`:scope > .${kind}-strip-wrap`));
+        const cards = [...(panel?.querySelectorAll('.strip .rc') ?? [])].map(rect).filter(Boolean);
+        return {
+          hidden: panel?.hidden ?? null,
+          kids,
+          wrapOverlap: ov(sw, wrap),
+          cardOverlap: r1(cards.reduce((acc, c) => acc + ov(sw, c), 0)),
+        };
+      };
+      return { recipe: inspect('recipe'), lut: inspect('lut') };
+    });
+
+  await page.setViewportSize({ width: 820, height: 1180 });
+  await setSafeArea(page, { top: 24, bottom: 20, left: 0, right: 0 });
+  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'ipad-portrait', null, { timeout: 10_000 });
+  await frame(page, 3);
+  await page.setViewportSize({ width: 1180, height: 820 });
+  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'ipad-landscape', null, { timeout: 10_000 });
+  await frame(page, 3);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await setSafeArea(page, PORTRAIT_VPS[2].safe);
+  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'phone-portrait', null, { timeout: 10_000 });
+  await frame(page, 4);
+  summary.reparent.recipeAfterIpad = await inspectReparent();
+  check(
+    summary.reparent.recipeAfterIpad.recipe.kids[0] === 'mode-switch' &&
+      summary.reparent.recipeAfterIpad.recipe.kids[1] === 'recipe-strip-wrap' &&
+      summary.reparent.recipeAfterIpad.recipe.wrapOverlap <= 0.5 &&
+      summary.reparent.recipeAfterIpad.recipe.cardOverlap <= 0.5,
+    `p3-3 reparent recipe: unexpected order or overlap (${JSON.stringify(summary.reparent.recipeAfterIpad.recipe)})`,
+  );
+
+  // LUT 模式激活时切去 iPad 再回手机竖屏
+  await page.locator('.editor .panel.recipe > .mode-switch [data-mode="lut"]').tap();
+  await page.waitForFunction(() => !document.querySelector('.editor .panel.lut')?.hidden, null, { timeout: 10_000 });
+  await frame(page, 2);
+  await page.setViewportSize({ width: 1180, height: 820 });
+  await setSafeArea(page, { top: 24, bottom: 20, left: 0, right: 0 });
+  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'ipad-landscape', null, { timeout: 10_000 });
+  await frame(page, 3);
+  await page.setViewportSize({ width: 440, height: 956 });
+  await setSafeArea(page, PORTRAIT_VPS[3].safe);
+  await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'phone-portrait', null, { timeout: 10_000 });
+  await frame(page, 4);
+  summary.reparent.lutAfterIpad = await inspectReparent();
+  check(
+    summary.reparent.lutAfterIpad.lut.kids[0] === 'mode-switch' &&
+      summary.reparent.lutAfterIpad.lut.kids[1] === 'lut-strip-wrap' &&
+      summary.reparent.lutAfterIpad.lut.wrapOverlap <= 0.5 &&
+      summary.reparent.lutAfterIpad.lut.cardOverlap <= 0.5,
+    `p3-3 reparent lut: unexpected order or overlap (${JSON.stringify(summary.reparent.lutAfterIpad.lut)})`,
+  );
+  check(
+    summary.reparent.lutAfterIpad.recipe.kids[0] === 'mode-switch' &&
+      summary.reparent.lutAfterIpad.recipe.kids[1] === 'recipe-strip-wrap',
+    `p3-3 reparent recipe(bg): unexpected order (${JSON.stringify(summary.reparent.lutAfterIpad.recipe)})`,
+  );
+  await page.locator('.editor .panel.lut > .mode-switch [data-mode="recipe"]').tap();
+  await page.waitForFunction(() => !document.querySelector('.editor .panel.recipe')?.hidden, null, { timeout: 10_000 });
+  await frame(page, 2);
 
   // 1 & 2) 手机横屏（844×390 / 956×440）
   for (const vp of LANDSCAPE_VPS) {
@@ -488,8 +641,9 @@ try {
   check(
     readyCurrent.saveExportState === 'ready-current' &&
       readyCurrent.saveDisabledProp === false &&
+      (readyCurrent.saveAriaLabel || '').includes(readyCurrent.saveText || '存到相册') &&
       (readyCurrent.saveAriaLabel || '').includes('已做好'),
-    `fix3 ready-current: toolbar button should mark ready-current state and aria hint without blocking click (got ${JSON.stringify(readyCurrent)})`,
+    `fix3 ready-current: toolbar button should mark ready-current state and Label-in-Name aria hint without blocking click (got ${JSON.stringify(readyCurrent)})`,
   );
 
   // 横屏下就绪态也只保留一个蓝色主按钮
@@ -525,6 +679,34 @@ try {
     `fix3 ready-other: toolbar button on another photo should be non-blue secondary and enabled (${JSON.stringify(readyOther)})`,
   );
 
+  // 监听第 2 张从 wait/run 到 ok 期间底栏导出按钮的每一次状态变更（P2-1 running-ready 回归）
+  await page.evaluate(() => {
+    window.__runningReadyLog = [];
+    const snap = () => {
+      const dock = document.querySelector('.pdock');
+      const save = document.querySelector('.editor .toolbar [data-act="export"]');
+      if (!dock || !save) return;
+      const entry = {
+        dockVisual: dock.dataset.visualState ?? null,
+        saveClasses: [...save.classList],
+        saveBg: getComputedStyle(save).backgroundColor,
+        saveExportState: save.getAttribute('data-export-state') ?? null,
+        saveAriaLabel: save.getAttribute('aria-label') ?? null,
+        saveText: save.textContent?.trim() ?? null,
+      };
+      const prev = window.__runningReadyLog.at(-1);
+      if (!prev || JSON.stringify(prev) !== JSON.stringify(entry)) window.__runningReadyLog.push(entry);
+    };
+    window.__runningReadyObs = new MutationObserver(snap);
+    window.__runningReadyObs.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['class', 'data-visual-state', 'data-export-state', 'aria-label'],
+    });
+    snap();
+  });
+
   await page.locator('.editor .toolbar [data-act="export"]').tap();
   await page.waitForFunction(
     () =>
@@ -534,6 +716,35 @@ try {
     { timeout: 120_000 },
   );
   await frame(page, 2);
+
+  const runningReadyEntries = await page.evaluate(() => {
+    window.__runningReadyObs?.disconnect();
+    return (window.__runningReadyLog ?? []).filter((e) => e.dockVisual === 'running-ready');
+  });
+  const readyTwo = await measureExportButtons(page);
+  summary.fix3.runningReadyEntries = runningReadyEntries;
+  summary.fix3.readyTwo = readyTwo;
+  check(runningReadyEntries.length > 0, 'p2-1 running-ready: expected to observe running-ready state while photo 2 exports');
+  for (const row of runningReadyEntries) {
+    check(
+      row.saveExportState !== 'ready-current' &&
+        !row.saveClasses.includes('export-done') &&
+        !row.saveClasses.includes('primary') &&
+        !isBlueAccent(row.saveBg) &&
+        !(row.saveAriaLabel || '').includes('已做好') &&
+        (row.saveAriaLabel || '').includes(row.saveText || '存到相册'),
+      `p2-1 running-ready: photo 2 toolbar must not claim ready-current while exporting (${JSON.stringify(row)})`,
+    );
+  }
+  check(
+    readyTwo.saveExportState === 'ready-current' &&
+      readyTwo.saveClasses.includes('export-done') &&
+      !readyTwo.saveClasses.includes('primary') &&
+      !isBlueAccent(readyTwo.saveBg) &&
+      (readyTwo.saveAriaLabel || '').includes(readyTwo.saveText || '存到相册') &&
+      (readyTwo.saveAriaLabel || '').includes('已做好'),
+    `p2-1 ready-two: photo 2 toolbar should become ready-current with Label-in-Name aria once ok (${JSON.stringify(readyTwo)})`,
+  );
 
   // 用户点击就绪条「存进相册」触发同步 navigator.share（保持 iOS 用户手势规则），完成后底栏恢复蓝色主按钮
   const shareBefore = await page.evaluate(() => window.__shareLog.calls.length);

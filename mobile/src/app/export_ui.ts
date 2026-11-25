@@ -190,7 +190,7 @@ export class ExportFlow {
     if (this.dock) this.mountDock(); else this.clearSlotFlag();
     this.syncSave();
   }
-  private syncSave(): void { syncExportSaveButton(this.shell, this.dock, (s) => this.app.photos().some((p) => p.stem === s && this.queue.isQuickBlocked(p.id, this.batch))); }
+  private syncSave(): void { syncExportSaveButton(this.shell, this.dock, (s) => this.queue.photoExportState(this.app.photos().find((p) => p.stem === s)?.id ?? '', this.batch)); }
 
   /** 现在还没撤销的对象 URL 有几个（开发服务器的测试读）。 */
   liveUrls(): number {

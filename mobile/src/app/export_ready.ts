@@ -327,15 +327,18 @@ export function mountExportDock(
   return null;
 }
 
+export type PhotoExportState = 'idle' | 'busy' | 'ready';
+
 const READY_BLUE_STATES = new Set(['ready', 'stopped-ready', 'partial-fail', 'running-ready']);
 const DEFAULT_SAVE_ARIA = '导出当前照片并存到相册';
-const READY_CURRENT_SAVE_ARIA = '当前照片已做好，请点上方存进相册';
+const READY_CURRENT_SAVE_ARIA = '存到相册：当前照片已做好，请点上方存进相册';
+const BUSY_CURRENT_SAVE_ARIA = '存到相册：当前照片正在导出';
 
 /** 就绪条显示蓝色「存进相册」时把底栏「存到相册」降为次级非蓝按钮，避免同屏两个相近蓝按钮。 */
 export function syncExportSaveButton(
   shell: HTMLElement,
   dock: HTMLElement | null,
-  isPhotoBlocked: (stem: string) => boolean,
+  photoState: (stem: string) => PhotoExportState,
 ): void {
   const btn = shell.querySelector<HTMLButtonElement>('.screen.editor .toolbar [data-act="export"]');
   if (!btn) return;
@@ -348,12 +351,20 @@ export function syncExportSaveButton(
     return;
   }
   const stem = shell.querySelector<HTMLElement>('.screen.editor')?.dataset.photo ?? '';
-  const currentBlocked = Boolean(stem && isPhotoBlocked(stem));
+  const state: PhotoExportState = stem ? photoState(stem) : 'idle';
   btn.classList.remove('primary');
   btn.classList.add('export-demoted');
-  btn.classList.toggle('export-done', currentBlocked);
-  btn.setAttribute('aria-label', currentBlocked ? READY_CURRENT_SAVE_ARIA : DEFAULT_SAVE_ARIA);
-  btn.dataset.exportState = currentBlocked ? 'ready-current' : 'ready-other';
+  btn.classList.toggle('export-done', state === 'ready');
+  if (state === 'ready') {
+    btn.setAttribute('aria-label', READY_CURRENT_SAVE_ARIA);
+    btn.dataset.exportState = 'ready-current';
+  } else if (state === 'busy') {
+    btn.setAttribute('aria-label', BUSY_CURRENT_SAVE_ARIA);
+    btn.dataset.exportState = 'running-current';
+  } else {
+    btn.setAttribute('aria-label', DEFAULT_SAVE_ARIA);
+    btn.dataset.exportState = 'ready-other';
+  }
 }
 
 /** 更新导出内存与耗时观测数据到壳属性及性能条。 */

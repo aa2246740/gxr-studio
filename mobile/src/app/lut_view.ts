@@ -351,6 +351,7 @@ export class LutView {
 
     const emptyLibrary = !this.ipadMode && !list.length && !deleted;
     this.footEl.hidden = !emptyLibrary;
+    this.panel.dataset.lutEmpty = emptyLibrary ? '1' : '0';
 
     this.pin.hidden = this.ipadMode;
     const sp = this.spaceButtonLabel(selectedRec);
