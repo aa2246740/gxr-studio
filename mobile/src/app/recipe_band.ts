@@ -144,7 +144,14 @@ export function makeRecipeStatusTile(spec: RecipeStatusSpec, onClick: () => void
   if (spec.cameraRecipeNote) tile.dataset.cameraRecipeNote = spec.cameraRecipeNote;
   tile.setAttribute('aria-label', `配方状态：${spec.label}`);
   const box = el('div', 'th filter-th');
-  box.append(icon(spec.tone === 'warn' ? WARN : INFO), el('span', 'status-lab', spec.label));
+  const lab = el('span', 'status-lab');
+  const paren = /^(.*?)(（[^）]+）)$/.exec(spec.label);
+  if (paren && paren[1]) {
+    lab.append(el('span', 'status-chunk', paren[1]), document.createElement('wbr'), el('span', 'status-chunk', paren[2]));
+  } else {
+    lab.textContent = spec.label;
+  }
+  box.append(icon(spec.tone === 'warn' ? WARN : INFO), lab);
   tile.append(box);
   tile.addEventListener('click', onClick);
   return tile;

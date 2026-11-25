@@ -4,7 +4,7 @@
 import type { QualityTier, SizeTier } from '../lib/export_request';
 import { halfframeFileCount, normalizedHalfframeMode, type HalfframeMode } from '../lib/halfframe';
 import type { Failure, ItemState, Phase } from './export_batch';
-import type { ReadyEntry } from './export_ready';
+import type { PhotoExportState, ReadyEntry } from './export_ready';
 
 export interface ExportOptions {
   size: SizeTier;
@@ -75,22 +75,42 @@ export class ExportQueueState<TPhoto extends { id: string; diptych?: boolean }> 
     return this.carriedSaved + inBatch + this.sharedIds.size;
   }
 
-  /** 判断某张照片是否正在导出、已排队，或已做好但还没存进相册。 */
-  isQuickBlocked(id: string, batch: ActiveBatchView | null): boolean {
-    if (this.carryover.some((entry) => !this.sharedIds.has(entry.id) && basePhotoId(entry.id) === id)) return true;
+  /** 判断某张照片是否正在导出或排队等待导出（批次停止后不再算进行中）。 */
+  isInProgress(id: string, batch: ActiveBatchView | null): boolean {
+    if (!id) return false;
     for (const job of this.pendingQueue) {
       if (job.photos.some((p) => p.id === id)) return true;
     }
-    if (batch && batch.phase !== 'closed') {
-      // 只有批次还在跑（或停在待存上限）时，没做完的照片才算「正在导出」；停止以后可以重新点「存到相册」
-      const live = batch.phase === 'running' || batch.phase === 'held';
+    if (batch && (batch.phase === 'running' || batch.phase === 'held')) {
       for (const [entryId, state] of batch.states) {
-        if (basePhotoId(entryId) !== id) continue;
-        if (live && (state === 'wait' || state === 'run')) return true;
-        if (state === 'ok' && !this.sharedIds.has(entryId)) return true;
+        if (basePhotoId(entryId) === id && (state === 'wait' || state === 'run')) return true;
       }
     }
     return false;
+  }
+
+  /** 判断某张照片是否已做好成片且尚未存进相册（只计入未共享的 carryover 或 ok 条目）。 */
+  isReadyUnsaved(id: string, batch: ActiveBatchView | null): boolean {
+    if (!id) return false;
+    if (this.carryover.some((entry) => !this.sharedIds.has(entry.id) && basePhotoId(entry.id) === id)) return true;
+    if (batch && batch.phase !== 'closed') {
+      for (const [entryId, state] of batch.states) {
+        if (basePhotoId(entryId) === id && state === 'ok' && !this.sharedIds.has(entryId)) return true;
+      }
+    }
+    return false;
+  }
+
+  /** 区分「正在导出/排队」「已做好待存」「未加入」三态，避免导出中误报「已做好」。 */
+  photoExportState(id: string, batch: ActiveBatchView | null): PhotoExportState {
+    if (this.isInProgress(id, batch)) return 'busy';
+    if (this.isReadyUnsaved(id, batch)) return 'ready';
+    return 'idle';
+  }
+
+  /** 判断某张照片是否正在导出、已排队，或已做好但还没存进相册。 */
+  isQuickBlocked(id: string, batch: ActiveBatchView | null): boolean {
+    return this.photoExportState(id, batch) !== 'idle';
   }
 
   /** 就绪条要交出的全部成片：同一张照片在新批次里又做好了，就只交新的（旧的留着备用，直到新的做好）。 */

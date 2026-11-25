@@ -127,13 +127,21 @@ export function syncStripsForLayout(
   if (recipes) {
     const wrap = recipes.stripWrapEl();
     const panel = recipes.panelEl();
-    if (wrap.parentElement !== panel) panel.prepend(wrap);
+    if (wrap.parentElement !== panel) {
+      const sw = panel.querySelector(':scope > .mode-switch');
+      if (sw) sw.after(wrap);
+      else panel.prepend(wrap);
+    }
     wrap.hidden = recipes.isFineTuning();
   }
   if (luts) {
     const wrap = luts.stripWrapEl();
     const panel = luts.panelEl();
-    if (wrap.parentElement !== panel) panel.prepend(wrap);
+    if (wrap.parentElement !== panel) {
+      const sw = panel.querySelector(':scope > .mode-switch');
+      if (sw) sw.after(wrap);
+      else panel.prepend(wrap);
+    }
     wrap.hidden = false;
   }
 }
