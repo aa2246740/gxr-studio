@@ -170,7 +170,7 @@ export class RecipeView {
     if (on) this.fineTune = false;
     this.modeSwitchEl?.remove();
     this.modeSwitchEl = on ? null : this.makeModeSwitch();
-    if (this.modeSwitchEl) this.panel.append(this.modeSwitchEl);
+    if (this.modeSwitchEl) this.panel.prepend(this.modeSwitchEl);
     this.stripKeys = [];
     this.build();
   }

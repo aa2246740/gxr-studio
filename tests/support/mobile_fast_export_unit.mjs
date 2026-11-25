@@ -175,6 +175,56 @@ test('export_queue: double tap deduplicates running, queued, and ready-unsaved p
   assert.deepEqual(queue.filterQuickPhotos([p1], batch), [p1]);
 });
 
+test('export_queue: photoExportState separates in-progress wait/run from ready-unsaved', async () => {
+  const { ExportBatch } = await import('../../mobile/src/app/export_batch.ts');
+  const { ExportQueueState } = await import('../../mobile/src/app/export_queue.ts');
+  const queue = new ExportQueueState();
+  const opts = { size: 'original', quality: 'high', hdr: true };
+  const p1 = { id: 'p1', stem: 'P1' };
+  const p2 = { id: 'p2', stem: 'P2' };
+  const p3 = { id: 'p3', stem: 'P3' };
+
+  // p1 already done in carryover while p2 is running and p3 is queued
+  queue.carryover.push({ id: 'p1', stem: 'P1', file: new File([new Uint8Array(8)], 'P1_gxr.jpg'), position: 1, hdrRequested: true });
+  let resolveRun;
+  const host = {
+    run: () => new Promise((r) => { resolveRun = r; }),
+    stop() {},
+    idle() {},
+    session: () => 1,
+    photo: () => ({ version: 1, dng: null, jpg: null }),
+    markGone() {},
+    busy() {},
+    changed() {},
+  };
+  const batch = new ExportBatch([{ id: 'p2', stem: 'P2', version: 1, dng: null, jpg: null, req: {} }], host);
+  queue.beginBatch([p2], opts);
+  batch.start();
+  await Promise.resolve();
+  assert.equal(queue.enqueueOrPrepareStart([p3], opts, batch, () => []), 'queued');
+
+  assert.equal(queue.photoExportState('p1', batch), 'ready');
+  assert.equal(queue.isReadyUnsaved('p1', batch), true);
+  assert.equal(queue.isInProgress('p1', batch), false);
+
+  assert.equal(queue.photoExportState('p2', batch), 'busy');
+  assert.equal(queue.isInProgress('p2', batch), true);
+  assert.equal(queue.isReadyUnsaved('p2', batch), false);
+
+  assert.equal(queue.photoExportState('p3', batch), 'busy');
+  assert.equal(queue.isInProgress('p3', batch), true);
+  assert.equal(queue.isReadyUnsaved('p3', batch), false);
+
+  assert.equal(queue.photoExportState('p4', batch), 'idle');
+
+  // Once p2 finishes, it becomes ready-unsaved
+  resolveRun({ ok: true, file: new ArrayBuffer(16), result: { file_name: 'P2_gxr.jpg' }, shot: {}, ms: 1 });
+  await batch.settled();
+  assert.equal(queue.photoExportState('p2', batch), 'ready');
+  assert.equal(queue.isReadyUnsaved('p2', batch), true);
+  assert.equal(queue.isInProgress('p2', batch), false);
+});
+
 test('export_queue: (a) fail mid-queue starts next queued photo and preserves failure for retry', async () => {
   const { ExportBatch } = await import('../../mobile/src/app/export_batch.ts');
   const { ExportQueueState } = await import('../../mobile/src/app/export_queue.ts');

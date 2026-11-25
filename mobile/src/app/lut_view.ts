@@ -178,7 +178,7 @@ export class LutView {
     if (on) this.pinMenu.close(false, false);
     this.modeSwitchEl?.remove();
     this.modeSwitchEl = on ? null : this.makeModeSwitch();
-    if (this.modeSwitchEl) this.panel.append(this.modeSwitchEl);
+    if (this.modeSwitchEl) this.panel.prepend(this.modeSwitchEl);
     this.stripKeys = [];
     this.build();
   }
@@ -351,6 +351,7 @@ export class LutView {
 
     const emptyLibrary = !this.ipadMode && !list.length && !deleted;
     this.footEl.hidden = !emptyLibrary;
+    this.panel.dataset.lutEmpty = emptyLibrary ? '1' : '0';
 
     this.pin.hidden = this.ipadMode;
     const sp = this.spaceButtonLabel(selectedRec);
