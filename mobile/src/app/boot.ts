@@ -17,7 +17,7 @@ import { bakeIn, calibCheck, importCalib, loadDefaultCalib, readDat, resolveReci
 import { camFilesIo, deletePack, loadWatermark } from '../lib/idb';
 import { Book } from './book';
 import { lookCache } from './looks';
-import { afterFirstPaint, bindPickers, Chunk, clearChunkError, createBootDom, scheduleIdle, showChunkError } from './boot_lazy';
+import { afterFirstPaint, bindPickers, Chunk, clearChunkError, createBootDom, createEngine, scheduleIdle, showChunkError } from './boot_lazy';
 import type { ShotHost } from './boot_shots';
 import { showCalibSheet } from './calib_ui';
 import type { EditorView } from './editor';
@@ -131,11 +131,14 @@ class App implements AppApi {
       });
     }
     this.showStart();
-    // 开始页先画出来；本机存的校准、LUT 和网格分包都排在后面。
+    // 开始页先画出来；本机存的校准、LUT、网格分包和显卡引擎（WebGPU 初始化可能要几百毫秒）都排在后面。
     this.restored = new Promise<void>((done) =>
       afterFirstPaint(() => {
         done(Promise.all([this.recipeBook.restore().catch(() => undefined), this.lutBookStore.restore().catch(() => undefined)]).then(() => undefined));
-        scheduleIdle(() => void this.gridChunk.load().catch(() => undefined));
+        scheduleIdle(() => {
+          void this.gridChunk.load().catch(() => undefined);
+          void this.ensureEngine();
+        });
       }),
     );
   }
@@ -153,28 +156,30 @@ class App implements AppApi {
     await (await import('./boot_shots')).runShot(shot, host);
   }
 
-  /** 编辑器分包：只加载一次；到了就建导出流程、定下显卡引擎。失败了下次再调会重新请求。 */
+  /** 显卡引擎只建一次（建不起来就是 null，不会失败）；开始页空闲时就开始，编辑器等它定下来。 */
+  private ensureEngine(): Promise<Engine | null> {
+    this.engineLoad ??= createEngine(this.shell, (err) => this.reportEngine(err)).then((engine) => {
+      this.engine = engine;
+      this.recipeBook.attach(engine);
+      this.shell.dataset.gpu = engine ? '1' : '0';
+      if (import.meta.env.DEV) (window as unknown as { __gxrEngine?: Engine | null }).__gxrEngine = engine; // 测试看显卡里有几份源
+      return engine;
+    });
+    return this.engineLoad;
+  }
+
+  /** 编辑器分包：只加载一次；到了就建导出流程，再等显卡引擎定下来。失败了下次再调会重新请求。 */
   private loadEditor(): Promise<typeof EditorChunk> {
     if (this.editorMod) return Promise.resolve(this.editorMod);
     if (this.editorLoad) return this.editorLoad;
     const task = this.editorChunk.load().then(async (mod) => {
       this.exporter ??= new mod.ExportFlow(this.shell, this, this.perf);
-      this.engineLoad ??= mod.createEngine(this.shell, (err) => this.reportEngine(err));
-      const engine = await this.engineLoad;
-      if (!this.editorMod) {
-        this.engine = engine;
-        this.recipeBook.attach(engine);
-        this.shell.dataset.gpu = engine ? '1' : '0';
-        // 只在开发服务器里：测试要看显卡里有几份源，确认重开同一张不会多出一份。
-        if (import.meta.env.DEV) (window as unknown as { __gxrEngine?: Engine | null }).__gxrEngine = engine;
-        this.editorMod = mod;
-      }
+      await this.ensureEngine();
+      this.editorMod ??= mod;
       return mod;
     });
     this.editorLoad = task;
-    task.catch(() => {
-      if (this.editorLoad === task) this.editorLoad = null;
-    });
+    task.catch(() => { if (this.editorLoad === task) this.editorLoad = null; }); // 下次再请求（Chunk 会换地址）
     return task;
   }
 
@@ -239,9 +244,7 @@ class App implements AppApi {
 
   exportPhotos(ids: string[], onStart?: () => void): void {
     const want = new Set(ids);
-    const list = this.ordered()
-      .filter((photo) => want.has(photo.id))
-      .map((photo) => photo.id);
+    const list = this.ordered().filter((photo) => want.has(photo.id)).map((photo) => photo.id);
     if (this.editorMod && this.exporter) {
       this.exporter.open(list, onStart);
       return;
@@ -468,10 +471,7 @@ class App implements AppApi {
 
   take(files: File[]): void {
     const photos = classify(files.map((file) => ({ name: file.name, lastModified: file.lastModified }))).photos.length;
-    if (!photos || this.gridChunk.loaded) {
-      this.ingest(files);
-      return;
-    }
+    if (!photos || this.gridChunk.loaded) return this.ingest(files);
     // 网格分包还没到（一般开始页空闲时就预取好了）：照片先记下，到了再导入，失败可以重试。
     this.pendingFiles.push(...files);
     this.takePending();
@@ -548,7 +548,7 @@ class App implements AppApi {
   }
 
   private cancelRawWarm(): void {
-    if (this.rawWarm) window.clearTimeout(this.rawWarm);
+    window.clearTimeout(this.rawWarm);
     this.rawWarm = 0;
   }
 
