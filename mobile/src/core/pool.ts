@@ -195,12 +195,13 @@ export class Pool {
     while (!this.stopped) {
       const fg = this.fgWaiting.length > 0;
       if (!fg && !this.mayStartBackground()) return;
-      const slot = this.freeSlot();
-      if (slot < 0) return;
+      // 模块没编好时先等它，不先挑 Worker（freeSlot() 会推进轮询位置；编好以前也没有在跑的计算请求）。
       if (this.canPostModule && !this.wasmResolved) {
         this.awaitModule();
         return;
       }
+      const slot = this.freeSlot();
+      if (slot < 0) return;
       const job = (fg ? this.fgWaiting : this.bgWaiting).shift() as Job;
       job.lane?.onPromote(null);
       this.start(job, slot, true);
