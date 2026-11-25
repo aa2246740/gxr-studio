@@ -239,6 +239,7 @@ class App implements AppApi {
   }
 
   showCalib(): void {
+    this.navigate();
     showCalibSheet(this.shell, this);
   }
 
@@ -258,10 +259,8 @@ class App implements AppApi {
     );
   }
 
-  dropPending(): void {
-    this.navigate();
-  }
-
+  /** 图库里改了多选或打开了面板：在等分包的点开和导出作废（AppApi.dropPending）。 */
+  readonly dropPending = (): void => void this.navigate();
   takeCalib(file: File): void {
     void this.recipeBook.importPack(file);
   }
@@ -350,6 +349,7 @@ class App implements AppApi {
   }
 
   showHelp(): void {
+    this.navigate(); // 在等编辑器分包的点开或导出作废，不在帮助后面切屏
     renderHelp(this.shell);
   }
 

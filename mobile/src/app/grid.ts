@@ -1,7 +1,6 @@
 import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type TimeGroup, type VRow } from '../lib/group';
-import { UNIT_LABEL } from '../lib/calib';
-import { DEFAULT_LABEL } from '../lib/default_calib';
 import { deviceName } from '../lib/device';
+import { calibDetail } from './calib_ui';
 import { groupsPresent } from '../lib/paste';
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
 import { button, el, icon } from './dom';
@@ -21,14 +20,6 @@ function gridBitmapId(bitmap: ImageBitmap): number {
     bitmapIds.set(bitmap, id);
   }
   return id;
-}
-
-function calibDetail(api: AppApi): string {
-  const book = api.book();
-  const pack = book.pack;
-  if (pack?.kind === 'default') return DEFAULT_LABEL;
-  if (pack) return `已导入：${pack.units.map((row) => UNIT_LABEL[row.unit]).join('、')}`;
-  return book.loadingDefault ? '正在加载默认校准…' : '未校准';
 }
 
 export class GridView {
@@ -445,6 +436,7 @@ export class GridView {
       this.selectionChanged();
       return;
     }
+    if (photo.status === 'bad' || unread(photo)) this.api.dropPending(); // 点开了提示面板：还在等编辑器分包的点开作废
     if (photo.status === 'bad') this.showUnreadable(id);
     else if (unread(photo)) this.showCard(this.readyCount(), this.goneCount());
     else if (openable(photo)) this.api.open(id);
@@ -568,6 +560,7 @@ export class GridView {
       return;
     }
     const inside = group.ids.includes(clip.from.id);
+    this.api.dropPending();
     openConfirm(this.host, this.api, {
       title: `套用到这一组的 ${targets.length} 张？`,
       body: groupBody(group.rangeLabel, targets.length, inside, clip.from.stem),
@@ -592,6 +585,7 @@ export class GridView {
       this.toggleSelect(false);
       return;
     }
+    this.api.dropPending();
     openConfirm(this.host, this.api, {
       title: `套用到 ${targets.length} 张？`,
       body: pickBody(targets.length, clip.from.stem),
@@ -730,6 +724,7 @@ export class GridView {
   }
 
   private menu(): void {
+    this.api.dropPending(); // 打开「更多」：还在等编辑器分包的点开或导出作废（帮助、校准、清空都从这里进）
     const photos = this.api.photos();
     const times = photos.map((photo) => photoMs(photo));
     const sheet = el('div', 'ms');

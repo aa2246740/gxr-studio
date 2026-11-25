@@ -324,6 +324,16 @@ def test_grid_selection_changes_cancel_pending_lazy_work(tmp_path: Path) -> None
     assert opened["editors"] == 0 and opened["screen"] == "grid" and opened["selecting"] is True, f"a stale open left multi-select: {opened}"
 
 
+def test_grid_sheets_cancel_a_pending_open(tmp_path: Path) -> None:
+    """等编辑器分包时打开图库「更多」、读卡帮助或校准数据：分包到了不切到编辑器，面板留在原处。"""
+    _prereq()
+    data = _run_lazy(["open-then-sheet:help", "open-then-sheet:calib", "open-then-sheet:menu"], tmp_path)
+    for mode, row in data.items():
+        assert row["editors"] == 0 and row["screen"] != "editor", f"{mode}: the stale open switched to the editor: {row}"
+        assert row["sheetAfter"] == row["sheetBefore"], f"{mode}: the sheet changed when the chunk arrived: {row}"
+    assert data["open-then-sheet:help"]["sheetBefore"] == 1, data["open-then-sheet:help"]
+
+
 def test_raw_only_and_unreadable_photos_with_lazy_chunks(tmp_path: Path) -> None:
     """只有 RAW 时导入期间不预取编辑器分包，落定空闲后才预取；网格分包晚到时坏图照常提示一次。"""
     _prereq()

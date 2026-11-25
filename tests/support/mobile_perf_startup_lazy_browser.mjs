@@ -268,6 +268,30 @@ const modes = {
     return { a, b, late, shared: await page.evaluate(() => window.reviewShared) };
   },
 
+  /**
+   * 点开照片在等编辑器分包时打开图库面板（Sol v2 r2 P3）。variant：help = 更多 → 读卡帮助；calib = 更多 → 校准数据；
+   * menu = 只打开「更多」再关掉。分包到了也不切到编辑器，面板（或图库）留在原处。
+   */
+  async 'open-then-sheet'(page, url, variant) {
+    const gate = held();
+    await watchChunk(page, EDITOR, () => gate.promise);
+    await start(page, url);
+    await picker(page).setInputFiles([jpeg, jpeg2]);
+    await drawnCells(page).nth(1).waitFor();
+    await page.locator('.gscroll .cell').first().click();
+    await page.getByRole('button', { name: '更多', exact: true }).click();
+    if (variant === 'help') await page.getByRole('button', { name: /怎么把卡插到/ }).click();
+    else if (variant === 'calib') await page.getByRole('button', { name: /校准数据/ }).click();
+    else await page.locator('.scrim').first().click({ position: { x: 20, y: 20 } });
+    await nextFrames(page);
+    const sheetBefore = variant === 'help' ? await page.getByRole('heading', { name: /怎么把卡插到/ }).count() : variant === 'calib' ? await page.locator('.ms').count() : 0;
+    gate.release('ok');
+    await page.waitForTimeout(500);
+    await nextFrames(page);
+    const sheetAfter = variant === 'help' ? await page.getByRole('heading', { name: /怎么把卡插到/ }).count() : variant === 'calib' ? await page.locator('.ms').count() : 0;
+    return { screen: await screen(page), editors: await page.locator('.screen.editor').count(), sheetBefore, sheetAfter };
+  },
+
   /** 点开照片在等编辑器分包时进入多选：分包到了也不打开编辑器，留在图库多选里。 */
   async 'open-then-select'(page, url) {
     const gate = held();
