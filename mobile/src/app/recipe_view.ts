@@ -758,7 +758,7 @@ export class RecipeView {
           alive, isBusy, bakeCtrl: this.bakeCtrl,
           bakeKey: () => book.bakeKey(card, scene.unit, scene.iso, levels),
           gpuKey: (k) => book.gpuKey(k),
-          bake: () => book.bake(card, scene.unit, scene.iso, levels),
+          bake: () => book.bake(card, scene.unit, scene.iso, levels, true),
           onError: (err) => {
             const slot = this.slots.find((s) => s.card.id === card.id);
             if (!slot) return;

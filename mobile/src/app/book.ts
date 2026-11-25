@@ -63,9 +63,10 @@ export interface BookIo {
   /** 校准数据 zip：大小检查、读取、核对、存 IndexedDB 都在 Worker 里，主线程不碰整包。 */
   importCalib(file: File, savedAt: number): Promise<CalibRead>;
   restoreCalib(): Promise<CalibRestored>;
-  bake(args: BakeArgs): Promise<Bake>;
+  /** `background`：配方卡小图的后台烘焙（见 core/pool.ts，点击发起的请求不排在它后面）。 */
+  bake(args: BakeArgs, background?: boolean): Promise<Bake>;
   /** `color_resolve`：配方选择 → 条目（旋钮已经套上）。`library` 是同卡的 GXRFX.BIN。 */
-  resolve(dat: ArrayBuffer, recipe: string, library?: ArrayBuffer | null): Promise<Resolved>;
+  resolve(dat: ArrayBuffer, recipe: string, library?: ArrayBuffer | null, background?: boolean): Promise<Resolved>;
   /** `color_calib_check`：这个单元、这个 ISO 的 model_for 检查。 */
   calibCheck(args: CalibCheckArgs): Promise<CalibPick>;
   /** 记一个删除时间；比它早的导入不会再写进去。 */
@@ -515,13 +516,13 @@ export class Book {
   /** （模型、选择）→ 烘焙表的键；resolve 过一次以后才知道（条目 sha256 要 resolve 才有）。 */
   private readonly keyOfSel = new Map<string, string>();
 
-  private resolveSel(sel: Record<string, unknown>): Promise<Resolved> {
+  private resolveSel(sel: Record<string, unknown>, background = false): Promise<Resolved> {
     const dat = this.dat;
     if (!dat) return Promise.reject(new Error('找不到这个配方。请重新选择。'));
     const id = `${this.generation}|${selectionKey(sel)}`;
     let job = this.resolved.get(id);
     if (!job) {
-      job = this.io.resolve(dat.read.bytes.slice(0), JSON.stringify(sel), dat.library ? dat.library.slice(0) : null);
+      job = this.io.resolve(dat.read.bytes.slice(0), JSON.stringify(sel), dat.library ? dat.library.slice(0) : null, background);
       this.resolved.set(id, job);
       job.catch(() => {
         if (this.resolved.get(id) === job) this.resolved.delete(id);
@@ -542,12 +543,12 @@ export class Book {
    * 做好（或拿缓存）这张卡的烘焙表，返回它的键（还没装进显卡，用之前调 gpuKey）。先 `color_resolve` 拿到旋钮套好的
    * 条目（和桌面 CameraData.resolve 一样，Looks、用户配方、r5 记录都行），再 `color_bake`。失败抛核心的原话。
    */
-  async bake(card: Card, unit: Unit, iso: number | null, levels?: Record<string, number>): Promise<string> {
+  async bake(card: Card, unit: Unit, iso: number | null, levels?: Record<string, number>, background = false): Promise<string> {
     if (!this.dat || !card.controls.length) throw new Error('找不到这个配方。请重新选择。');
     const generation = this.generation;
     const model = modelIso(iso);
     const sel = selection(card, unit, levels);
-    const got = await this.resolveSel(sel);
+    const got = await this.resolveSel(sel, background);
     if (generation !== this.generation) throw new Error('相机配方文件或校准数据换了');
     const key = `bake:${generation}:${unit}:${model}:${got.entrySha256}`;
     this.keyOfSel.set(`${generation}|${model}|${selectionKey(sel)}`, key);
@@ -560,7 +561,7 @@ export class Book {
       const entry = got.entry;
       job = whenExportIdle().then(() => {
         if (generation !== this.generation) throw new Error('相机配方文件或校准数据换了');
-        return this.io.bake({ entry: copy(entry), stock: copy(stock), menu: '', ctx: copy(files.ctx), ring: copy(files.ring), params: '{"step":0.375}' });
+        return this.io.bake({ entry: copy(entry), stock: copy(stock), menu: '', ctx: copy(files.ctx), ring: copy(files.ring), params: '{"step":0.375}' }, background);
       });
       this.bakes.set(key, job);
       job.then(

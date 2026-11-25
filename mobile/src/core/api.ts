@@ -143,10 +143,10 @@ function fromHex(text: string): Uint8Array {
 }
 
 /** `color_resolve`：这份 DAT 上的一个配方选择 → 552 字节条目（旋钮已经套上）。`dat` 和 `library` 是拷贝。失败抛核心的原话。 */
-export async function resolveRecipe(dat: ArrayBuffer, recipe: string, library?: ArrayBuffer | null): Promise<Resolved> {
+export async function resolveRecipe(dat: ArrayBuffer, recipe: string, library?: ArrayBuffer | null, background = false): Promise<Resolved> {
   const transfer: Transferable[] = [dat];
   if (library) transfer.push(library);
-  const { json } = await workers().request('resolve', null, transfer, null, { resolve: { dat, recipe, library: library ?? null } });
+  const { json } = await workers().request('resolve', null, transfer, null, { resolve: { dat, recipe, library: library ?? null } }, background);
   const data = JSON.parse(json) as { entry: string; entry_sha256: string; levels: Record<string, number> };
   return { entry: fromHex(data.entry), entrySha256: data.entry_sha256, levels: data.levels };
 }
@@ -239,10 +239,10 @@ export interface Bake {
   fullMeta: Record<string, unknown>;
 }
 
-/** 在 Worker 里跑 color_bake。失败抛核心的原话。 */
-export async function bakeIn(args: BakeArgs): Promise<Bake> {
+/** 在 Worker 里跑 color_bake。失败抛核心的原话。`background`：配方卡小图的后台烘焙。 */
+export async function bakeIn(args: BakeArgs, background = false): Promise<Bake> {
   const transfer = [args.entry, args.stock, args.ctx, args.ring];
-  const { json, buffers } = await workers().request('bake', null, transfer, args);
+  const { json, buffers } = await workers().request('bake', null, transfer, args, {}, background);
   const fullMeta = JSON.parse(json) as BakeMeta & Record<string, unknown>;
   return {
     meta: { nx: fullMeta.nx, ny: fullMeta.ny, origin: fullMeta.origin, step: fullMeta.step },

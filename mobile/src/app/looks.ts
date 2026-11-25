@@ -150,24 +150,26 @@ interface IdleWindow {
   cancelIdleCallback?: (id: number) => void;
 }
 
-/** 与 core/pool.ts 保持一致的 Worker 数量推算（不改 pool.ts）。 */
+/** 与 core/pool.ts 保持一致的 Worker 数量推算。 */
 export function coreWorkerCount(cores?: number): number {
   const raw = (cores ?? (typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 0)) || 2;
   return Math.min(4, Math.max(1, Math.floor(raw) - 1));
 }
 
 /**
- * 现行 core/pool.ts 按严格轮询分派 Worker，静默离屏并发上限先钉在 2（保留一半空闲 Worker 避免点击撞车）；
- * 待 perf-startup 合入最闲路由（pickSlot）后再按需调高。
+ * 静默期离屏小图的并发上限：workers - 2（最少 0），总留两个空闲 Worker，连着两次重叠的冷切都能直接落到空槽。
+ * 更多次重叠的点击由 core/pool.ts 保证：全忙时前台请求只排到没有后台请求的槽后面。
  */
-export const QUIET_IDLE_BAKE_CAP = 2;
+export function quietIdleBakeCap(workers: number = coreWorkerCount()): number {
+  return Math.max(0, Math.floor(workers) - 2);
+}
 
 /**
  * 配方卡可见优先与点击抢占调度器：
  * - 按实际 Worker 数量计算后台并发上限（N >= 2 时始终至少预留 1 个空闲 Worker 给用户点击）；
  * - 跨 cancel() 保持真实的在途 running 计数，只在实际任务结束（resolve/reject）时递减；
  * - 用户主动点击选卡或调旋钮时立即抢占并暂停派发新的后台任务，直到所点配方落到舞台；
- * - 离屏卡片在无用户交互的空闲期按 min(QUIET_IDLE_BAKE_CAP, bgLimit) 并行烘焙，一旦检测到编辑器任意输入立即回落至并发 1。
+ * - 离屏卡片在无用户交互的空闲期按 min(workers - 2, bgLimit) 并行烘焙；编辑器任意输入后到冷却结束，不再派发新的离屏烘焙。
  */
 export class CardBakeController<T> {
   private readonly workers: number;
@@ -220,7 +222,7 @@ export class CardBakeController<T> {
   noteInput(cooldownMs = 1200): void {
     const until = Date.now() + cooldownMs;
     if (until > this.quietUntil) this.quietUntil = until;
-    if (this.running >= 1) this.clearIdle();
+    this.clearIdle();
     if (this.quietTimer) clearTimeout(this.quietTimer);
     this.quietTimer = setTimeout(() => {
       this.quietTimer = 0;
@@ -401,9 +403,8 @@ export class CardBakeController<T> {
   }
 
   private currentIdleLimit(): number {
-    const limit = this.bgLimit();
-    if (Date.now() < this.quietUntil) return Math.min(1, limit);
-    return Math.min(QUIET_IDLE_BAKE_CAP, limit);
+    if (Date.now() < this.quietUntil) return 0;
+    return Math.min(quietIdleBakeCap(this.workers), this.bgLimit());
   }
 
   private flushTapWaiters(): void {
