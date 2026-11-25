@@ -1,7 +1,7 @@
 // 手机版导览 r2 三项视觉缺陷回归驱动（Playwright WebKit，hasTouch: true, isMobile: true）：
 // 1) 状态瓷砖「校准范围外（推算）」在 320/375/390/440 竖屏与横屏下最多两行，且「（推算）」不断行；点击仍可打开说明表。
 // 2) 「配方 | LUT」切换键拥有独立排版空间，不与配方/LUT 横条或任何卡片重叠（320/375/390/440 竖屏 + 844×390/956×440 横屏）。
-// 3) 导出就绪条显示蓝色「存进相册」时，底栏「存到相册」退为次级非蓝样式（当前照片已就绪时带 aria-disabled="true"，切到另一张可继续排队导出）；
+// 3) 导出就绪条显示蓝色「存进相册」时，底栏「存到相册」退为次级非蓝样式（当前照片已就绪时进一步降权并更新无障碍提示，切到另一张可继续排队导出）；
 //    用户点击就绪条触发同步 navigator.share 后恢复主蓝按钮。
 // stdout 仅打印单行脱敏 JSON，绝不含照片文件名、拍摄时间或 EXIF。
 
@@ -278,7 +278,7 @@ async function measureExportButtons(page) {
       saveClasses: save ? [...save.classList] : [],
       saveBg: saveCs?.backgroundColor ?? null,
       saveColor: saveCs?.color ?? null,
-      saveAriaDisabled: save?.getAttribute('aria-disabled') ?? null,
+      saveAriaLabel: save?.getAttribute('aria-label') ?? null,
       saveDisabledProp: save ? Boolean(save.disabled) : null,
       saveExportState: save?.getAttribute('data-export-state') ?? null,
     };
@@ -466,7 +466,7 @@ try {
   const idleBtn = await measureExportButtons(page);
   summary.fix3.idle = idleBtn;
   check(
-    isBlueAccent(idleBtn.saveBg) && idleBtn.saveClasses.includes('primary') && idleBtn.saveAriaDisabled === null,
+    isBlueAccent(idleBtn.saveBg) && idleBtn.saveClasses.includes('primary') && idleBtn.saveExportState === null,
     `fix3 idle: toolbar export button should be primary blue, got ${JSON.stringify(idleBtn)}`,
   );
 
@@ -486,8 +486,10 @@ try {
     `fix3 ready: toolbar button must not stay primary blue alongside ready bar (bg=${readyCurrent.saveBg}, cls=${readyCurrent.saveClasses.join('.')})`,
   );
   check(
-    readyCurrent.saveAriaDisabled === 'true' && readyCurrent.saveDisabledProp === false,
-    `fix3 ready-current: toolbar button should mark aria-disabled="true" without HTML disabled (got aria=${readyCurrent.saveAriaDisabled}, disabled=${readyCurrent.saveDisabledProp})`,
+    readyCurrent.saveExportState === 'ready-current' &&
+      readyCurrent.saveDisabledProp === false &&
+      (readyCurrent.saveAriaLabel || '').includes('已做好'),
+    `fix3 ready-current: toolbar button should mark ready-current state and aria hint without blocking click (got ${JSON.stringify(readyCurrent)})`,
   );
 
   // 横屏下就绪态也只保留一个蓝色主按钮
@@ -502,7 +504,7 @@ try {
     `fix3 landscape: expected single blue CTA while ready (share=${readyLandscape.shareBg}, save=${readyLandscape.saveBg})`,
   );
 
-  // 回到 440×956，切到第 2 张照片：底栏按钮仍是次级非蓝，但可点（无 aria-disabled），且可把第 2 张加入导出
+  // 回到 440×956，切到第 2 张照片：底栏按钮仍是次级非蓝，且可把第 2 张加入导出
   await page.setViewportSize({ width: 440, height: 956 });
   await setSafeArea(page, PORTRAIT_VPS[3].safe);
   await page.waitForFunction(() => document.querySelector('.app')?.getAttribute('data-layout') === 'phone-portrait', null, { timeout: 10_000 });
@@ -516,7 +518,10 @@ try {
   const readyOther = await measureExportButtons(page);
   summary.fix3.readyOther = readyOther;
   check(
-    isBlueAccent(readyOther.shareBg) && !isBlueAccent(readyOther.saveBg) && readyOther.saveAriaDisabled === null,
+    isBlueAccent(readyOther.shareBg) &&
+      !isBlueAccent(readyOther.saveBg) &&
+      readyOther.saveExportState === 'ready-other' &&
+      readyOther.saveAriaLabel === '导出当前照片并存到相册',
     `fix3 ready-other: toolbar button on another photo should be non-blue secondary and enabled (${JSON.stringify(readyOther)})`,
   );
 
@@ -546,7 +551,10 @@ try {
     `fix3 share: expected 2 files shared from user tap, got ${JSON.stringify(shareCall)}`,
   );
   check(
-    isBlueAccent(afterShare.saveBg) && afterShare.saveClasses.includes('primary') && afterShare.saveAriaDisabled === null,
+    isBlueAccent(afterShare.saveBg) &&
+      afterShare.saveClasses.includes('primary') &&
+      afterShare.saveExportState === null &&
+      afterShare.saveAriaLabel === '导出当前照片并存到相册',
     `fix3 after-share: toolbar button did not restore primary blue (${JSON.stringify(afterShare)})`,
   );
 } catch (err) {

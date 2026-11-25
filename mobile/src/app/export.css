@@ -25,14 +25,13 @@
 .ms.export .go { margin-top: 14px; gap: 8px; }
 .ms.export .foot { font-size: 12px; line-height: 16px; margin-top: 8px; text-align: center; color: var(--text-3); }
 
-/* 就绪条显示蓝色「存进相册」时，底栏「存到相册」退为次级暗色按钮，当前张已就绪时进一步降权（aria-disabled="true"）。 */
+/* 就绪条显示蓝色「存进相册」时，底栏「存到相册」退为次级暗色按钮，当前张已就绪时进一步降权。 */
 .toolbar .save-btn.export-demoted {
   background: var(--surface-control);
   color: var(--text-1);
   box-shadow: inset 0 0 0 1px var(--line);
 }
-.toolbar .save-btn.export-demoted.export-done,
-.toolbar .save-btn[aria-disabled="true"] {
+.toolbar .save-btn.export-demoted.export-done {
   background: var(--surface-raised);
   color: var(--text-3);
   box-shadow: inset 0 0 0 1px var(--line-subtle);

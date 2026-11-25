@@ -328,6 +328,8 @@ export function mountExportDock(
 }
 
 const READY_BLUE_STATES = new Set(['ready', 'stopped-ready', 'partial-fail', 'running-ready']);
+const DEFAULT_SAVE_ARIA = '导出当前照片并存到相册';
+const READY_CURRENT_SAVE_ARIA = '当前照片已做好，请点上方存进相册';
 
 /** 就绪条显示蓝色「存进相册」时把底栏「存到相册」降为次级非蓝按钮，避免同屏两个相近蓝按钮。 */
 export function syncExportSaveButton(
@@ -341,7 +343,7 @@ export function syncExportSaveButton(
   if (!readyVisible) {
     btn.classList.add('primary');
     btn.classList.remove('export-demoted', 'export-done');
-    btn.removeAttribute('aria-disabled');
+    btn.setAttribute('aria-label', DEFAULT_SAVE_ARIA);
     btn.removeAttribute('data-export-state');
     return;
   }
@@ -350,13 +352,8 @@ export function syncExportSaveButton(
   btn.classList.remove('primary');
   btn.classList.add('export-demoted');
   btn.classList.toggle('export-done', currentBlocked);
-  if (currentBlocked) {
-    btn.setAttribute('aria-disabled', 'true');
-    btn.dataset.exportState = 'ready-current';
-  } else {
-    btn.removeAttribute('aria-disabled');
-    btn.dataset.exportState = 'ready-other';
-  }
+  btn.setAttribute('aria-label', currentBlocked ? READY_CURRENT_SAVE_ARIA : DEFAULT_SAVE_ARIA);
+  btn.dataset.exportState = currentBlocked ? 'ready-current' : 'ready-other';
 }
 
 /** 更新导出内存与耗时观测数据到壳属性及性能条。 */
