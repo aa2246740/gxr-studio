@@ -9,7 +9,7 @@
 /* 手机竖屏把「导入 LUT」和「色彩空间」收进一颗 44×70pt 瓷砖（菜单弹出），给横条腾出完整两张 78pt LUT 卡。 */
 .app[data-layout="phone-portrait"] .lut-pin,
 .app:not([data-layout]) .lut-pin {
-  padding: 0 2px;
+  padding: 0 2px 0 3px;
   gap: 0;
 }
 .app[data-layout="phone-portrait"] .lut-pin .lut-import-tile,
@@ -159,15 +159,22 @@
   }
 }
 
-/* 切换键钉在滚动条右边、面板内侧。两种模式都在同一处，横滑也不带动它。 */
+/* 切换键占面板左侧独立槽（正常 flex 排版，不压在卡片横条上）；两种模式同 x，横条紧跟其后直到屏幕右沿。 */
+.app[data-layout="phone-portrait"] .panel.recipe,
+.app[data-layout="phone-portrait"] .panel.lut,
+.app:not([data-layout]) .panel.recipe,
+.app:not([data-layout]) .panel.lut {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+}
 .app[data-layout="phone-portrait"] .panel.recipe > .mode-switch,
 .app[data-layout="phone-portrait"] .panel.lut > .mode-switch,
 .app:not([data-layout]) .panel.recipe > .mode-switch,
 .app:not([data-layout]) .panel.lut > .mode-switch {
-  position: absolute;
-  right: 2px;
-  top: 6px;
-  z-index: 2;
+  position: static;
+  flex: none;
+  margin-left: 2px;
   gap: 0;
 }
 .app[data-layout="phone-portrait"] .panel.recipe > .mode-switch .mode-btn,
@@ -180,17 +187,29 @@
 .app[data-layout="phone-portrait"] .lut-strip-wrap,
 .app:not([data-layout]) .recipe-strip-wrap,
 .app:not([data-layout]) .lut-strip-wrap {
-  padding-right: 94px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding-right: 0;
+}
+.app[data-layout="phone-portrait"] .recipe-filter-pin,
+.app:not([data-layout]) .recipe-filter-pin {
+  padding: 0 4px 0 6px;
+}
+.app[data-layout="phone-portrait"] .recipe-fine,
+.app:not([data-layout]) .recipe-fine {
+  min-width: 0;
 }
 .app[data-layout="phone-portrait"] .lut-strip-wrap .strip,
 .app:not([data-layout]) .lut-strip-wrap .strip {
-  padding: 3px 6px 4px 3px;
+  padding: 3px 4px 4px 3px;
   gap: 4px;
 }
 
 /* LUT 提示贴在缩略图上沿，卡名留在底下 22pt，提示不压到那一行。 */
 .app[data-layout="phone-portrait"] .panel.lut > .lut-err,
 .app:not([data-layout]) .panel.lut > .lut-err {
+  left: 98px;
+  right: 8px;
   top: 2px;
   bottom: auto;
   height: 16px;
@@ -206,7 +225,7 @@
 .app[data-layout="phone-portrait"] .panel.lut > .lut-foot,
 .app:not([data-layout]) .panel.lut > .lut-foot {
   position: absolute;
-  left: 8px;
+  left: 98px;
   right: 8px;
   top: 2px;
   bottom: auto;
