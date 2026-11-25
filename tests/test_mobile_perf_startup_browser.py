@@ -169,7 +169,7 @@ def test_pool_replaces_failed_worker_slot_after_onerror(tmp_path: Path) -> None:
 
 
 def test_first_thumb_does_not_prewarm_editor_during_import(tmp_path: Path) -> None:
-    """第一张缩略图画出来之前不请求编辑器分包；画出来以后预取一次，进编辑器、开导出选项都不再请求分包。"""
+    """第一张缩略图画出来之前不请求编辑器分包、不建显卡引擎；画出来以后预取一次，进编辑器、开导出选项都不再请求分包。"""
     _prereq()
     photos = _make_synthetic_photo_pair(tmp_path / "thumb_prewarm_photos")
     report = _run_driver("import-before-prewarm", {"distDir": str(DIST), "photoFiles": photos}, tmp_path)
@@ -179,6 +179,8 @@ def test_first_thumb_does_not_prewarm_editor_during_import(tmp_path: Path) -> No
     assert order["editorBegunBeforeDraw"] is False, f"editor request started before first thumb drew: {order}"
     assert order["editorCompletedBeforeDraw"] is False, f"editor completed before first thumb drew: {order}"
     assert order["editorRequests"] == 1, f"editor chunk requested more than once: {order}"
+    assert order["adapterAt"] is not None, f"the GPU engine was never created: {order}"
+    assert order["adapterBeforeDraw"] is False, f"WebGPU init (requestAdapter) ran before the first thumbnail drew: {order}"
     assert report["exportOptionsOpened"] is True, "export options sheet failed to open from editor more menu"
     lazy = [p for p in report["lazyRequests"] if not p.split("/")[-1].startswith("editor_chunk-")]
     assert [p for p in lazy if not p.split("/")[-1].startswith("grid-")] == [], f"unexpected lazy chunks: {report['lazyRequests']}"
