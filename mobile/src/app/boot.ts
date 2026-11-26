@@ -17,7 +17,7 @@ import { bakeIn, calibCheck, importCalib, loadDefaultCalib, readDat, resolveReci
 import { camFilesIo, deletePack, loadWatermark } from '../lib/idb';
 import { Book } from './book';
 import { lookCache } from './looks';
-import { afterFirstPaint, bindPickers, Chunk, clearChunkError, createBootDom, createEngine, scheduleIdle, showChunkError } from './boot_lazy';
+import { afterFirstPaint, bindPickers, Chunk, clearChunkError, createBootDom, scheduleIdle, showChunkError } from './boot_lazy';
 import type { ShotHost } from './boot_shots';
 import { showCalibSheet } from './calib_ui';
 import type { EditorView } from './editor';
@@ -25,17 +25,15 @@ import type * as EditorChunk from './editor_chunk';
 import type { ExportFlow } from './export_ui';
 import type * as GridChunk from './grid';
 import type { GridView } from './grid';
+import { dropGpuState, EngineSlot } from './gpu_loss';
 import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
 import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
 import { DEFAULT_FRAME, DEFAULT_STAMP } from '../lib/frame_spec';
-import { ThumbQueue } from './queue';
+import { dropReply, ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
-import type { ThumbFail, ThumbOk } from '../workers/thumb';
 import { watchViewportLayout } from './layout';
-
-type Reply = ThumbOk | ThumbFail;
 
 class App implements AppApi {
   private readonly byId = new Map<string, Photo>();
@@ -54,7 +52,11 @@ class App implements AppApi {
   /** 编辑器分包到了、导出流程建好、显卡引擎也定下来（有或没有）以后才不是 null。 */
   private editorMod: typeof EditorChunk | null = null;
   private editorLoad: Promise<typeof EditorChunk> | null = null;
-  private engineLoad: Promise<Engine | null> | null = null;
+  /** 显卡引擎：建好、建不起来和设备丢了都交给 useEngine（gpu_loss.ts）；建不起来的原因记进 pageErrors。 */
+  private readonly gpuSlot = new EngineSlot(() => this.shell, (err) => this.pageErrors.push(err instanceof Error ? err.message : String(err)),
+    (engine, lost) => this.useEngine(engine, lost));
+  /** 编辑器开着的那张（设备丢了按没有引擎挂回它）。 */
+  private editing: Photo | null = null;
   /** 选照片时网格分包还没到：先记下，到了再一起导入。 */
   private pendingFiles: File[] = [];
   /** 切屏、换照片、清空都加一。在路上的分包回来时不是同一次，就什么也不做（不弹旧照片，不报旧错误）。 */
@@ -137,7 +139,7 @@ class App implements AppApi {
         done(Promise.all([this.recipeBook.restore().catch(() => undefined), this.lutBookStore.restore().catch(() => undefined)]).then(() => undefined));
         scheduleIdle(() => {
           void this.gridChunk.load().catch(() => undefined);
-          void this.ensureEngine();
+          void this.gpuSlot.ensure();
         });
       }),
     );
@@ -156,16 +158,19 @@ class App implements AppApi {
     await (await import('./boot_shots')).runShot(shot, host);
   }
 
-  /** 显卡引擎只建一次（建不起来就是 null，不会失败）；开始页空闲时就开始，编辑器等它定下来。 */
-  private ensureEngine(): Promise<Engine | null> {
-    this.engineLoad ??= createEngine(this.shell, (err) => this.reportEngine(err)).then((engine) => {
-      this.engine = engine;
-      this.recipeBook.attach(engine);
-      this.shell.dataset.gpu = engine ? '1' : '0';
-      if (import.meta.env.DEV) (window as unknown as { __gxrEngine?: Engine | null }).__gxrEngine = engine; // 测试看显卡里有几份源
-      return engine;
-    });
-    return this.engineLoad;
+  /** 显卡引擎定下来了（建不起来是 null）。设备丢了：关编辑器，放掉挂在旧引擎上的东西，按没有引擎挂回同一张（同没有 WebGPU）。 */
+  private useEngine(engine: Engine | null, lost: boolean): void {
+    this.engine = engine;
+    this.recipeBook.attach(engine);
+    this.shell.dataset.gpu = engine ? '1' : '0';
+    if (import.meta.env.DEV) (window as unknown as { __gxrEngine?: Engine | null }).__gxrEngine = engine; // 测试看显卡里有几份源
+    if (!lost) return;
+    const photo = this.screen === 'editor' ? this.editing : null;
+    this.closeEditor();
+    dropGpuState(this.shell, this.byId.values(), this.lutGpuQueue);
+    if (photo && this.editorMod && openable(photo)) this.mountEditor(this.editorMod, photo);
+    else if (photo) this.showGrid(true);
+    if (this.cardIsOut) this.cardChanged();
   }
 
   /** 编辑器分包：只加载一次；到了就建导出流程，再等显卡引擎定下来。失败了下次再调会重新请求。 */
@@ -174,7 +179,7 @@ class App implements AppApi {
     if (this.editorLoad) return this.editorLoad;
     const task = this.editorChunk.load().then(async (mod) => {
       this.exporter ??= new mod.ExportFlow(this.shell, this, this.perf);
-      await this.ensureEngine();
+      await this.gpuSlot.ensure();
       this.editorMod ??= mod;
       return mod;
     });
@@ -284,7 +289,8 @@ class App implements AppApi {
       // 轮到这一次时再核对：排队期间重新选过、去掉了、清空了，就不提交，免得把新源换回旧的。
       if (!this.current(photo.id, version, photo, file)) return false;
       await engine.addRaw(`raw:${photo.id}`, layout, bytes, scene);
-      if (!this.current(photo.id, version, photo, file)) return false;
+      // 传的时候设备丢了：这份源不在现在的引擎里。
+      if (!this.current(photo.id, version, photo, file) || this.engine !== engine) return false;
       photo.cached = version;
       // 卡已经拔了、这次上传才落地：这张现在能接着用，数字要跟着变。
       if (this.cardIsOut) this.cardChanged();
@@ -381,6 +387,7 @@ class App implements AppApi {
     this.screen = 'editor';
     this.shell.dataset.screen = 'editor';
     this.editor = new mod.EditorView(this.view, this.shell, this, this.engine);
+    this.editing = photo;
     this.editor.open(photo);
   }
 
@@ -663,7 +670,7 @@ class App implements AppApi {
     const live = (handle: File | null) => generation === this.generation && this.current(photo.id, version, photo, handle);
     let reply = await this.queue.run(file, photo.jpg ? 'jpg' : 'dng');
     if (!live(file)) {
-      this.drop(reply);
+      dropReply(reply);
       return;
     }
     let from: File = file;
@@ -671,12 +678,12 @@ class App implements AppApi {
       // 相机 JPG 解不出来：镜头名和 ISO 还是先记下 JPG 里读到的（桌面先用 JPG 的）。
       photo.jpgMeta = reply.meta;
       if (reply.frame) photo.frame = reply.frame;
-      this.drop(reply);
+      dropReply(reply);
       const dng = photo.dng;
       from = dng;
       reply = await this.queue.run(dng, 'dng');
       if (!live(dng)) {
-        this.drop(reply);
+        dropReply(reply);
         return;
       }
     }
@@ -702,8 +709,8 @@ class App implements AppApi {
       const dng = photo.dng;
       const extra = await this.queue.run(dng, 'dng');
       if (!live(dng)) {
-        this.drop(extra);
-        this.drop(reply);
+        dropReply(extra);
+        dropReply(reply);
         return;
       }
       if (extra.ok && !extra.bad) {
@@ -711,7 +718,7 @@ class App implements AppApi {
         photo.dngMeta = extra.meta;
         if (frame === null) frame = extra.frame;
       }
-      this.drop(extra);
+      dropReply(extra);
     }
     if (captureMs !== null) photo.captureMs = captureMs;
     if (frame) photo.frame = frame;
@@ -723,10 +730,6 @@ class App implements AppApi {
     }
     photo.status = reply.bad ? 'bad' : 'ready';
     this.afterRead(photo);
-  }
-
-  private drop(reply: Reply): void {
-    if (reply.ok && reply.bitmap) reply.bitmap.close();
   }
 
   private afterRead(photo: Photo): void {
@@ -776,10 +779,6 @@ class App implements AppApi {
     if (this.screen !== 'grid') return;
     this.grid?.updateCard(ready, missing);
     this.grid?.refresh();
-  }
-
-  reportEngine(err: unknown): void {
-    this.pageErrors.push(err instanceof Error ? err.message : String(err));
   }
 }
 

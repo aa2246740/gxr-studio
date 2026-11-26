@@ -102,7 +102,11 @@ export class AdjustView {
       if (disabled) this.input.setAttribute('aria-describedby', ADJUST_REASON_ID);
       else this.input.removeAttribute('aria-describedby');
     }
-    if (this.histBtn) this.histBtn.disabled = disabled;
+    if (this.histBtn) {
+      this.histBtn.disabled = disabled;
+      if (disabled) this.histBtn.setAttribute('aria-describedby', ADJUST_REASON_ID);
+      else this.histBtn.removeAttribute('aria-describedby');
+    }
     if (this.disabledNoteEl) this.disabledNoteEl.hidden = !disabled;
   }
 

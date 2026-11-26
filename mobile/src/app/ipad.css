@@ -365,3 +365,4 @@
   box-shadow: none;
 }
 .app .panel.adjust[data-disabled="1"] .adj-l1 .val { color: var(--text-3); }
+.app .panel.adjust[data-disabled="1"] .hist-toggle:disabled { opacity: 0.42; color: var(--text-3); cursor: not-allowed; }

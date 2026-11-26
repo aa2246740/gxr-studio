@@ -101,3 +101,8 @@ export class ThumbQueue {
     }
   }
 }
+
+/** 不用这次读的结果了：放掉里面的位图。 */
+export function dropReply(reply: ThumbOk | ThumbFail): void {
+  if (reply.ok && reply.bitmap) reply.bitmap.close();
+}

@@ -18,6 +18,7 @@ import { openExportOptions, startQuickExport, syncExportDock } from './export_ui
 import { releaseFinishDrawResources } from './finish_draw';
 import { photoExportSize } from './frame_state';
 import { FrameView } from './frame_view';
+import { noPreviewPlaceholder } from './gpu_loss';
 import { createHdrPreview } from './hdr_hookup';
 import { isIpadLayout, loadIpadHist, saveIpadHist, type LayoutMode } from './layout';
 import { lookCache } from './looks';
@@ -309,7 +310,7 @@ export class EditorView {
     this.still = document.createElement('canvas');
     this.still.className = 'still';
     this.still.hidden = true;
-    this.placeholder = el('div', 'ph', '只有 RAW');
+    this.placeholder = noPreviewPlaceholder();
     this.placeholder.hidden = true;
 
     pv.append(this.gpuCanvas, this.still, this.placeholder);
