@@ -152,7 +152,7 @@ export class EditorView {
       startLuts: (key) => this.luts?.start(key),
       onMediaReady: () => {
         this.fitStageCanvas(true);
-        this.decor?.onMediaReady();
+        this.decor?.onMediaReady(); this.ipad?.syncNoGpu(); // 说明条和舞台同时定下说什么
       },
       syncFloatHistPos: () => this.syncFloatHistPos(),
     });

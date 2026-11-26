@@ -2,7 +2,8 @@
 
 import { button, el, icon } from './dom';
 import type { HistWidget } from './editor_hist';
-import { NO_GPU_DETAIL, NO_GPU_TITLE } from './editor_media';
+import { NO_GPU_DETAIL, NO_GPU_RAW_DETAIL, NO_GPU_TITLE } from './editor_media';
+import { NO_PREVIEW_TEXT } from './gpu_loss';
 import { IpadDock } from './ipad_dock';
 import { isIpadLayout, watchViewportLayout, type LayoutMode, type LayoutWatch } from './layout';
 import type { LutView } from './lut_view';
@@ -14,16 +15,30 @@ import type { RecipeView } from './recipe_view';
 const HIST_ICON = 'M4 19V11M9 19V6M14 19V13M19 19V8M3 19h18';
 const WARN_ICON = 'M12 4l9 16H3zM12 10v4M12 17h.01';
 
+/** 只有 RAW、没有相机 JPG 也没有内嵌预览：舞台显示「预览不了」的同一个条件（editor_media.showStillPhoto）。 */
+export function isRawOnlyPreview(photo: Photo): boolean {
+  return !photo.jpg && !photo.bitmap;
+}
+
+/** 说明条按照片换话：只有 RAW 的和舞台说同一句，其余照旧说「预览只显示相机 JPG」。 */
+export function syncNoGpuNotice(box: HTMLElement, rawOnly: boolean): void {
+  const title = box.querySelector('.nogpu-title');
+  const detail = box.querySelector('.nogpu-detail');
+  if (title) title.textContent = rawOnly ? NO_PREVIEW_TEXT : NO_GPU_TITLE;
+  if (detail) detail.textContent = rawOnly ? NO_GPU_RAW_DETAIL : NO_GPU_DETAIL;
+}
+
 /** 无 WebGPU 时的说明条（iPad 放直方图区，手机横屏放带子顶部；有 GPU 时不创建）。 */
-export function createNoGpuNotice(): HTMLElement {
+export function createNoGpuNotice(rawOnly = false): HTMLElement {
   const box = el('div', 'nogpu-notice');
   box.dataset.nogpuNotice = '1';
   const mark = el('span', 'warn');
   mark.setAttribute('aria-hidden', 'true');
   mark.append(icon(WARN_ICON));
   const tx = el('div', 'tx');
-  tx.append(el('b', 'nogpu-title', NO_GPU_TITLE), el('small', 'nogpu-detail', NO_GPU_DETAIL));
+  tx.append(el('b', 'nogpu-title'), el('small', 'nogpu-detail'));
   box.append(mark, tx);
+  syncNoGpuNotice(box, rawOnly);
   return box;
 }
 
@@ -173,6 +188,8 @@ export interface EditorIpadBridge {
   refreshMore(photo: Photo): void;
   syncHistUi(open: boolean): void;
   syncSub(sub: 'recipe' | 'lut', lutActive: boolean): void;
+  /** 舞台定下显示什么之后（相机 JPG 或「预览不了」）再对一次说明条的话。 */
+  syncNoGpu(): void;
   apply(opts: {
     mode: LayoutMode;
     histOpen: boolean;
@@ -200,7 +217,7 @@ export function createEditorIpadBridge(opts: {
 }): EditorIpadBridge {
   const watch: LayoutWatch = watchViewportLayout(opts.shell, (mode) => opts.onLayoutChange(mode));
   const histArea = createIpadHistArea(opts.onToggleHist);
-  const noGpuNotice = opts.hasGpu ? null : createNoGpuNotice();
+  const noGpuNotice = opts.hasGpu ? null : createNoGpuNotice(isRawOnlyPreview(opts.photo));
   if (!opts.hasGpu) histArea.root.dataset.nogpu = '1';
   const morePanel = new MorePanel(opts.photo, opts.moreHooks);
   const dock = new IpadDock(opts.api, opts.photo.id, {
@@ -215,6 +232,9 @@ export function createEditorIpadBridge(opts: {
     refreshMore: (photo) => morePanel.refresh(photo),
     syncHistUi: (open) => histArea.sync(opts.hasGpu && open),
     syncSub: (sub, lutActive) => dock.syncSub(sub, lutActive),
+    syncNoGpu: () => {
+      if (noGpuNotice) syncNoGpuNotice(noGpuNotice, isRawOnlyPreview(opts.photo));
+    },
     apply: (s) => {
       const ipad = isIpadLayout(s.mode);
       attachIpadNodes(ipad, histArea.root, s.band, dock.el(), s.stage?.parentElement ?? null);
