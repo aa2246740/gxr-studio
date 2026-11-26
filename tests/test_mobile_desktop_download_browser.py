@@ -2,6 +2,7 @@
 
 - Chromium，没有触摸点、指针精确：编辑器的按钮写「下载」，一键导出后点就绪条的「下载」得到一个浏览器下载；关机图也是下载；网格里两张
   一起导出，点一次下载两个，下载链接留着兜底。文件名和字节与「手机」Chromium（一个触摸点）走共享面板的那份逐字节相同。
+- HDR 跟着屏幕走：窗口从 SDR 屏挪到 HDR 屏，不重载预览就打开；屏幕显示不了 HDR 时舞台下沿说一句。
 - WebKit 手机（390×844）和 iPad（1032×1376，Mac UA + 5 个触摸点），都有触摸：文案不变，仍调共享面板，不下载。
 
 只用本地 card250 实拍照片和 g250 相机配方/校准；报告里没有文件名、拍摄时间或 EXIF。
@@ -27,6 +28,7 @@ pytestmark = pytest.mark.browser_serial
 
 REPO = Path(__file__).resolve().parents[1]
 DRIVER = REPO / "tests" / "support" / "mobile_desktop_download_browser.mjs"
+NOTE = "这块屏幕显示不了 HDR，导出的照片仍带 HDR"
 FOOT = "「下载」每次都按这里的设置做。做好后点「下载」，文件存到浏览器的下载文件夹。"
 
 
@@ -51,7 +53,7 @@ def _touch_unchanged(step: dict[str, Any], label: str) -> None:
     check(step["downloads"] == 0, f"{label}: no browser download")
 
 
-def test_mobile_desktop_download(tmp_path: Path) -> None:
+def _run(tmp_path: Path, mode: str) -> tuple[dict[str, Any], Path]:
     _prereq()
     raw250, lib250, dat250, fx250 = _need_g185_or_g250(250)
     pair_a = _card250_pair(1)
@@ -67,6 +69,7 @@ def test_mobile_desktop_download(tmp_path: Path) -> None:
     out_dir.mkdir()
     report_path = tmp_path / "report.json"
     manifest = {
+        "mode": mode,
         "pack": str(pack_zip),
         "files": [str(p) for pair in (pair_a, pair_b) for p in pair] + [str(dat250), str(fx250)],
         "count": 2,
@@ -81,7 +84,29 @@ def test_mobile_desktop_download(tmp_path: Path) -> None:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     check(result.returncode == 0 and report.get("error") is None, f"driver completed without error: {report.get('error')}")
     check(report["pageErrors"] == [], f"no page errors: {report['pageErrors']}")
-    steps = report["steps"]
+    return report["steps"], out_dir
+
+
+def test_mobile_desktop_hdr_follows_the_screen(tmp_path: Path) -> None:
+    """页面在 SDR 屏上打开（无头 Chrome 的 media 不匹配），再用 debugForceHdrDisplay「挪到 HDR 屏」，不重载。"""
+    steps, _out = _run(tmp_path, "hdr")
+    hdr = steps["hdr"]
+    sdr = hdr["sdrScreen"]
+    check(sdr["exportHdr"] == "true", "RAW photo opens with HDR export on")
+    check(sdr["preview"] is False, "SDR screen: no HDR preview")
+    check(sdr["note"] == NOTE and sdr["noteVisible"] is True, "SDR screen: the can't-show-HDR line is visible on the stage")
+    on = hdr["hdrScreen"]
+    check(on["preview"] is True, "moved to the HDR screen: the preview turns on without a reload")
+    check(on["note"] is None, "HDR screen: the line is hidden while the preview shows")
+    back = hdr["backToSdr"]
+    check(back["preview"] is False and back["note"] == NOTE, "moved back: preview off, line back")
+    off = hdr["hdrOff"]
+    check(off["exportHdr"] == "false" and off["note"] is None, "HDR export off: no line")
+    check(hdr["sameDocument"] is True, "no reload happened")
+
+
+def test_mobile_desktop_download(tmp_path: Path) -> None:
+    steps, out_dir = _run(tmp_path, "download")
 
     pc = steps["computer"]
     check(pc["env"]["touch"] == 0 and pc["env"]["fine"] is True, "computer context has no touch and a fine pointer")

@@ -699,7 +699,7 @@ export class EditorView {
     const text = this.holding ? '原图' : rawOnly ? NO_PREVIEW_TEXT : noGpu ? this.caption : this.lutLabel ? `LUT · ${this.lutLabel}${this.caption ? ` · ${this.caption}` : ''}` : this.caption;
     if (text) this.stageLabel.append(el('span', 'tag neutral', text));
     if (noGpu) this.stageLabel.append(el('span', 'nogpu-note', rawOnly ? NO_GPU_RAW_DETAIL : NO_GPU_DETAIL));
-    this.hdr.paintLabel(this.stageLabel);
+    this.hdr.paintLabel(this.stageLabel, this.stage);
   }
 
   private enterDrag(layout = true): void {

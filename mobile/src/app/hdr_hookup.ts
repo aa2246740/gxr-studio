@@ -8,7 +8,7 @@ import { HdrPreviewController } from '../core/hdr_preview';
 import { PREVIEW_LONG_EDGE } from '../core/hdr_grid';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
 import { loadExportHdr, watchExportHdr } from '../lib/prefs';
-import { hdrDisplayCapable } from '../core/hdr_display';
+import { hdrDisplayCapable, watchHdrDisplay } from '../core/hdr_display';
 import { zeroKnobs, type AppApi, type Photo } from './model';
 
 const IDENTITY = { straighten: 0, rotate90: 0, flip: false, vertical: 0, horizontal: 0, distortion: 0, box: null };
@@ -78,6 +78,7 @@ export function createHdrPreview(host: {
     fit: (req) => fits.request(req),
     stopFit: () => fits.stop(),
     watchExport: (fn) => watchExportHdr(fn),
+    watchDisplay: (fn) => watchHdrDisplay(fn),
     onShowing: host.onShowing,
     frameLayout: () => frameLayoutJson(host.photo()),
     geometryJson: () => geometryJson(host.photo()),

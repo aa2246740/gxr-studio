@@ -241,14 +241,60 @@ async function webkitTouch(browser, label, options, inits) {
   await ctx.close();
 }
 
+/** 舞台上 HDR 相关的字：「HDR 预览」小标签在不在，「这块屏幕显示不了 HDR」那行在不在、在不在舞台里。 */
+async function hdrFacts(page) {
+  return page.evaluate(() => {
+    const stage = document.querySelector('.editor .stage');
+    const note = stage?.querySelector('[data-hdr-screen-note]');
+    const sr = stage?.getBoundingClientRect();
+    const nr = note?.getBoundingClientRect();
+    return {
+      preview: Boolean(document.querySelector('.editor [data-hdr-preview]')),
+      note: note ? note.textContent : null,
+      noteVisible: Boolean(note && nr && sr && nr.width > 0 && nr.height > 0 && nr.top >= sr.top && nr.bottom <= sr.bottom && getComputedStyle(note).visibility !== 'hidden'),
+      exportHdr: document.querySelector('.editor .nav [data-act="hdr-toggle"]')?.getAttribute('aria-checked') ?? null,
+      reloads: performance.getEntriesByType('navigation').length,
+    };
+  });
+}
+
+/** 电脑上 HDR 跟着屏幕走：页面在 SDR 屏上打开，再「挪到 HDR 屏」，不重载预览就打开；挪回来就关、那行字回来。 */
+async function hdrScreen(browser) {
+  const { ctx, page } = await openPage(browser, 'hdr', { viewport: { width: 1280, height: 800 } }, []);
+  const step = {};
+  await openPhoto(page, manifest.stems[0]);
+  await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
+  const marker = await page.evaluate(() => { window.__noReload = 1; return 1; });
+  await page.waitForFunction(() => Boolean(document.querySelector('.editor .stage [data-hdr-screen-note]')), null, { timeout: 30_000 }).catch(() => {});
+  step.sdrScreen = await hdrFacts(page);
+  // 和页面里的应用是同一个模块（Vite 开发服务器同一个 URL）。
+  await page.evaluate(async () => (await import('/src/core/hdr_display.ts')).debugForceHdrDisplay(true));
+  await page.waitForFunction(() => Boolean(document.querySelector('.editor [data-hdr-preview]')), null, { timeout: 120_000 }).catch(() => {});
+  step.hdrScreen = await hdrFacts(page);
+  await page.evaluate(async () => (await import('/src/core/hdr_display.ts')).debugForceHdrDisplay(false));
+  await page.waitForFunction(() => !document.querySelector('.editor [data-hdr-preview]'), null, { timeout: 30_000 }).catch(() => {});
+  step.backToSdr = await hdrFacts(page);
+  await page.locator('.editor .nav [data-act="hdr-toggle"]').click();
+  await page.waitForFunction(() => !document.querySelector('.editor .stage [data-hdr-screen-note]'), null, { timeout: 10_000 }).catch(() => {});
+  step.hdrOff = await hdrFacts(page);
+  step.sameDocument = marker === 1 && (await page.evaluate(() => window.__noReload === 1));
+  out.steps.hdr = step;
+  await ctx.close();
+}
+
 try {
   const chromium = await launchPinnedChromium({ args: GPU_ARGS });
   try {
-    await computer(chromium);
-    await phoneChromium(chromium);
+    if (manifest.mode === 'hdr') {
+      await hdrScreen(chromium);
+    } else {
+      await computer(chromium);
+      await phoneChromium(chromium);
+    }
   } finally {
     await chromium.close();
   }
+  if (manifest.mode === 'hdr') throw Object.assign(new Error('hdr only'), { done: true });
   const { webkit } = await import(pathToFileURL(pinnedRuntime.modulePath).href);
   const executablePath = webkitExecutable(webkit);
   if (!executablePath) {
@@ -263,7 +309,7 @@ try {
     }
   }
 } catch (err) {
-  out.error = String(err?.message ?? err).split('\n')[0].slice(0, 300);
+  if (!err?.done) out.error = String(err?.message ?? err).split('\n')[0].slice(0, 300);
 }
 writeFileSync(manifest.reportPath, JSON.stringify(out));
 process.stdout.write(`${JSON.stringify({ done: true, error: out.error !== null })}\n`);

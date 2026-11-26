@@ -18,8 +18,10 @@ registerHooks({
   },
 });
 
-const { previewWanted, debugForceHdrDisplay, hdrDisplayCapable } = await import('../../mobile/src/core/hdr_display.ts');
-const { HdrPreviewController, HDR_REFIT_MS, ticketMatches } = await import('../../mobile/src/core/hdr_preview.ts');
+const hdrDisplay = await import('../../mobile/src/core/hdr_display.ts');
+const { previewWanted, debugForceHdrDisplay, hdrDisplayCapable } = hdrDisplay;
+const hdrPreview = await import('../../mobile/src/core/hdr_preview.ts');
+const { HdrPreviewController, HDR_REFIT_MS, ticketMatches } = hdrPreview;
 const { HdrFitHost } = await import('../../mobile/src/core/hdr_fit_host.ts');
 const { moveReportFile } = await import('./move_report_file.mjs');
 const { rgbaToRgb, downscaleRgba } = await import('../../mobile/src/core/hdr_grid.ts');
@@ -58,7 +60,7 @@ test('rgba drops alpha and the preview scale stays small', () => {
   assert.ok(small.width * small.height < 1024 * 1024);
 });
 
-function harness() {
+function harness(extra = {}) {
   const modes = [];
   let photo = { id: 'p', version: 1, rev: 0, dng: {}, jpg: null };
   let dragging = false;
@@ -97,6 +99,7 @@ function harness() {
       return { ok: true, width: 2, height: 1, codes: new Uint8Array([req.ticket.rev + 1]), meta: { gain_min: 0, gain_max: 1, gamma: 1, offset_sdr: 0, offset_hdr: 0, cap_min: 0, cap_max: 1 } };
     },
     clock,
+    ...extra,
   });
   async function fire() {
     const pending = [...timers.entries()];
@@ -390,4 +393,101 @@ test('moveReportFile copies when rename throws EXDEV and renames when it does no
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// 2026-11-26：窗口在 SDR 屏和 HDR 屏之间挪动时，`(dynamic-range: high)` 变了要重查，不要整页只查一次。
+test('the display probe re-checks when the window moves to another screen', () => {
+  assert.equal(typeof hdrDisplay.watchHdrDisplay, 'function', 'hdr_display exports watchHdrDisplay');
+  const listeners = new Set();
+  const query = {
+    matches: false,
+    addEventListener(type, fn) { if (type === 'change') listeners.add(fn); },
+    removeEventListener(type, fn) { if (type === 'change') listeners.delete(fn); },
+  };
+  const realMatch = globalThis.matchMedia;
+  const realDoc = globalThis.document;
+  globalThis.matchMedia = (q) => { assert.equal(q, '(dynamic-range: high)'); return query; };
+  globalThis.document = {
+    createElement() {
+      let conf = null;
+      return { getContext: () => ({ configure(c) { conf = c; }, getConfiguration: () => conf, unconfigure() {} }) };
+    },
+  };
+  try {
+    debugForceHdrDisplay(null);
+    const device = {};
+    assert.equal(hdrDisplayCapable(device), false);
+    let calls = 0;
+    const off = hdrDisplay.watchHdrDisplay(() => { calls += 1; });
+    assert.equal(listeners.size, 1);
+    query.matches = true;
+    for (const fn of [...listeners]) fn();
+    assert.equal(calls, 1);
+    assert.equal(hdrDisplayCapable(device), true, 'moved to the HDR screen: re-checked, not the cached false');
+    query.matches = false;
+    for (const fn of [...listeners]) fn();
+    assert.equal(calls, 2);
+    assert.equal(hdrDisplayCapable(device), false, 'moved back to the SDR screen');
+    debugForceHdrDisplay(true);
+    assert.equal(calls, 3, 'debugForceHdrDisplay tells the watchers too');
+    assert.equal(hdrDisplayCapable(device), true);
+    off();
+    assert.equal(listeners.size, 0, 'the last watcher removes the media listener');
+  } finally {
+    debugForceHdrDisplay(null);
+    globalThis.matchMedia = realMatch;
+    globalThis.document = realDoc;
+  }
+});
+
+test('moving to an HDR screen turns the preview on without a reload, and the SDR-screen note follows', async () => {
+  let watcher = null;
+  let painted = 0;
+  const h = harness({ watchDisplay: (fn) => { watcher = fn; return () => { watcher = null; }; }, onShowing: () => { painted += 1; } });
+  h.set({ display: false });
+  h.ctl.sync();
+  assert.equal(h.timers.size, 0, 'SDR screen: no fit');
+  assert.equal(h.ctl.screenNote(), true, 'HDR export on, RAW, SDR screen: say so');
+  assert.equal(painted, 1, 'the editor is told to paint the note');
+  assert.equal(typeof watcher, 'function', 'the controller watches the display');
+
+  h.set({ display: true });
+  watcher();
+  assert.equal(h.ctl.screenNote(), false, 'HDR screen: no note');
+  await h.fire();
+  assert.equal(h.modes.at(-1)?.hdr, true, 'preview on after the move');
+  assert.equal(h.ctl.showing, true);
+  assert.equal(h.ctl.screenNote(), false);
+
+  h.set({ display: false });
+  watcher();
+  assert.equal(h.modes.at(-1)?.hdr, false, 'back on the SDR screen the preview goes off');
+  assert.equal(h.ctl.showing, false);
+  assert.equal(h.ctl.screenNote(), true);
+
+  h.set({ exportOn: false });
+  h.ctl.sync();
+  assert.equal(h.ctl.screenNote(), false, 'HDR export off: no note');
+  h.set({ exportOn: true, photo: { id: 'j', version: 1, rev: 0, dng: null, jpg: {} } });
+  h.ctl.sync();
+  assert.equal(h.ctl.screenNote(), false, 'no RAW: no note');
+
+  const host = { nodes: [], querySelector() { return this.nodes[0] ?? null; }, append(node) { this.nodes = [node]; } };
+  const real = globalThis.document;
+  globalThis.document = { createElement() { return { dataset: {}, className: '', textContent: '', remove() { host.nodes = []; } }; } };
+  try {
+    h.set({ photo: { id: 'p', version: 2, rev: 0, dng: {}, jpg: null } });
+    h.ctl.sync();
+    h.ctl.paintLabel(null, host);
+    assert.equal(host.nodes.length, 1);
+    assert.equal(host.nodes[0].textContent, hdrPreview.HDR_SCREEN_NOTE);
+    assert.equal(host.nodes[0].textContent, '这块屏幕显示不了 HDR，导出的照片仍带 HDR');
+    h.set({ exportOn: false });
+    h.ctl.paintLabel(null, host);
+    assert.equal(host.nodes.length, 0, 'note removed when HDR export is off');
+  } finally {
+    globalThis.document = real;
+  }
+  h.ctl.close();
+  assert.equal(watcher, null, 'close stops watching the display');
 });
