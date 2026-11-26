@@ -493,7 +493,8 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
     assert roll["a"] is True and roll["markAfterDelete"] == 1001 and roll["restoredTomb"] is None
     assert roll["b"] == {"ok": True, "error": None, "savedAt": 1002}
     assert roll["reopenedB"] == "B.zip"
-    assert roll["c"]["ok"] is False and "没有存进这台 iPhone" in roll["c"]["error"] and roll["c"]["pack"] == "C.zip"
+    # 驱动是无头 Chromium，没有触摸点、指针精确：算电脑（desktop-copy），所以写「这台电脑」。
+    assert roll["c"]["ok"] is False and "没有存进这台电脑" in roll["c"]["error"] and roll["c"]["pack"] == "C.zip"
     assert roll["reopenedAfterC"] == "B.zip"
     # Sol r3：核心的包级检查在存之前，坏包不存、不显示已导入，重开还是那份好的。
     invalid = cases["invalidImports"]
@@ -535,10 +536,10 @@ def test_mobile_ui_book_drops_late_results(tmp_path: Path) -> None:
             and row["bReturn"] is False
             and row["abortDelta"] == 1
             and row["beforeLate"]["memory"] == "BUnsaved.zip"
-            and "没有存进这台 iPhone" in (row["beforeLate"]["error"] or "")
+            and "没有存进这台电脑" in (row["beforeLate"]["error"] or "")
             and row["afterLate"]["memory"] == "BUnsaved.zip"
             and row["afterLate"]["disk"] == row["expectedDisk"]
-            and "没有存进这台 iPhone" in (row["afterLate"]["error"] or "")
+            and "没有存进这台电脑" in (row["afterLate"]["error"] or "")
             and row["afterLate"]["busy"] is False
         )
     ]
