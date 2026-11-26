@@ -9,6 +9,7 @@
 3. 第一次点开之前丢了：第一次打开就是 JPG。
 4. 只有 RAW 的照片：丢了以后显示「预览不了」，不是黑画布。
 5. 以上都没有页面错误、未处理的 Promise 拒绝和轻提示。
+6. 恢复：丢了以后下一次打开照片再建一次引擎，建好了回到显卡；Engine.create() 连着失败 3 次就不再试。
 
 1–5 在丢了以后让 Engine.create() 一直失败，测的是落回 JPG 这条路本身（不靠恢复）。
 固定版本的 WebKit 没有 WebGPU；Chromium 拿不到适配器时整组跳过。
@@ -161,3 +162,24 @@ def test_device_loss_raises_no_errors(report: dict[str, Any]) -> None:
         assert row["pageErrors"] == [], f"{name} page errors: {row['pageErrors']}"
         assert row["rejections"] == [], f"{name} unhandled rejections: {row['rejections']}"
         assert row["toasts"] == [], f"{name} toasts: {row['toasts']}"
+
+
+def test_recovery_rebuilds_the_engine_on_next_open(report: dict[str, Any]) -> None:
+    rec = _scenario(report, "recovery")
+    assert rec["fallbackMs"] is not None and rec["fallbackMs"] <= FALLBACK_MS, rec
+    nxt = rec["next"]
+    assert nxt["adapterSinceLoss"] == 1, f"next open did not try Engine.create() exactly once: {nxt}"
+    assert nxt["gpu"] == "1" and nxt["frame"] == "1" and nxt["gpuVisible"] is True, f"recovered engine not used: {nxt}"
+    assert _near(rec["nextRgb"], JPEG2_RGB), f"recovered GPU frame {rec['nextRgb']} is not the photo"
+    again = rec["again"]
+    assert again["adapterSinceLoss"] == 1 and again["gpu"] == "1" and again["gpuVisible"] is True, again
+    assert _near(rec["againRgb"], JPEG_RGB), rec["againRgb"]
+
+
+def test_recovery_stops_after_three_failures(report: dict[str, Any]) -> None:
+    lim = _scenario(report, "retryLimit")
+    tries = [row["adapterSinceLoss"] for row in lim["opens"]]
+    assert tries == [1, 2, 3, 3, 3], f"Engine.create() attempts after each open: {tries}"
+    for row in lim["opens"]:
+        assert row["gpu"] == "0" and row["stillVisible"] is True and row["gpuVisible"] is False, row
+    assert _near(lim["lastRgb"], JPEG2_RGB), lim["lastRgb"]

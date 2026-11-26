@@ -363,14 +363,15 @@ class App implements AppApi {
     const photo = this.byId.get(id);
     if (!photo || !openable(photo)) return;
     const ticket = this.navigate();
-    if (this.editorMod) {
+    const retry = this.gpuSlot.retry(); // 设备丢过：先再建一次引擎，建好了这一张就走显卡（gpu_loss.ts）
+    if (this.editorMod && !retry) {
       this.mountEditor(this.editorMod, photo);
       return;
     }
-    // 编辑器分包还没到：留在当前这一屏等它。等的时候又点了别的、返回了、清空了，这次就作废。
+    // 编辑器分包还没到（或在重建引擎）：留在当前这一屏等它。等的时候又点了别的、返回了、清空了，这次就作废。
     const version = photo.version;
-    this.loadEditor().then(
-      (mod) => {
+    Promise.all([this.loadEditor(), retry]).then(
+      ([mod]) => {
         if (ticket === this.nav && this.current(id, version, photo) && openable(photo)) this.mountEditor(mod, photo);
       },
       () => {
