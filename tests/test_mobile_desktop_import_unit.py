@@ -27,4 +27,4 @@ def test_mobile_desktop_import_unit() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "ℹ fail 0" in result.stdout or "# fail 0" in result.stdout, result.stdout
-    assert "ℹ pass 9" in result.stdout or "# pass 9" in result.stdout, result.stdout
+    assert "ℹ pass 13" in result.stdout or "# pass 13" in result.stdout, result.stdout
