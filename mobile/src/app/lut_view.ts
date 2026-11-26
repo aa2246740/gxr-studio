@@ -237,13 +237,13 @@ export class LutView {
     return true;
   }
 
-  private spaceButtonLabel(record: LutRecord | undefined): { text: string; warn: boolean } {
-    if (!record) return { text: '色彩空间', warn: false };
+  private spaceButtonLabel(record: LutRecord | undefined): { text: string; warn: boolean; base: string; tag: string } {
+    if (!record) return { text: '色彩空间', warn: false, base: '色彩空间', tag: '' };
     const choice = computeInputChoice(record);
-    if (!record.input_space) return { text: '选色彩空间', warn: true };
+    if (!record.input_space) return { text: '选色彩空间', warn: true, base: '选色彩空间', tag: '' };
     const tag = choice.default_input_source === 'required' ? '' : SOURCE_TAGS[choice.default_input_source];
     const base = spaceShortLabel(record.input_space);
-    return { text: tag ? `${base} · ${tag}` : base, warn: false };
+    return { text: tag ? `${base} · ${tag}` : base, warn: false, base, tag };
   }
 
   private makeModeSwitch(): HTMLElement {
@@ -355,7 +355,10 @@ export class LutView {
 
     this.pin.hidden = this.ipadMode;
     const sp = this.spaceButtonLabel(selectedRec);
-    this.spaceTxt.textContent = sp.text;
+    // 来源标记单独一段：手机横屏的窄瓷砖只显示短名（ipad.css 藏掉这段），全文仍在 aria-label 和色彩空间面板里。
+    // 全角左括号前给一个折行点：keep-all 下 WebKit 不在「L-Log」和「（」之间折行，括号会挂在行尾。
+    this.spaceTxt.replaceChildren(...sp.base.split(/(?=（)/).flatMap((part, i) => (i ? [document.createElement('wbr'), part] : [part])));
+    if (sp.tag) this.spaceTxt.append(el('span', 'lut-space-src', ` · ${sp.tag}`));
     this.spaceBtn.classList.toggle('warn', sp.warn);
     this.spaceBtn.disabled = !selectedRec;
     this.spaceBtn.classList.toggle('collapsed', !selectedRec);
