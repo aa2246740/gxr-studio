@@ -21,6 +21,35 @@ export const LUT_ERRORS = {
   bad_name: '无法保存。名称无效。',
 } as const;
 
+// .cube 解析器（core/crates/gxr-lut/src/cube.rs）的英文报错换成用户看得懂的中文，保留行号。已经是中文的原样用。
+const CUBE_LINE_ERRORS: ReadonlyArray<[RegExp, string]> = [
+  [/^unsupported directive\b/, '读不懂，不是有效的 LUT'],
+  [/^duplicate or late header\b/, '的文件头重复或位置不对，不是有效的 LUT'],
+  [/^TITLE needs one quoted string$/, '的标题要用引号括起来'],
+  [/^(invalid LUT size|LUT size out of range)$/, '的 LUT 尺寸不对'],
+  [/^(invalid \w+|non-finite header)$/, '的范围数值不对'],
+  [/^expected three finite numbers$/, '应该是三个数字'],
+  [/^unexpected data row$/, '多出了一行数据'],
+];
+const CUBE_ERRORS: ReadonlyArray<[RegExp, string]> = [
+  [/^No (closing quotation|escaped character)$/, '引号没有配对，不是有效的 LUT'],
+  [/^utf-8 decode error\b/, '不是文本文件，不是有效的 LUT'],
+  [/^(invalid literal for int\(\)|could not convert string to float)\b/, '里有读不懂的数字，不是有效的 LUT'],
+];
+
+/** 导入 .cube 失败时那句话：「第 4 行读不懂，不是有效的 LUT」。认不出的英文退回 LUT_ERRORS.cube_unreadable。 */
+export function cubeErrorText(raw: string): string {
+  const text = raw.trim();
+  const line = /^line (\d+): (.*)$/.exec(text);
+  if (line) {
+    const hit = CUBE_LINE_ERRORS.find(([re]) => re.test(line[2]));
+    return `第 ${line[1]} 行${hit ? hit[1] : '读不懂，不是有效的 LUT'}`;
+  }
+  const hit = CUBE_ERRORS.find(([re]) => re.test(text));
+  if (hit) return hit[1];
+  return /[一-鿿]/.test(text) ? text : LUT_ERRORS.cube_unreadable;
+}
+
 export function ignoredFilesMessage(count: number): string {
   return `${count} 个文件不是 .cube，没有导入。`;
 }

@@ -94,3 +94,68 @@ test('hdrLine and lutFootnote: byte-identical on phone and iPad, no iPhone on a 
   assert.equal(lutFootnote(IPAD_MAC_UA), 'LUT 只存在这台 iPad 上，直接套在照片上，不写入相机。');
   assert.equal(lutFootnote(WINDOWS), 'LUT 只存在这台电脑上，直接套在照片上，不写入相机。');
 });
+
+test('HDR note blames the browser when there is no GPU preview, the screen otherwise', async () => {
+  const { HdrPreviewController, HDR_SCREEN_NOTE } = await import('../../mobile/src/core/hdr_preview.ts');
+  const note = (engine) => {
+    const ctl = new HdrPreviewController({
+      photo: () => ({ id: 'p', version: 1, rev: 0, dng: {}, jpg: null }),
+      session: () => 1,
+      dragging: () => false,
+      holding: () => false,
+      exportOn: () => true,
+      display: () => false,
+      engine: () => engine,
+      readDng: async () => null,
+      fit: async () => ({ ok: false }),
+      clock: { set: () => 1, clear: () => undefined },
+    });
+    const host = { nodes: [], querySelector() { return this.nodes[0] ?? null; }, append(node) { this.nodes = [node]; } };
+    const real = globalThis.document;
+    globalThis.document = { createElement() { return { dataset: {}, className: '', textContent: '', remove() { host.nodes = []; } }; } };
+    try {
+      ctl.sync();
+      ctl.paintScreenNote(host);
+      return host.nodes[0]?.textContent ?? null;
+    } finally {
+      globalThis.document = real;
+      ctl.close();
+    }
+  };
+  const engine = { setOutput() {}, async readback() { return { w: 1, h: 1, data: new Uint8Array(4) }; }, hdrGainCount: () => 0 };
+  assert.equal(note(engine), HDR_SCREEN_NOTE);
+  assert.equal(note(engine), '这块屏幕显示不了 HDR，导出的照片仍带 HDR');
+  assert.equal(note(null), '这个浏览器显示不了 HDR 预览，导出的照片仍带 HDR');
+});
+
+test('cubeErrorText: the parser English becomes Chinese with the line number kept', async () => {
+  const { cubeErrorText, LUT_ERRORS } = await import('../../mobile/src/lib/lut.ts');
+  assert.equal(cubeErrorText('line 4: unsupported directive not'), '第 4 行读不懂，不是有效的 LUT');
+  assert.equal(cubeErrorText('line 2: duplicate or late header LUT_3D_SIZE'), '第 2 行的文件头重复或位置不对，不是有效的 LUT');
+  assert.equal(cubeErrorText('line 1: TITLE needs one quoted string'), '第 1 行的标题要用引号括起来');
+  assert.equal(cubeErrorText('line 3: invalid LUT size'), '第 3 行的 LUT 尺寸不对');
+  assert.equal(cubeErrorText('line 3: LUT size out of range'), '第 3 行的 LUT 尺寸不对');
+  assert.equal(cubeErrorText('line 5: invalid DOMAIN_MIN'), '第 5 行的范围数值不对');
+  assert.equal(cubeErrorText('line 5: non-finite header'), '第 5 行的范围数值不对');
+  assert.equal(cubeErrorText('line 9: expected three finite numbers'), '第 9 行应该是三个数字');
+  assert.equal(cubeErrorText('line 40: unexpected data row'), '第 40 行多出了一行数据');
+  assert.equal(cubeErrorText('line 7: something new'), '第 7 行读不懂，不是有效的 LUT');
+  assert.equal(cubeErrorText('No closing quotation'), '引号没有配对，不是有效的 LUT');
+  assert.equal(cubeErrorText("could not convert string to float: \"x\""), '里有读不懂的数字，不是有效的 LUT');
+  assert.equal(cubeErrorText('LUT 数据行数与声明不符'), 'LUT 数据行数与声明不符');
+  assert.equal(cubeErrorText('Something else'), LUT_ERRORS.cube_unreadable);
+});
+
+test('LutBook import notice shows the Chinese parse error, not the parser English', async () => {
+  const { LutBook } = await import('../../mobile/src/app/lut_book.ts');
+  const book = new LutBook({
+    importLut: async () => ({ ok: false, reason: 'parse', message: 'line 4: unsupported directive not' }),
+    restore: async () => ({ records: [], order: [], totalBytes: 0, watermark: 0 }),
+    patch: async () => ({ ok: false, reason: 'not_found' }),
+    remove: async () => true,
+    readBlob: async () => null,
+  });
+  const out = await book.importFiles([new File(['TITLE "x"\n'], 'synth-broken.cube')]);
+  assert.deepEqual(out.errors, ['synth-broken.cube：第 4 行读不懂，不是有效的 LUT']);
+  assert.ok(!/[A-Za-z]{4,}/.test(out.message.replace('synth-broken.cube', '')), out.message);
+});
