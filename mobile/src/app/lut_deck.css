@@ -1,7 +1,7 @@
 /* 手机竖屏 LUT 甲板（polish-2）。只挂在 phone-portrait 和还没判定版式的壳上，iPad 与手机横屏不走这里。 */
 
-/* 手机竖屏合并后的单颗 LUT 菜单瓷砖默认隐藏，只在 phone-portrait / 未判定版式里替换双瓷砖。 */
-.rc.lut-menu-tile { display: none; }
+/* 手机竖屏合并后的单颗 LUT 菜单瓷砖默认隐藏（用 .app .lut-pin 压过 shell.css 晚加载的 .rc.filter-tile），只在 phone-portrait / 未判定版式里替换双瓷砖。 */
+.app .lut-pin .lut-menu-tile { display: none; }
 
 /* hidden 属性盖不过 .mode-switch 自己的 display:flex，所以微调时要写明收起。 */
 .panel > .mode-switch[hidden] { display: none; }
