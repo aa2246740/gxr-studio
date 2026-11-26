@@ -4,6 +4,7 @@
 import { ExportCore, calibPack } from '../core/export_api';
 import { buildRequest, usedLogoId } from '../lib/export_request';
 import { fontsNeeded } from '../lib/fonts';
+import { isComputer } from '../lib/save_mode';
 import { button, el } from './dom';
 import { adoptCameraRecipe, cardsFor, requestPhoto } from './export_request_prep';
 import { CALIB_WAIT_MS } from './export_calib_wait';
@@ -468,10 +469,14 @@ export function openOffImageSheet(host: HTMLElement, api: AppApi, photo: Photo):
     void generateFromFile(picked).catch(() => undefined);
   });
 
-  // 导出必须在点击事件里同步触发 navigator.share，前面不能有 await，保留用户手势激活。
+  // 导出必须在点击事件里同步触发 navigator.share，前面不能有 await，保留用户手势激活。电脑浏览器直接下载。
   exportBtn.addEventListener('click', () => {
     if (!current || exportBtn.disabled) return;
     const file = new File([current.bytes], 'GXROFF.JPG', { type: 'image/jpeg' });
+    if (isComputer()) {
+      offerDownload(file, true);
+      return;
+    }
     const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
     const canShare = typeof nav.share === 'function' && typeof nav.canShare === 'function' && nav.canShare({ files: [file] });
     if (canShare) {

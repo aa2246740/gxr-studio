@@ -5,6 +5,7 @@
 import { pathToFileURL } from 'node:url';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { exportFromGrid, pickAll, shareAll, sharedFiles, waitPhase, cellOf } from './mobile_ui_export_parity.mjs';
+import { phoneTouch } from './phone_touch.mjs';
 
 const [runtime, url, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -48,6 +49,7 @@ async function settle(page) {
 
 async function newPage() {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.addInitScript(phoneTouch);
   page.on('pageerror', (error) => out.pageErrors.push(error.message));
   await page.addInitScript(fakeShare);
   await page.goto(url);

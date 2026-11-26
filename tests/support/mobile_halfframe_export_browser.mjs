@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { cellOf, pickAll, shareAll, sharedFiles, waitPhase } from './mobile_ui_export_parity.mjs';
+import { phoneTouch } from './phone_touch.mjs';
 
 const [runtime, url, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -107,6 +108,7 @@ async function setKnob(page, key, value) {
 
 try {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.addInitScript(phoneTouch);
   page.on('pageerror', (error) => out.pageErrors.push(error.message));
   await page.addInitScript(fakeShare);
 

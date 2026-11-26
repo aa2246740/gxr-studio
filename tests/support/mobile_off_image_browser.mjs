@@ -3,6 +3,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { phoneTouch } from './phone_touch.mjs';
 
 const [runtime, url, manifestPath] = process.argv.slice(2);
 const m = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -68,6 +69,7 @@ async function waitSheetReady(page) {
 
 async function run() {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+  await ctx.addInitScript(phoneTouch);
   const page = await ctx.newPage();
   page.on('pageerror', (err) => out.pageErrors.push(String(err).slice(0, 300)));
   await installShareCapture(page);

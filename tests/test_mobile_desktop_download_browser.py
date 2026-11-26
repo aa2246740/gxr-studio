@@ -1,0 +1,121 @@
+"""电脑浏览器上「存」就是下载（2026-11-26，`browser_serial`）。
+
+- Chromium，没有触摸点、指针精确：编辑器的按钮写「下载」，一键导出后点就绪条的「下载」得到一个浏览器下载；关机图也是下载；网格里两张
+  一起导出，点一次下载两个，下载链接留着兜底。文件名和字节与「手机」Chromium（一个触摸点）走共享面板的那份逐字节相同。
+- WebKit 手机（390×844）和 iPad（1032×1376，Mac UA + 5 个触摸点），都有触摸：文案不变，仍调共享面板，不下载。
+
+只用本地 card250 实拍照片和 g250 相机配方/校准；报告里没有文件名、拍摄时间或 EXIF。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from gxr_studio.camdata import calib_export, store
+from support.export_pipeline_cases import check
+from support.mobile_ui_calib import pack_files
+from test_g250 import _need_g185_or_g250
+from test_mobile_camera_recipe_browser import _card250_pair, _prereq
+from test_mobile_ui_browser import _drive
+
+pytestmark = pytest.mark.browser_serial
+
+REPO = Path(__file__).resolve().parents[1]
+DRIVER = REPO / "tests" / "support" / "mobile_desktop_download_browser.mjs"
+FOOT = "「下载」每次都按这里的设置做。做好后点「下载」，文件存到浏览器的下载文件夹。"
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _same_files(out: Path, names: list[str], left: str, right: str, what: str) -> None:
+    check(len(names) > 0, f"{what}: at least one file")
+    for name in names:
+        a, b = out / f"{left}{name}", out / f"{right}{name}"
+        check(a.is_file() and b.is_file(), f"{what}: both sides wrote the file")
+        check(_sha(a) == _sha(b), f"{what}: download bytes equal the shared bytes")
+
+
+def _touch_unchanged(step: dict[str, Any], label: str) -> None:
+    check(step["save"]["text"] == "存到相册", f"{label}: editor button still says 存到相册")
+    check(step["save"]["aria"] == "导出当前照片并存到相册", f"{label}: editor button aria unchanged")
+    check("做好了 · 存进相册" in step["ready"]["text"], f"{label}: ready bar still says 存进相册")
+    check("存进相册，打开系统分享" in step["ready"]["aria"], f"{label}: ready bar aria unchanged")
+    check(step["share"]["calls"] >= 1 and step["share"]["canShare"] >= 1, f"{label}: share and canShare were called")
+    check(step["downloads"] == 0, f"{label}: no browser download")
+
+
+def test_mobile_desktop_download(tmp_path: Path) -> None:
+    _prereq()
+    raw250, lib250, dat250, fx250 = _need_g185_or_g250(250)
+    pair_a = _card250_pair(1)
+    pair_b = _card250_pair(3)
+
+    _parsed, entries = store.entries_from_dat(raw250, library=lib250)
+    all_units = ("jlaunch", "qlaunch", "l08firm")
+    pack = pack_files({name: entries[(unit, 4)] for unit, name in enumerate(all_units)})
+    pack_zip = tmp_path / "GXR 校准数据 2026-11-26.zip"
+    pack_zip.write_bytes(calib_export.zip_bytes(pack, (2026, 11, 26, 9, 0, 0)))
+
+    out_dir = tmp_path / "files"
+    out_dir.mkdir()
+    report_path = tmp_path / "report.json"
+    manifest = {
+        "pack": str(pack_zip),
+        "files": [str(p) for pair in (pair_a, pair_b) for p in pair] + [str(dat250), str(fx250)],
+        "count": 2,
+        "stems": [pair_a[0].stem, pair_b[0].stem],
+        "outDir": str(out_dir),
+        "reportPath": str(report_path),
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    result = _drive(DRIVER, manifest_path, tmp_path, "", timeout=1800)
+    check(report_path.is_file(), "driver wrote its report")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    check(result.returncode == 0 and report.get("error") is None, f"driver completed without error: {report.get('error')}")
+    check(report["pageErrors"] == [], f"no page errors: {report['pageErrors']}")
+    steps = report["steps"]
+
+    pc = steps["computer"]
+    check(pc["env"]["touch"] == 0 and pc["env"]["fine"] is True, "computer context has no touch and a fine pointer")
+    check(pc["save"]["text"] == "下载" and pc["saveAfter"]["text"] == "下载", "computer: editor button says 下载")
+    check(pc["save"]["aria"] == "导出当前照片并下载", "computer: editor button aria contains 下载")
+    check(pc["ready"]["text"].endswith("做好了 · 下载"), "computer: ready bar says 下载")
+    check("存进相册" not in pc["ready"]["aria"] and "下载" in pc["ready"]["aria"], "computer: ready bar aria says 下载")
+    check(len(pc["singleNames"]) == 1, "computer: one tap gives one download")
+    check(pc["dockGoneAfterSingle"] is True, "computer: ready bar closes after the download")
+    check(FOOT in pc["sheetText"], "computer: export sheet footnote names the download folder")
+    check("存到相册" not in pc["sheetText"] and "存储图像" not in pc["sheetText"], "computer: export sheet has no album copy")
+    check(pc["batchReady"]["text"].endswith("2 张做好了 · 下载"), "computer: batch ready bar says 下载")
+    check(len(pc["batchNames"]) == 2 and len(set(pc["batchNames"])) == 2, "computer: one tap downloads both files")
+    check(sorted(pc["backupLinks"]) == sorted(pc["batchNames"]), "computer: backup links list the same files")
+    check(pc["backupText"].startswith("已经开始下载"), "computer: backup links say the downloads started")
+    check(pc["share"]["calls"] == 0, "computer: share panel never opened")
+
+    ph = steps["phoneChromium"]
+    check(ph["env"]["touch"] == 1, "phone Chromium has a touch point")
+    check(ph["save"]["text"] == "存到相册" and "存进相册" in ph["ready"]["text"], "phone Chromium keeps album copy")
+    check(ph["share"]["files"] == [1, 1, 2] and all(ph["share"]["active"]), "phone Chromium shares inside the tap")
+    check(ph["downloads"] == 0, "phone Chromium never downloads")
+    phone_single = [f["name"] for f in ph["singleShared"][0]["files"]]
+    phone_batch = [f["name"] for call in ph["batchShared"] for f in call["files"]]
+    check(phone_single == pc["singleNames"], "single: download file name equals the shared name")
+    check(sorted(phone_batch) == sorted(pc["batchNames"]), "batch: download file names equal the shared names")
+    _same_files(out_dir, pc["singleNames"], "computer1-", "phone1-", "single")
+    _same_files(out_dir, pc["batchNames"], "computerN-", "phoneN-", "batch")
+    check(pc["offNames"] == ["GXROFF.JPG"], "computer: off-image sheet downloads GXROFF.JPG")
+    check([f["name"] for f in ph["offShared"][0]["files"]] == ["GXROFF.JPG"], "phone: off-image sheet shares GXROFF.JPG")
+    _same_files(out_dir, pc["offNames"], "computerOff-", "phoneOff-", "off-image")
+
+    if steps.get("webkitMissing"):
+        pytest.skip("Playwright WebKit is not installed")
+    _touch_unchanged(steps["webkitPhone"], "WebKit phone")
+    _touch_unchanged(steps["webkitIpad"], "WebKit iPad")
+    check(steps["webkitIpad"]["env"]["touch"] == 5, "WebKit iPad reports 5 touch points")

@@ -8,11 +8,11 @@ import { fontsNeeded, type FontKey } from '../lib/fonts';
 import { hdrAvailable } from '../lib/hdr_text';
 import { loadExportHalfframe, loadExportHdr, loadExportQuality, loadExportSize } from '../lib/prefs';
 import { cameraRecipeErrorOf } from '../lib/recipes';
-import { shareChunks, SHARE_MAX_BYTES, SHARE_MAX_FILES } from '../lib/share_plan';
 import type { Book } from './book';
 import { el } from './dom';
 import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type BatchItem } from './export_batch';
 import { estimatePeak, type BatchFonts } from './export_budget';
+import { handOff, handOffChunks } from './export_handoff';
 import { mountExportSheet, type OpenedExportSheet } from './export_options';
 import { setExportPaused } from './export_pause';
 import { calibGate } from './export_calib_wait';
@@ -532,14 +532,7 @@ export class ExportFlow {
       this.chunkEntryCount = 0;
       const { done, total, current } = batch.progress();
       const carried = this.carryoverEntries();
-      const limit = dev()?.chunkFiles ?? SHARE_MAX_FILES;
-      const carryChunks = carried.length
-        ? shareChunks(
-            carried.map((e) => e.file.size),
-            limit,
-            SHARE_MAX_BYTES,
-          )
-        : [];
+      const carryChunks = handOffChunks(carried.map((e) => e.file.size), dev()?.chunkFiles);
       const picked = (carryChunks[0] ?? []).map((i) => carried[i]).filter((e): e is ReadyEntry => !!e);
       const stopNow = () => {
         this.queue.stop();
@@ -595,12 +588,7 @@ export class ExportFlow {
 
     const entries = this.allReadyEntries(batch);
     if ((!this.chunks.length || this.chunkEntryCount !== entries.length) && entries.length) {
-      const limit = dev()?.chunkFiles ?? SHARE_MAX_FILES;
-      this.chunks = shareChunks(
-        entries.map((e) => e.file.size),
-        limit,
-        SHARE_MAX_BYTES,
-      );
+      this.chunks = handOffChunks(entries.map((e) => e.file.size), dev()?.chunkFiles);
       this.chunk = 0;
       this.chunkEntryCount = entries.length;
     }
@@ -707,64 +695,52 @@ export class ExportFlow {
     return pick.map((i) => entries[i]).filter((e): e is ReadyEntry => !!e);
   }
 
-  /** 运行中直接保存已做好待存的 carryover：同步在点击里调用 navigator.share，绝不在前面 await。 */
+  /** 运行中直接保存已做好待存的 carryover：同步在点击里调用 navigator.share（电脑上直接下载），绝不在前面 await。 */
   private shareCarryover(picked: ReadyEntry[]): void {
-    const files = picked.map((e) => e.file);
-    const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
-    const can = typeof nav.share === 'function' && typeof nav.canShare === 'function' && nav.canShare({ files });
-    if (!can) {
-      this.view = 'noshare';
-      this.detailsOpen = true;
-      this.paint();
-      return;
-    }
     const session = this.app.session();
     const ids = picked.map((e) => e.id);
-    nav.share({ files }).then(
-      () => {
-        if (this.app.session() !== session) return;
-        this.view = 'progress';
-        this.detailsOpen = false;
-        this.queue.consumeCarryover(ids);
-        this.chunks = [];
-        this.chunk = 0;
-        this.chunkEntryCount = 0;
-        this.paint();
-      },
-      () => {
-        // 取消共享面板：保留 carryover，仍在栏上。
-      },
-    );
+    const done = () => {
+      if (this.app.session() !== session) return;
+      this.view = 'progress';
+      this.detailsOpen = false;
+      this.queue.consumeCarryover(ids);
+      this.chunks = [];
+      this.chunk = 0;
+      this.chunkEntryCount = 0;
+      this.paint();
+    };
+    // 取消共享面板：保留 carryover，仍在栏上。
+    this.handedOff(handOff(picked.map((e) => e.file), done), picked.length, done);
   }
 
-  /** 必须在点击里同步调用，前面不能有 await：共享面板要这次点击的用户激活。 */
+  /** 必须在点击里同步调用，前面不能有 await：共享面板（电脑上是下载）要这次点击的用户激活。 */
   private share(batch: ExportBatch | null, picked: ReadyEntry[]): void {
-    const files = picked.map((e) => e.file);
-    const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
-    const can = typeof nav.share === 'function' && typeof nav.canShare === 'function' && nav.canShare({ files });
-    if (!can) {
-      this.view = 'noshare';
-      this.detailsOpen = true;
-      this.paint();
+    const ids = picked.map((e) => e.id);
+    const done = () => {
+      if (this.batch !== batch) return;
+      if (this.chunk + 1 < this.chunks.length) {
+        this.queue.markChunkShared(ids);
+        this.chunk += 1;
+        this.paint();
+        return;
+      }
+      // 最后一批交出后自动收起，不再多点一次「好」。
+      this.finishShare(batch);
+    };
+    // 关掉了面板（AbortError）或别的失败：留在就绪条，文件还在。
+    this.handedOff(handOff(picked.map((e) => e.file), done), picked.length, done);
+  }
+
+  /** 电脑上下载一个文件就算交出去了。没有共享面板，或一次下载几个（浏览器可能拦下后面的）：给下载链接兜底。 */
+  private handedOff(how: ReturnType<typeof handOff>, files: number, done: () => void): void {
+    if (how === 'share') return;
+    if (how === 'download' && files === 1) {
+      done();
       return;
     }
-    const ids = picked.map((e) => e.id);
-    nav.share({ files }).then(
-      () => {
-        if (this.batch !== batch) return;
-        if (this.chunk + 1 < this.chunks.length) {
-          this.queue.markChunkShared(ids);
-          this.chunk += 1;
-          this.paint();
-          return;
-        }
-        // 最后一批交出后自动收起，不再多点一次「好」。
-        this.finishShare(batch);
-      },
-      () => {
-        // 关掉了面板（AbortError）或别的失败：留在就绪条，文件还在。
-      },
-    );
+    this.view = 'noshare';
+    this.detailsOpen = true;
+    this.paint();
   }
 
   private finishShare(batch: ExportBatch | null): void {

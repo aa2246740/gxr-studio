@@ -1,10 +1,12 @@
 // 导出「详情」底部工作表：压在 56pt 底栏上方（最高 240pt，0px 不改照片矩形），模态对话框 + 遮罩点关 + 焦点围栏 + 直达「存进相册」。
 
 import { HDR_PROGRESS } from '../lib/hdr_text';
+import { isComputer } from '../lib/save_mode';
 import { button, el } from './dom';
 import type { Failure, Phase } from './export_batch';
 import {
   collectReadyNotes,
+  DOWNLOAD_BACKUP,
   EXPORT_ICON,
   exportIco,
   NO_SHARE,
@@ -196,11 +198,11 @@ export class ExportDetailsSheet {
       this.body.append(sec);
     }
 
-    // 5) 无系统共享面板时的下载链接兜底
+    // 5) 无系统共享面板时的下载链接兜底（电脑上一次下载几个文件时也留着）
     if (noShare && entries.length) {
       const box = el('div', 'links');
       box.dataset.state = 'no-share';
-      box.append(el('p', 'dim small', NO_SHARE));
+      box.append(el('p', 'dim small', isComputer() ? DOWNLOAD_BACKUP : NO_SHARE));
       for (const entry of entries) {
         const a = el('a', '', entry.file.name);
         const url = URL.createObjectURL(entry.file);

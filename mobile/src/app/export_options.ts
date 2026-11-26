@@ -21,6 +21,7 @@ import {
   type ExportHalfframePref,
 } from '../lib/prefs';
 import type { Card } from '../lib/recipes';
+import { isComputer, saveWord } from '../lib/save_mode';
 import { MANY_SIZES, SIZE_FAILED, SIZE_PENDING, sizeText } from '../lib/share_plan';
 import type { Book } from './book';
 import { button, el } from './dom';
@@ -44,6 +45,8 @@ const QUALITIES: Array<[QualityTier, string]> = [
   ['medium', '中'],
   ['low', '低'],
 ];
+/** 电脑浏览器上做好的文件直接下载（2026-11-26）。 */
+const FOOT_COMPUTER = '「下载」每次都按这里的设置做。做好后点「下载」，文件存到浏览器的下载文件夹。';
 const NO_DAT_GUIDE = '未导入相机配方文件时，导出不会带上相机配方效果：有相机 JPG 的照片导出相机 JPG；只有 RAW、又套用了配方的照片可能导不出。';
 
 function timeRange(photos: Photo[]): string {
@@ -232,15 +235,15 @@ export function mountExportSheet(
   }
 
   const go = button('btn primary lg block go', '');
-  go.append(exportIco(EXPORT_ICON.export, 'md'), document.createTextNode('存到相册'));
+  go.append(exportIco(EXPORT_ICON.export, 'md'), document.createTextNode(saveWord()));
   go.addEventListener('click', () => {
     host.onClose();
     opts.onStart?.();
     host.onStart(photos, { size, quality, hdr: hdrOn, halfframe: hasDiptych ? halfframe : 'diptych' });
   });
-  const foot = el('p', 'foot', '「存到相册」每次都按这里的设置做。做好后点「存进相册」，在系统面板里点「存储图像」。');
+  const foot = el('p', 'foot', isComputer() ? FOOT_COMPUTER : '「存到相册」每次都按这里的设置做。做好后点「存进相册」，在系统面板里点「存储图像」。');
   if (isIpadPopover) {
-    sheet.append(el('i', 'arrow up'), head, el('p', 'lead', '「存到相册」每次都按这里的设置做。'), form, go);
+    sheet.append(el('i', 'arrow up'), head, el('p', 'lead', `「${saveWord()}」每次都按这里的设置做。`), form, go);
   } else {
     sheet.append(el('div', 'grab'), head, el('p', 'lead', timeRange(photos)), form, go, foot);
   }
