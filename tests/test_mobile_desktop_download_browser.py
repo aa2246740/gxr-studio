@@ -58,6 +58,7 @@ def _run(tmp_path: Path, mode: str) -> tuple[dict[str, Any], Path]:
     raw250, lib250, dat250, fx250 = _need_g185_or_g250(250)
     pair_a = _card250_pair(1)
     pair_b = _card250_pair(3)
+    pair_c = _card250_pair(5)
 
     _parsed, entries = store.entries_from_dat(raw250, library=lib250)
     all_units = ("jlaunch", "qlaunch", "l08firm")
@@ -71,9 +72,10 @@ def _run(tmp_path: Path, mode: str) -> tuple[dict[str, Any], Path]:
     manifest = {
         "mode": mode,
         "pack": str(pack_zip),
-        "files": [str(p) for pair in (pair_a, pair_b) for p in pair] + [str(dat250), str(fx250)],
-        "count": 2,
+        "files": [str(p) for pair in (pair_a, pair_b, pair_c) for p in pair] + [str(dat250), str(fx250)],
+        "count": 3,
         "stems": [pair_a[0].stem, pair_b[0].stem],
+        "heldStems": [pair_a[0].stem, pair_b[0].stem, pair_c[0].stem],
         "outDir": str(out_dir),
         "reportPath": str(report_path),
     }
@@ -95,6 +97,11 @@ def test_mobile_desktop_hdr_follows_the_screen(tmp_path: Path) -> None:
     check(sdr["exportHdr"] == "true", "RAW photo opens with HDR export on")
     check(sdr["preview"] is False, "SDR screen: no HDR preview")
     check(sdr["note"] == NOTE and sdr["noteVisible"] is True, "SDR screen: the can't-show-HDR line is visible on the stage")
+    layouts = [row["layout"] for row in hdr["crop"]]
+    check(layouts == ["ipad-landscape", "phone-portrait", "phone-landscape"], f"crop check covers iPad, phone and landscape: {layouts}")
+    for row in hdr["crop"]:
+        check(row["before"] is True and row["after"] is True, f"{row['layout']}: line shows outside crop mode")
+        check(row["cropping"] is False, f"{row['layout']}: line hidden in crop mode, off the bottom handle")
     on = hdr["hdrScreen"]
     check(on["preview"] is True, "moved to the HDR screen: the preview turns on without a reload")
     check(on["note"] is None, "HDR screen: the line is hidden while the preview shows")
@@ -120,8 +127,18 @@ def test_mobile_desktop_download(tmp_path: Path) -> None:
     check("存到相册" not in pc["sheetText"] and "存储图像" not in pc["sheetText"], "computer: export sheet has no album copy")
     check(pc["batchReady"]["text"].endswith("2 张做好了 · 下载"), "computer: batch ready bar says 下载")
     check(len(pc["batchNames"]) == 2 and len(set(pc["batchNames"])) == 2, "computer: one tap downloads both files")
+    check(pc["dockGoneAfterBatch"] is True, "computer: a multi-file download closes the ready bar like a share")
     check(sorted(pc["backupLinks"]) == sorted(pc["batchNames"]), "computer: backup links list the same files")
     check(pc["backupText"].startswith("已经开始下载"), "computer: backup links say the downloads started")
+    check(pc["backupClosedByEsc"] is True, "computer: Esc closes the backup links")
+    check(pc["heldReady"]["phase"] == "held" and pc["heldReady"]["text"].endswith("2 张做好了 · 下载"), "computer: batch held at the cap")
+    check(len(pc["heldNames"]) == 2, "computer: one tap downloads both held files")
+    check(pc["phaseAfterHeldTap"] in ("running", "ready"), "computer: the held batch resumes in the same tap")
+    check(sorted(pc["backupDuringResume"]) == sorted(pc["heldNames"]), "computer: backup still lists the held files while it resumes")
+    check(pc["restReady"]["text"].endswith("做好了 · 下载"), "computer: the queued photo finished without a second click")
+    check(sorted(pc["backupAfterResume"]) == sorted(pc["heldNames"]), "computer: backup list survives the repaints")
+    check(pc["backupClosedByScrim"] is True, "computer: the scrim closes the backup links")
+    check(len(pc["restNames"]) == 1 and pc["dockGoneAfterRest"] is True, "computer: the last file downloads and the bar closes")
     check(pc["share"]["calls"] == 0, "computer: share panel never opened")
 
     ph = steps["phoneChromium"]

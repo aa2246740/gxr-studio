@@ -131,6 +131,13 @@ async function closeOffImage(page) {
   await page.waitForFunction(() => !document.querySelector('.ms.off-image-sheet'), null, { timeout: 10_000 });
 }
 
+/** 兜底链接表上列着的文件名（没有这张表就是空）。 */
+async function backupNames(page) {
+  const box = page.locator('.links[data-state="download-backup"]');
+  if (!(await box.count())) return [];
+  return box.locator('a[download]').evaluateAll((as) => as.map((a) => a.download));
+}
+
 async function shareFacts(page) {
   return page.evaluate(() => ({ calls: window.__shareLog.calls.length, canShare: window.__shareLog.canShare, files: window.__shareLog.calls.map((c) => c.files.length), active: window.__shareLog.calls.map((c) => c.active) }));
 }
@@ -166,10 +173,39 @@ async function computer(browser) {
   const beforeBatch = downloads.length;
   await batch.btn.click();
   step.batchNames = await saveDownloads(downloads, beforeBatch, manifest.stems.length, 'computerN-');
-  const links = page.locator('[data-state="no-share"]');
-  await links.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {});
-  step.backupLinks = (await links.count()) ? await links.locator('a[download]').evaluateAll((as) => as.map((a) => a.download)) : [];
-  step.backupText = (await links.count()) ? (await links.locator('p').first().innerText()).trim() : '';
+  // 和共享成功一样，这一次点击就收尾：就绪条收起，兜底链接表自己列着这几个文件。
+  await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 }).catch(() => {});
+  step.dockGoneAfterBatch = (await page.locator('.pdock').count()) === 0;
+  step.backupLinks = await backupNames(page);
+  step.backupText = (await page.locator('.links[data-state="download-backup"] p').count())
+    ? (await page.locator('.links[data-state="download-backup"] p').first().innerText()).trim()
+    : '';
+  await page.keyboard.press('Escape');
+  step.backupClosedByEsc = (await page.locator('[data-state="download-backup"]').count()) === 0;
+
+  // 一批停在内存上限（held）：点一次「下载」就放掉这一批、接着做排着的那张，不用再点「关闭」。
+  await page.evaluate((n) => { window.__devExport.holdAfter = n; }, manifest.stems.length);
+  await exportFromGrid(page, manifest.heldStems, '小', '低');
+  await waitPhase(page, ['held'], 900_000);
+  const held = await readyButton(page);
+  step.heldReady = { text: held.text, phase: await page.locator('.pdock').getAttribute('data-phase') };
+  const beforeHeld = downloads.length;
+  await held.btn.click();
+  step.heldNames = await saveDownloads(downloads, beforeHeld, manifest.stems.length, 'computerH-');
+  step.phaseAfterHeldTap = await page.evaluate(() => window.__devExport.flow.current()?.phase ?? 'none');
+  step.backupDuringResume = await backupNames(page);
+  await waitPhase(page, ['ready'], 900_000);
+  const rest = await readyButton(page);
+  step.restReady = { text: rest.text };
+  step.backupAfterResume = await backupNames(page);
+  await page.locator('.scrim.export-details-scrim').last().click({ position: { x: 5, y: 5 } });
+  step.backupClosedByScrim = (await page.locator('[data-state="download-backup"]').count()) === 0;
+  const beforeRest = downloads.length;
+  await rest.btn.click();
+  step.restNames = await saveDownloads(downloads, beforeRest, 1, 'computerR-');
+  await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 }).catch(() => {});
+  step.dockGoneAfterRest = (await page.locator('.pdock').count()) === 0;
+  await page.evaluate(() => { delete window.__devExport.holdAfter; });
   step.share = await shareFacts(page);
   out.steps.computer = step;
   await ctx.close();
@@ -258,6 +294,32 @@ async function hdrFacts(page) {
   });
 }
 
+/** 裁剪时那行字收起来，不压在裁剪框下沿的手柄上；退出裁剪后回来。按 `sizes` 逐个视口量。 */
+async function cropNote(page, sizes) {
+  const rows = [];
+  const shown = () => page.evaluate(() => {
+    const note = document.querySelector('.editor .stage [data-hdr-screen-note]');
+    return Boolean(note && getComputedStyle(note).display !== 'none' && note.getBoundingClientRect().height > 0);
+  });
+  for (const [width, height] of sizes) {
+    await page.setViewportSize({ width, height });
+    // 无头 Chrome 改视口后不发 resize、也不回调 ResizeObserver：手动发一次，让版式跟上。
+    await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+    await page.waitForFunction(([w, h]) => document.querySelector('.app')?.clientWidth === w && document.querySelector('.app')?.clientHeight === h, [width, height], { timeout: 10_000 });
+    await page.waitForFunction(() => Boolean(document.querySelector('.editor .stage [data-hdr-screen-note]')), null, { timeout: 30_000 }).catch(() => {});
+    await page.waitForTimeout(300);
+    const layout = await page.evaluate(() => document.querySelector('.app')?.dataset.layout ?? '');
+    const before = await shown();
+    await page.locator('.editor .toolbar [data-tool="crop"]').evaluate((node) => node.click());
+    await page.waitForFunction(() => document.querySelector('.editor .crop-overlay')?.hidden === false, null, { timeout: 30_000 });
+    const cropping = await shown();
+    await page.locator('.editor .toolbar [data-tool="recipe"]').evaluate((node) => node.click());
+    await page.waitForFunction(() => document.querySelector('.editor .crop-overlay')?.hidden !== false, null, { timeout: 30_000 });
+    rows.push({ layout, before, cropping, after: await shown() });
+  }
+  return rows;
+}
+
 /** 电脑上 HDR 跟着屏幕走：页面在 SDR 屏上打开，再「挪到 HDR 屏」，不重载预览就打开；挪回来就关、那行字回来。 */
 async function hdrScreen(browser) {
   const { ctx, page } = await openPage(browser, 'hdr', { viewport: { width: 1280, height: 800 } }, []);
@@ -267,6 +329,10 @@ async function hdrScreen(browser) {
   const marker = await page.evaluate(() => { window.__noReload = 1; return 1; });
   await page.waitForFunction(() => Boolean(document.querySelector('.editor .stage [data-hdr-screen-note]')), null, { timeout: 30_000 }).catch(() => {});
   step.sdrScreen = await hdrFacts(page);
+  step.crop = await cropNote(page, [[1280, 800], [390, 844], [844, 390]]);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  await page.waitForFunction(() => document.querySelector('.app')?.dataset.layout === 'ipad-landscape', null, { timeout: 10_000 });
   // 和页面里的应用是同一个模块（Vite 开发服务器同一个 URL）。
   await page.evaluate(async () => (await import('/src/core/hdr_display.ts')).debugForceHdrDisplay(true));
   await page.waitForFunction(() => Boolean(document.querySelector('.editor [data-hdr-preview]')), null, { timeout: 120_000 }).catch(() => {});

@@ -10,9 +10,9 @@ import { loadExportHalfframe, loadExportHdr, loadExportQuality, loadExportSize }
 import { cameraRecipeErrorOf } from '../lib/recipes';
 import type { Book } from './book';
 import { el } from './dom';
-import { ExportBatch, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type BatchItem } from './export_batch';
+import { ExportBatch, PAGE_BUDGET_BYTES, STAGE_CAP_BYTES, STAGE_CAP_HDR_BYTES, type BatchHost, type BatchItem } from './export_batch';
 import { estimatePeak, type BatchFonts } from './export_budget';
-import { handOff, handOffChunks } from './export_handoff';
+import { handOff, handOffChunks, showDownloadBackup, type DownloadBackup } from './export_handoff';
 import { mountExportSheet, type OpenedExportSheet } from './export_options';
 import { setExportPaused } from './export_pause';
 import { calibGate } from './export_calib_wait';
@@ -65,6 +65,8 @@ interface DevExport {
   canvasReportPrefix?: string;
   /** 去 hint 的第二次导出：exact 时也把画布交出来。 */
   forceCanvas?: boolean;
+  /** 待存满这么多张时，下一张的峰值估算按整页预算算：这一批停在 held，等交出去（模拟内存上限）。 */
+  holdAfter?: number;
   installFonts?: (entries: Array<[FontKey, Uint8Array]>) => void;
   flow?: ExportFlow;
   core?: ExportCore;
@@ -121,6 +123,8 @@ export class ExportFlow {
   private readonly queue = new ExportQueueState<Photo>();
   /** 下载兜底的对象 URL 全记在这里，重画、交出、清空、新的一批和批次结束时统一撤销（Sol r1 P2-03）。 */
   private readonly urls = new Set<string>();
+  /** 电脑上一次下载几个文件后的兜底链接表：自己抄着文件和 URL，不跟着队列走。 */
+  private backup: DownloadBackup | null = null;
   /** 默认校准还在路上时，开始导出前先等它落定（最多几秒，见 export_calib_wait.ts）。 */
   private readonly whenCalib = calibGate(() => this.app.book(), () => this.app.session());
 
@@ -173,6 +177,8 @@ export class ExportFlow {
   /** 清空照片：这一批和排队任务全部停下，待存成片与失败全丢，晚到的结果不会再到共享这一步。 */
   clear(): void {
     this.closeSheet();
+    this.backup?.close();
+    this.backup = null;
     this.detailsSheet.close(false);
     this.queue.clear();
     this.detailsOpen = false;
@@ -329,7 +335,10 @@ export class ExportFlow {
       busy: (on) => this.busy(on),
       changed: () => this.paint(),
       memoryPeak: () => this.core.marks.total,
-      peakEstimate: (item) => estimatePeak(this.core, item, options.size, fonts),
+      peakEstimate: (item) => {
+        const hold = import.meta.env.DEV ? dev()?.holdAfter : undefined;
+        return hold !== undefined && batch.staged.length >= hold ? Promise.resolve(PAGE_BUDGET_BYTES) : estimatePeak(this.core, item, options.size, fonts);
+      },
       baseStagedBytes: () => this.queue.carryoverBytes(),
     };
     let fonts: BatchFonts = { fontIndex: '', fontPack: null };
@@ -710,7 +719,7 @@ export class ExportFlow {
       this.paint();
     };
     // 取消共享面板：保留 carryover，仍在栏上。
-    this.handedOff(handOff(picked.map((e) => e.file), done), picked.length, done);
+    this.handedOff(handOff(picked.map((e) => e.file), done), picked, done);
   }
 
   /** 必须在点击里同步调用，前面不能有 await：共享面板（电脑上是下载）要这次点击的用户激活。 */
@@ -728,19 +737,29 @@ export class ExportFlow {
       this.finishShare(batch);
     };
     // 关掉了面板（AbortError）或别的失败：留在就绪条，文件还在。
-    this.handedOff(handOff(picked.map((e) => e.file), done), picked.length, done);
+    this.handedOff(handOff(picked.map((e) => e.file), done), picked, done);
   }
 
-  /** 电脑上下载一个文件就算交出去了。没有共享面板，或一次下载几个（浏览器可能拦下后面的）：给下载链接兜底。 */
-  private handedOff(how: ReturnType<typeof handOff>, files: number, done: () => void): void {
+  /**
+   * 电脑上下载了就算交出去了，一个还是几个都一样，和共享面板成功一样在这次点击里收尾（放掉这一批、接着做排着的）。
+   * 几个文件时浏览器可能拦下后面的：收尾之前先把这几个文件抄进兜底链接表，表不跟着队列走。没有共享面板：给下载链接。
+   */
+  private handedOff(how: ReturnType<typeof handOff>, picked: readonly ReadyEntry[], done: () => void): void {
     if (how === 'share') return;
-    if (how === 'download' && files === 1) {
-      done();
+    if (how === 'none') {
+      this.view = 'noshare';
+      this.detailsOpen = true;
+      this.paint();
       return;
     }
-    this.view = 'noshare';
-    this.detailsOpen = true;
-    this.paint();
+    let backup: DownloadBackup | null = null;
+    if (picked.length > 1) {
+      this.backup?.close();
+      backup = showDownloadBackup(this.shell, picked.map((e) => e.file));
+      this.backup = backup;
+    }
+    done();
+    if (backup && this.backup === backup) backup.focus();
   }
 
   private finishShare(batch: ExportBatch | null): void {
