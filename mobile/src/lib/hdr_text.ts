@@ -17,6 +17,7 @@ export const HDR_NOTES: Readonly<Record<string, string>> = {
   not_jpeg: 'HDR 需要 JPEG 格式',
   capture_mismatch: 'RAW 与 JPG 不是同一次拍摄',
   frame_layout: '这个边框样式不能存 HDR',
+  not_aligned: 'RAW 和相机 JPG 画面对不上，这张存普通版本',
 };
 export const HDR_UNSUPPORTED = '这张照片不支持 HDR';
 

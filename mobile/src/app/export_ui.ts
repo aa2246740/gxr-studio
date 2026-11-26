@@ -614,11 +614,11 @@ export class ExportFlow {
       failurePosition: (id) => this.positionOf(id),
       chunk: this.chunk,
       totalChunks: this.chunks.length,
+      rest: batch && batch.phase === 'held' ? batch.pending() + this.queue.queuedCount() : 0,
       detailsOpen: this.detailsOpen,
       onShare,
       onRetry: () => this.retry(batch),
-      onToggleDetails: toggleDetails,
-      onDismiss: () => this.dismiss(batch),
+      onToggleDetails: toggleDetails, onDismiss: () => this.dismiss(batch),
     });
     this.syncSave();
 
@@ -632,12 +632,12 @@ export class ExportFlow {
         failures,
         savedCount: this.queue.savedCount(batch),
         failurePosition: (id) => this.positionOf(id),
+        replaced: (id) => Boolean(batch?.fileReplaced(id)),
         chunk: this.chunk,
         totalChunks: this.chunks.length,
         noShare: this.view === 'noshare',
         thumbs: showThumbs ? this.thumbs(batch) : null,
-        onShare,
-        onStop: () => undefined,
+        onShare, onStop: () => undefined,
         onRetry: () => this.retry(batch),
         onClearFailures: () => this.clearFailures(batch),
         onFinishNoShare: () => this.finishShare(batch),
@@ -755,7 +755,7 @@ export class ExportFlow {
     let backup: DownloadBackup | null = null;
     if (picked.length > 1) {
       this.backup?.close();
-      backup = showDownloadBackup(this.shell, picked.map((e) => e.file));
+      backup = showDownloadBackup(this.shell, picked.map((e) => e.file), how === 'zip');
       this.backup = backup;
     }
     done();

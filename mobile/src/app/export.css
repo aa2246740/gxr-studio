@@ -368,6 +368,20 @@
   font-size: 14px;
   line-height: 20px;
 }
+/* 电脑上一批打成 ZIP 以后，逐个文件的链接收在「单张下载」里兜底。点过的后面打 ✓。 */
+.ms.export-sheet .links .dl-fold a {
+  display: block;
+  margin-top: 6px;
+}
+.ms.export-sheet .links .dl-fold summary {
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 20px;
+}
+.ms.export-sheet .links a .dl-done {
+  color: var(--ok-text);
+}
 
 .pthumbs { display: flex; gap: 4px; }
 .pthumbs .t { position: relative; flex: 1; height: 40px; border-radius: 5px; overflow: hidden; background: var(--gray-800); max-width: 68px; }

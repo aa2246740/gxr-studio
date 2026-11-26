@@ -9,6 +9,10 @@ import type { Failure, Phase } from './export_batch';
 export const NO_SHARE = '这个浏览器打不开系统的共享面板。';
 /** 电脑上一次下载几个文件时，链接留着兜底（浏览器可能拦下后面几个）。 */
 export const DOWNLOAD_BACKUP = '已经开始下载。哪个文件没下下来，点下面的文件名再下一次。';
+/** 电脑上一批打成一个 ZIP 下载以后那张表的头一句。 */
+export function zipStarted(n: number): string {
+  return `已经开始下载 1 个 ZIP，里面有 ${n} 张`;
+}
 
 export const EXPORT_ICON = {
   export: 'M12 15V3M7.5 7.5 12 3l4.5 4.5M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7',
@@ -41,11 +45,17 @@ export interface ReadyEntry {
   cameraRecipeNote?: string;
 }
 
-/** 主按钮文案：单张「第 N 张做好了 · 存进相册」，多张「K 张做好了 · 存进相册」，多批时追加批号。电脑上是「下载」。 */
+/**
+ * 主按钮文案：单张「第 N 张做好了 · 存进相册」，多张「K 张做好了 · 存进相册」，多批时追加批号。电脑上是「下载」；
+ * 电脑上 2 个以上的文件打成一个 ZIP：「下载（K 张，ZIP）」，拆成几包时「下载第 1/2 包（共 K 张，ZIP）」。
+ */
 export function readyShareLabel(positions: ReadonlyArray<number | null>, chunk: number, totalChunks: number): string {
   const n = positions.length;
   const only = n === 1 ? positions[0] : null;
   const word = readyWord();
+  if (n > 1 && isComputer()) {
+    return totalChunks > 1 ? `下载第 ${chunk + 1}/${totalChunks} 包（共 ${n} 张，ZIP）` : `下载（${n} 张，ZIP）`;
+  }
   const base = n === 1 && typeof only === 'number' && only > 0 ? `第 ${only} 张做好了 · ${word}` : `${n} 张做好了 · ${word}`;
   if (totalChunks <= 1) return base;
   return `${base}（第 ${chunk + 1} 批，共 ${totalChunks} 批）`;
@@ -55,10 +65,22 @@ export function readyShareLabel(positions: ReadonlyArray<number | null>, chunk: 
 export function readyShareAriaLabel(positions: ReadonlyArray<number | null>, chunk: number, totalChunks: number): string {
   const n = positions.length;
   const only = n === 1 ? positions[0] : null;
+  if (n > 1 && isComputer()) return `${readyShareLabel(positions, chunk, totalChunks)}，${n} 张做好了`;
   const act = isComputer() ? '下载' : '存进相册，打开系统分享';
   const base = n === 1 && typeof only === 'number' && only > 0 ? `第 ${only} 张做好了，${act}` : `${n} 张做好了，${act}`;
   if (totalChunks <= 1) return base;
   return `${base}，第 ${chunk + 1} 批，共 ${totalChunks} 批`;
+}
+
+/**
+ * 停在内存上限（held）时的主按钮：「先下载这 123 张，剩下 14 张接着做」（手机「先把这 123 张存进相册，…」）。
+ * 分几批交时追加批号。`rest` 是交出去以后接着做的张数。
+ */
+export function heldShareLabel(ok: number, rest: number, chunk: number, totalChunks: number): string {
+  const first = isComputer() ? `先${readyWord()}这 ${ok} 张` : `先把这 ${ok} 张${readyWord()}`;
+  const base = rest > 0 ? `${first}，剩下 ${rest} 张接着做` : first;
+  if (totalChunks <= 1) return base;
+  return isComputer() ? `${base}（第 ${chunk + 1}/${totalChunks} 包）` : `${base}（第 ${chunk + 1} 批，共 ${totalChunks} 批）`;
 }
 
 /** 运行中（0 张已做好）主胶囊文案。 */
@@ -183,6 +205,8 @@ export interface ReadyBarRender {
   failurePosition: (id: string) => number | null;
   chunk: number;
   totalChunks: number;
+  /** 停在 held 时，交出去以后接着做的张数。 */
+  rest?: number;
   detailsOpen: boolean;
   onShare: () => void;
   onRetry: () => void;
@@ -248,9 +272,11 @@ export function paintReadyBar(opts: ReadyBarRender): void {
 
   // 有已做好成片（纯就绪 / 部分失败 / 已停止且有成片）：左侧蓝色直达「存进相册」，右侧「详情」或红框「M 张失败」。
   if (ok > 0) {
-    const label = readyShareLabel(positions, chunk, totalChunks);
+    const held = phase === 'held';
+    const label = held ? heldShareLabel(ok, opts.rest ?? 0, chunk, totalChunks) : readyShareLabel(positions, chunk, totalChunks);
+    const aria = readyShareAriaLabel(positions, chunk, totalChunks);
     const main = pillButton('es-main', 'es-blue', 'share', opts.onShare);
-    main.btn.setAttribute('aria-label', readyShareAriaLabel(positions, chunk, totalChunks));
+    main.btn.setAttribute('aria-label', held ? `${label}，${aria}` : aria);
     main.pill.append(exportIco(EXPORT_ICON.export, 'es-ico'), el('span', 'es-txt', label));
 
     if (failures.length > 0) {

@@ -173,7 +173,8 @@ async function computer(browser) {
   step.batchReady = { text: batch.text, aria: batch.aria };
   const beforeBatch = downloads.length;
   await batch.btn.click();
-  step.batchNames = await saveDownloads(downloads, beforeBatch, manifest.stems.length, 'computerN-');
+  // 电脑上 2 个以上的文件打成 1 个 ZIP（desktop-export）：等 1 个下载。
+  step.batchNames = await saveDownloads(downloads, beforeBatch, 1, 'computerN-');
   // 和共享成功一样，这一次点击就收尾：就绪条收起，兜底链接表自己列着这几个文件。
   await page.waitForFunction(() => !document.querySelector('.pdock'), null, { timeout: 10_000 }).catch(() => {});
   step.dockGoneAfterBatch = (await page.locator('.pdock').count()) === 0;
@@ -202,7 +203,7 @@ async function computer(browser) {
   step.heldReady = { text: held.text, phase: heldPhase };
   const beforeHeld = downloads.length;
   await held.btn.click();
-  step.heldNames = await saveDownloads(downloads, beforeHeld, manifest.stems.length, 'computerH-');
+  step.heldNames = await saveDownloads(downloads, beforeHeld, 1, 'computerH-');
   step.phaseAfterHeldTap = await page.evaluate(() => window.__devExport.flow.current()?.phase ?? 'none');
   step.backupDuringResume = await backupNames(page);
   await waitPhase(page, ['ready'], 900_000);
