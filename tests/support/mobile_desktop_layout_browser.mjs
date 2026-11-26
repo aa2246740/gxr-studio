@@ -145,7 +145,9 @@ async function tool(page, id) {
 async function shot(page, name) {
   if (!manifest.shotsDir) return;
   fs.mkdirSync(manifest.shotsDir, { recursive: true });
-  await page.screenshot({ path: path.join(manifest.shotsDir, `${manifest.shotsPrefix || 'shot'}-${name}.png`), animations: 'disabled' });
+  // 隐私：网格日期头、胶片条时间段和边框上的拍摄信息都盖掉。
+  const mask = [page.locator('.gscroll .gh'), page.locator('.ipad-filmstrip .fgh'), page.locator('.stage .pv-deco')];
+  await page.screenshot({ path: path.join(manifest.shotsDir, `${manifest.shotsPrefix || 'shot'}-${name}.png`), animations: 'disabled', mask });
 }
 
 /** 舞台盒、照片实际画出来的矩形（画布盒 + object-fit: contain）、裁剪框。 */
@@ -714,6 +716,47 @@ async function panelGroup(browser, url, engine, kind, sizes) {
   return { rows, errors };
 }
 
+/** P3-18：屏幕显示不了 HDR 的那句提示，不压在边框下沿的说明文字上。 */
+function readNote(page) {
+  return page.evaluate(() => {
+    const note = document.querySelector('.editor .stage .tag.hdr-screen-note');
+    const pv = document.querySelector('.editor .stage .pv');
+    if (!note || note.getClientRects().length === 0 || getComputedStyle(note).display === 'none' || !pv) return null;
+    const n = note.getBoundingClientRect();
+    const p = pv.getBoundingClientRect();
+    const band = p.top + p.height * 0.75;
+    return {
+      decor: pv.dataset.decor ?? null,
+      noteTop: Math.round(n.top),
+      noteBottom: Math.round(n.bottom),
+      pvTop: Math.round(p.top),
+      pvBottom: Math.round(p.bottom),
+      overBottomBand: n.bottom > band && n.top < p.bottom,
+    };
+  });
+}
+
+async function noteGroup(browser, url, kind, vp) {
+  const { ctx, page, errors } = await newPage(browser, 'metal', kind, vp);
+  const out = {};
+  try {
+    await start(page, url);
+    await open(page, 'metal');
+    await page.waitForSelector('.editor .stage .tag.hdr-screen-note', { state: 'visible', timeout: 30_000 });
+    out.plain = await readNote(page);
+    await tool(page, 'more');
+    const ipad = await page.evaluate(() => document.querySelector('.app')?.dataset.layout?.startsWith('ipad') ?? false);
+    await page.locator(ipad ? '.more-panel [data-more="frame"]' : '.more-sheet [data-more="frame"]').first().click();
+    await page.locator('.panel.frame .rc[data-style="leica"]').first().click();
+    await page.waitForSelector('.editor .stage .pv[data-decor="1"]', { timeout: 30_000 });
+    await settle(page, 800);
+    out.framed = await readNote(page);
+  } finally {
+    await ctx.close();
+  }
+  return { ...out, errors };
+}
+
 async function withBrowser(engine, run) {
   if (engine === 'webkit') {
     const exe = resolveWebKitExecutable();
@@ -799,6 +842,12 @@ const GROUPS = {
       webkit: await withBrowser('webkit', (b) => panelGroup(b, url, 'webkit', 'computer', [[1440, 900], [1024, 768]])),
       ipad: await withBrowser('webkit', (b) => panelGroup(b, url, 'webkit', 'ipad', [[1180, 820], [1366, 1024]])),
     };
+  },
+  async note(url) {
+    return withBrowser('metal', async (browser) => ({
+      computer: await noteGroup(browser, url, 'computer', { width: 1440, height: 900 }),
+      phone: await noteGroup(browser, url, 'phone', { width: 390, height: 844 }),
+    }));
   },
   async fitTouch(url) {
     return withBrowser('webkit', async (browser) => ({

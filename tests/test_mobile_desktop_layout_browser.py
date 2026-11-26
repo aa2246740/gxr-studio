@@ -370,3 +370,16 @@ def test_mobile_desktop_side_panel_scroll_cue(tmp_path: Path) -> None:
         for row in pad["rows"]:
             for view in ("recipe", "adjust"):
                 check(row[view]["bar"] == 0, f"ipad {row['size']} {view}: touch keeps the overlay scrollbar: {row[view]}")
+
+
+def test_mobile_desktop_hdr_note_clear_of_frame_caption(tmp_path: Path) -> None:
+    """P3-18：套了带说明文字的边框（徕卡水印）后，「这块屏幕显示不了 HDR」挪到舞台上沿，不压边框下沿；没边框时照旧在下沿。"""
+    groups = _run(tmp_path, ["note"])["note"]
+    for kind in ("computer", "phone"):
+        res = groups[kind]
+        check(res["errors"] == [], f"{kind}: no page errors: {res['errors']}")
+        plain, framed = res["plain"], res["framed"]
+        check(plain is not None and plain["decor"] != "1", f"{kind}: note shows without a frame: {plain}")
+        check(plain["noteBottom"] >= plain["pvBottom"] - 40, f"{kind}: without a frame the note stays at the bottom: {plain}")
+        check(framed is not None and framed["decor"] == "1", f"{kind}: note still shows with the frame: {framed}")
+        check(framed["overBottomBand"] is False, f"{kind}: the note is clear of the frame's bottom caption band: {framed}")
