@@ -463,19 +463,20 @@ class App implements AppApi {
   markGone(id: string, version: number): void {
     if (!this.current(id, version)) return;
     const photo = this.byId.get(id);
-    if (photo) this.lostFile(photo, version);
+    if (photo) this.lostFile(photo, version, false);
   }
 
-  /** 一个文件读不了：别的照片还读得到，就只是这一张（挪走、删了），标成读不了；都读不到才按拔卡处理。 */
-  private lostFile(photo: Photo, version: number): void {
+  /** 一个文件读不了：别的照片还读得到就只标这一张读不了（`sheet`：读缩略图时照坏文件那样弹提示；导出失败只标格子），都读不到才按拔卡处理。 */
+  private lostFile(photo: Photo, version: number, sheet: boolean): void {
     if (this.cardIsOut) return this.failCard(photo);
     const session = this.generation;
-    othersReadable(this.byId.values(), photo).then((ok) => {
+    othersReadable(this.byId.values(), photo, (file) => this.reader.read(file).then((reply) => reply.ok)).then((ok) => {
       if (session !== this.generation || !this.current(photo.id, version, photo)) return;
       if (!ok) return this.failCard(photo);
       if (this.screen === 'editor' && this.editing === photo) return this.markBad(photo.id, version);
       photo.status = 'bad';
-      this.afterRead(photo);
+      if (sheet) this.afterRead(photo);
+      else if (this.screen === 'grid') this.grid?.update(photo.id);
     }, () => undefined);
   }
 
@@ -677,7 +678,7 @@ class App implements AppApi {
       }
     }
     if (!reply.ok && reply.gone) {
-      this.lostFile(photo, version);
+      this.lostFile(photo, version, true);
       return;
     }
     if (!reply.ok) {

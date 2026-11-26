@@ -6,12 +6,11 @@ import type { Photo } from './model';
 /** 最多试读几张别的照片。 */
 const PROBES = 3;
 
-function readable(file: File): Promise<boolean> {
-  return file.slice(0, 1).arrayBuffer().then(() => true, () => false);
-}
-
-/** 除了 `trigger` 以外，还有没有照片的原文件读得到。没有别的照片可试就是 false（照旧按拔卡处理）。 */
-export async function othersReadable(photos: Iterable<Photo>, trigger: Photo): Promise<boolean> {
+/**
+ * 除了 `trigger` 以外，还有没有照片的原文件读得到。`read` 读一个文件，读到了回 true（应用里走读整份 DNG 的那个 Worker，
+ * 只给它前 1 个字节）。没有别的照片可试就是 false（照旧按拔卡处理）。
+ */
+export async function othersReadable(photos: Iterable<Photo>, trigger: Photo, read: (file: File) => Promise<boolean>): Promise<boolean> {
   const files: File[] = [];
   for (const photo of photos) {
     if (photo === trigger || photo.gone) continue;
@@ -19,6 +18,6 @@ export async function othersReadable(photos: Iterable<Photo>, trigger: Photo): P
     if (file && file !== trigger.dng && file !== trigger.jpg) files.push(file);
     if (files.length >= PROBES) break;
   }
-  const results = await Promise.all(files.map((file) => readable(file)));
+  const results = await Promise.all(files.map((file) => read(new File([file.slice(0, 1)], 'probe')).catch(() => false)));
   return results.some(Boolean);
 }
