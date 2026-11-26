@@ -29,6 +29,8 @@ import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
 import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, type AppApi, type FullRead, type Photo } from './model';
 import { newPhoto } from './new_photo';
+import { unusedNote } from './import_note';
+import { showToast } from './toast';
 import { guardUnload } from './unload_guard';
 import { dropReply, ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
@@ -585,6 +587,8 @@ class App implements AppApi {
   private ingest(files: File[]): void {
     const classified = classify(files.map((file) => ({ name: file.name, lastModified: file.lastModified })));
     this.ignoredCount += classified.ignored;
+    const note = unusedNote(classified); // 不是相机照片的文件说一句；一个都没用上也说
+    if (note) showToast(this.shell, note, 5000);
     this.recipeBook.ingestCamFiles(
       classified.datIndex !== null ? files[classified.datIndex] : null,
       classified.datCount,
