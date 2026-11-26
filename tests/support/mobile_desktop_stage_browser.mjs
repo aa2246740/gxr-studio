@@ -536,6 +536,16 @@ async function gesture(page, type, x, y, scale) {
   }, { type, x, y, scale });
 }
 
+/** Safari 把同一次捏合也发成带 ctrlKey 的 wheel（WebKit PlatformWheelEvent::createFromGesture）：和 gesture 事件成对发。 */
+async function pairedWheel(page, x, y, dy) {
+  return page.evaluate(({ x, y, dy }) => {
+    const stage = document.querySelector('.editor .stage');
+    const ev = new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, clientX: x, clientY: y, deltaY: dy, deltaMode: 0 });
+    stage.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  }, { x, y, dy });
+}
+
 async function webkitDesktop(browser) {
   const { ctx, page } = await openPage(browser, 'webkitDesktop', { viewport: { width: 1440, height: 900 }, hasTouch: false, isMobile: false }, []);
   const step = {};
@@ -545,13 +555,17 @@ async function webkitDesktop(browser) {
   const p = probe(f);
   const frac = fracOf(f.img, p.x, p.y);
   const g = [];
+  const w = [];
   g.push(await gesture(page, 'gesturestart', p.x, p.y, 1));
   g.push(await gesture(page, 'gesturechange', p.x, p.y, 1.5));
+  w.push(await pairedWheel(page, p.x, p.y, -20));
   g.push(await gesture(page, 'gesturechange', p.x, p.y, 2));
+  w.push(await pairedWheel(page, p.x, p.y, -20));
   g.push(await gesture(page, 'gestureend', p.x, p.y, 2));
+  w.push(await pairedWheel(page, p.x, p.y, -20));
   await frames(page);
   const z = await facts(page);
-  step.gesture = { kind: g[1].kind, prevented: g.map((r) => r.prevented), zoom: z.zoom, drift: drift(z.img, frac, p.x, p.y) };
+  step.gesture = { kind: g[1].kind, prevented: g.map((r) => r.prevented), pairedWheelPrevented: w, zoom: z.zoom, drift: drift(z.img, frac, p.x, p.y) };
   await page.keyboard.press('0');
   await watchCollapsed(page);
   await page.mouse.click(p.x, p.y);

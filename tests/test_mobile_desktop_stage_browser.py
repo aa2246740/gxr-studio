@@ -175,8 +175,9 @@ def test_webkit_gesture_and_touch_unchanged(webkit_steps: dict[str, Any]) -> Non
     d = webkit_steps["webkitDesktop"]
     check(d["env"]["touch"] == 0 and d["env"]["title"] == STAGE_TITLE, f"WebKit desktop is a computer: {d['env']}")
     g = d["gesture"]
-    check(g["zoom"] > 1.9 and g["zoom"] < 2.1, f"Safari pinch zooms by the gesture scale: {g}")
+    check(g["zoom"] > 1.9 and g["zoom"] < 2.1, f"Safari pinch zooms by the gesture scale, not again by its paired ctrl-wheel: {g}")
     check(all(g["prevented"]), f"gesture events are cancelled: {g}")
+    check(all(g["pairedWheelPrevented"]), f"Safari's paired ctrl-wheel is cancelled (no page zoom): {g}")
     check(g["drift"] <= 2, f"gesture keeps the point under the cursor: {g}")
     check(d["click"]["collapsed"] == "0" and d["click"]["collapses"] == [], f"WebKit desktop click keeps the panels: {d['click']}")
     for key in ("webkitPhone", "webkitIpad"):

@@ -15,6 +15,8 @@ const DOUBLE_CLICK_MS = 450;
 const WHEEL_K = 0.01;
 const WHEEL_MAX = 25;
 const LINE_PX = 16;
+// Safari 捏合时同一帧既有 gesturechange 又有带 ctrlKey 的 wheel；最近一次 gesture 之后这么久之内的 ctrl-wheel 只拦不缩放。
+const GESTURE_WHEEL_MS = 250;
 const KEY_STEP = 1.5;
 export const STAGE_DESK_TITLE = '按住照片或按住 \\ 键看原图 · 双击放大到 100%';
 
@@ -85,6 +87,8 @@ export class StageZoom {
   private destroyed = false;
   private keyHeld = false;
   private gestureScale0 = 1;
+  /** 最近一次 Safari gesture 事件的时间：Safari 把同一次捏合同时发成 gesturechange 和带 ctrlKey 的 wheel，这段时间里 wheel 不再缩放。 */
+  private lastGestureAt = -Infinity;
 
   constructor(stage: HTMLElement, pv: HTMLElement, hooks: StageZoomHooks) {
     this.stage = stage;
@@ -217,6 +221,7 @@ export class StageZoom {
     if (ev.ctrlKey || ev.metaKey) {
       // Chrome / Edge 把触控板捏合发成带 ctrlKey 的 wheel：拦下，免得浏览器缩放整页。
       ev.preventDefault();
+      if (performance.now() - this.lastGestureAt < GESTURE_WHEEL_MS) return;
       this.zoomAt(this.scale * Math.exp(-clamp(dy, -WHEEL_MAX, WHEEL_MAX) * WHEEL_K), ev.clientX, ev.clientY);
       return;
     }
@@ -232,6 +237,7 @@ export class StageZoom {
     if (this.destroyed || this.hooks.isCropActive() || navigator.maxTouchPoints !== 0 || this.pointers.size > 0) return;
     const ev = raw as GestureLike;
     raw.preventDefault();
+    this.lastGestureAt = performance.now();
     if (raw.type === 'gesturestart') {
       this.gestureScale0 = this.scale;
       return;
