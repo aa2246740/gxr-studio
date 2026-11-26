@@ -94,7 +94,10 @@ function restore(layer: Layer, shell: HTMLElement, hooks: KeyHooks): void {
   if (layer.own) return;
   const active = current();
   if (active && !layer.sheet?.contains(active) && !layer.scrim.contains(active)) return;
-  const target = layer.opener?.isConnected ? layer.opener : fallback(shell, hooks);
+  // 网格重画过，打开它的那个格子换了新节点：按同一张照片找回来。
+  const id = layer.opener?.dataset.id;
+  const again = id ? shell.querySelector<HTMLElement>(`.cell[data-id="${CSS.escape(id)}"]`) : null;
+  const target = layer.opener?.isConnected ? layer.opener : (again ?? fallback(shell, hooks));
   target?.focus({ preventScroll: true });
 }
 
