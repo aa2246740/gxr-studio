@@ -5,6 +5,8 @@ import type { RunResult } from '../core/export_api';
 import type { FailKind } from '../core/export_protocol';
 import type { ExportRequest } from '../lib/export_request';
 import type { HalfframeRole, HalfframeSource } from '../lib/halfframe';
+import { isComputer } from '../lib/save_mode';
+import { trackCrc } from '../lib/zip_write';
 
 /** 做好、还没交出去的文件最多占这么多字节。下一张会超过时先停在「做好了」那一栏，交出去、点「好」以后再接着做。 */
 export const STAGE_CAP_BYTES = 384 * 1024 * 1024;
@@ -411,6 +413,8 @@ export class ExportBatch {
     }
     const name = typeof result.result.file_name === 'string' ? result.result.file_name : `${item.stem}_gxr.jpg`;
     const file = new File([result.file], name, { type: 'image/jpeg' });
+    // 电脑上一批打成一个 ZIP 下载：CRC 现在就分片算，点「下载」时不用再读文件（手机走共享面板，不用算）。
+    if (isComputer()) trackCrc(file, result.file);
     this.states.set(item.id, 'ok');
     this.results.set(item.id, result.result);
     this.shots.set(item.id, result.shot);

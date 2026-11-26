@@ -1,7 +1,8 @@
 """电脑浏览器上「存」就是下载（2026-11-26，`browser_serial`）。
 
 - Chromium，没有触摸点、指针精确：编辑器的按钮写「下载」，一键导出后点就绪条的「下载」得到一个浏览器下载；关机图也是下载；网格里两张
-  一起导出，点一次下载两个，下载链接留着兜底。文件名和字节与「手机」Chromium（一个触摸点）走共享面板的那份逐字节相同。
+  一起导出，点一次下载 1 个 ZIP（desktop-export：Safari 一次点击只放行 1 个下载），逐个的链接留着兜底。文件名和字节（ZIP 里的条目）
+  与「手机」Chromium（一个触摸点）走共享面板的那份逐字节相同。
 - HDR 跟着屏幕走：窗口从 SDR 屏挪到 HDR 屏，不重载预览就打开；屏幕显示不了 HDR 时舞台下沿说一句。
 - WebKit 手机（390×844）和 iPad（1032×1376，Mac UA + 5 个触摸点），都有触摸：文案不变，仍调共享面板，不下载。
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,18 @@ def _same_files(out: Path, names: list[str], left: str, right: str, what: str) -
         a, b = out / f"{left}{name}", out / f"{right}{name}"
         check(a.is_file() and b.is_file(), f"{what}: both sides wrote the file")
         check(_sha(a) == _sha(b), f"{what}: download bytes equal the shared bytes")
+
+
+def _unzip_one(out: Path, names: list[str], prefix: str, what: str) -> list[str]:
+    """点一次只有 1 个下载，是 ZIP：条目解到 `out/<prefix>unzipped-<名字>`，返回条目名。"""
+    check(len(names) == 1 and names[0].endswith(".zip"), f"{what}: one click gives one ZIP")
+    with zipfile.ZipFile(out / f"{prefix}{names[0]}") as zf:
+        check(zf.testzip() is None, f"{what}: ZIP CRCs check out")
+        check(all(info.compress_type == zipfile.ZIP_STORED for info in zf.infolist()), f"{what}: entries are stored")
+        entries = zf.namelist()
+        for name in entries:
+            (out / f"{prefix}unzipped-{name}").write_bytes(zf.read(name))
+    return entries
 
 
 def _touch_unchanged(step: dict[str, Any], label: str) -> None:
@@ -125,18 +139,20 @@ def test_mobile_desktop_download(tmp_path: Path) -> None:
     check(pc["dockGoneAfterSingle"] is True, "computer: ready bar closes after the download")
     check(FOOT in pc["sheetText"], "computer: export sheet footnote names the download folder")
     check("存到相册" not in pc["sheetText"] and "存储图像" not in pc["sheetText"], "computer: export sheet has no album copy")
-    check(pc["batchReady"]["text"].endswith("2 张做好了 · 下载"), "computer: batch ready bar says 下载")
-    check(len(pc["batchNames"]) == 2 and len(set(pc["batchNames"])) == 2, "computer: one tap downloads both files")
+    check(pc["batchReady"]["text"] == "下载（2 张，ZIP）", "computer: batch ready bar says 下载（2 张，ZIP）")
+    batch_entries = _unzip_one(out_dir, pc["batchNames"], "computerN-", "computer batch")
+    check(len(batch_entries) == 2 and len(set(batch_entries)) == 2, "computer: the ZIP holds both files")
     check(pc["dockGoneAfterBatch"] is True, "computer: a multi-file download closes the ready bar like a share")
-    check(sorted(pc["backupLinks"]) == sorted(pc["batchNames"]), "computer: backup links list the same files")
+    check(sorted(pc["backupLinks"]) == sorted(batch_entries), "computer: backup links list the same files")
     check(pc["backupText"].startswith("已经开始下载"), "computer: backup links say the downloads started")
     check(pc["backupClosedByEsc"] is True, "computer: Esc closes the backup links")
-    check(pc["heldReady"]["phase"] == "held" and pc["heldReady"]["text"].endswith("2 张做好了 · 下载"), "computer: batch held at the cap")
-    check(len(pc.get("heldNames", [])) == 2, "computer: one tap downloads both held files")
+    check(pc["heldReady"]["phase"] == "held" and pc["heldReady"]["text"] == "先下载这 2 张，剩下 1 张接着做", "computer: batch held at the cap")
+    held_entries = _unzip_one(out_dir, pc.get("heldNames", []), "computerH-", "computer held")
+    check(len(held_entries) == 2, "computer: one tap downloads both held files in one ZIP")
     check(pc["phaseAfterHeldTap"] in ("running", "ready"), "computer: the held batch resumes in the same tap")
-    check(sorted(pc["backupDuringResume"]) == sorted(pc["heldNames"]), "computer: backup still lists the held files while it resumes")
+    check(sorted(pc["backupDuringResume"]) == sorted(held_entries), "computer: backup still lists the held files while it resumes")
     check(pc["restReady"]["text"].endswith("做好了 · 下载"), "computer: the queued photo finished without a second click")
-    check(sorted(pc["backupAfterResume"]) == sorted(pc["heldNames"]), "computer: backup list survives the repaints")
+    check(sorted(pc["backupAfterResume"]) == sorted(held_entries), "computer: backup list survives the repaints")
     check(pc["backupClosedByScrim"] is True, "computer: the scrim closes the backup links")
     check(len(pc["restNames"]) == 1 and pc["dockGoneAfterRest"] is True, "computer: the last file downloads and the bar closes")
     check(pc["share"]["calls"] == 0, "computer: share panel never opened")
@@ -149,9 +165,9 @@ def test_mobile_desktop_download(tmp_path: Path) -> None:
     phone_single = [f["name"] for f in ph["singleShared"][0]["files"]]
     phone_batch = [f["name"] for call in ph["batchShared"] for f in call["files"]]
     check(phone_single == pc["singleNames"], "single: download file name equals the shared name")
-    check(sorted(phone_batch) == sorted(pc["batchNames"]), "batch: download file names equal the shared names")
+    check(sorted(phone_batch) == sorted(batch_entries), "batch: ZIP entry names equal the shared names")
     _same_files(out_dir, pc["singleNames"], "computer1-", "phone1-", "single")
-    _same_files(out_dir, pc["batchNames"], "computerN-", "phoneN-", "batch")
+    _same_files(out_dir, batch_entries, "computerN-unzipped-", "phoneN-", "batch")
     check(pc["offNames"] == ["GXROFF.JPG"], "computer: off-image sheet downloads GXROFF.JPG")
     check([f["name"] for f in ph["offShared"][0]["files"]] == ["GXROFF.JPG"], "phone: off-image sheet shares GXROFF.JPG")
     _same_files(out_dir, pc["offNames"], "computerOff-", "phoneOff-", "off-image")
