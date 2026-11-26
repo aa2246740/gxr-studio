@@ -137,9 +137,11 @@ export function bindFileDrop(shell: HTMLElement, take: (files: File[]) => void):
       showToast(shell, DROP_EDITOR_NOTE);
       return;
     }
+    const screenAt = shell.dataset.screen;
     droppedFiles(event.dataTransfer).then(
       ({ files, capped }) => {
-        if (files.length && takes()) take(files); // 展开文件夹期间点开了照片：这次作废
+        // 展开文件夹期间点开了照片、清空了照片（网格回到开始页）或换了屏：这次作废
+        if (files.length && takes() && shell.dataset.screen === screenAt) take(files);
         if (capped) showToast(shell, DROP_CAP_NOTE, 5000);
       },
       () => undefined,

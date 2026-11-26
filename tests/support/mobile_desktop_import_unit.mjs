@@ -129,6 +129,7 @@ async function controller() {
       const kind = new Uint8Array(bytes)[0];
       if (kind === 2 && !library) throw new Error('缺少 GXRFX.BIN。请将 GXRCE.DAT 和 GXRFX.BIN 一起从存储卡复制到同一文件夹，再同时导入。');
       if (kind !== 1 && kind !== 2) throw new Error('不是 GXRCE.DAT');
+      if (library && new Uint8Array(library)[0] === 9) throw new Error('GXRFX.BIN 与第 250 代 GXRCE.DAT 不匹配或已损坏。请从同一张存储卡一起复制。');
       return { bytes, summary: '{"generation":250}', listing: '{"units":[]}', entries: new Uint8Array(24 * 552), library: library ?? null };
     },
   };
@@ -137,7 +138,7 @@ async function controller() {
   return { ctl, changed: () => changed };
 }
 const datFile = (kind) => new File([new Uint8Array([kind, 0, 0])], 'GXRCE.DAT');
-const binFile = () => new File([new Uint8Array(128)], 'GXRFX.BIN');
+const binFile = (first = 0) => new File([new Uint8Array([first, ...new Uint8Array(127)])], 'GXRFX.BIN');
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
 test('camfiles: only GXRFX.BIN says the DAT is missing and replaces an old error', async () => {
@@ -164,6 +165,21 @@ test('camfiles: DAT then BIN in two picks still pairs up', async () => {
   await settle();
   assert.equal(ctl.datError, null);
   assert.ok(ctl.dat?.library, 'the pending DAT was kept and paired with the BIN');
+});
+
+test('camfiles: a rejected BIN between the two picks keeps the good DAT for the next BIN (review r1 P1)', async () => {
+  const { BIN_ONLY_ERROR } = await import('../../mobile/src/app/book_camfiles.ts');
+  const { ctl } = await controller();
+  ctl.ingest(datFile(2), 1, null);
+  await settle();
+  ctl.ingest(null, 0, binFile(9));
+  await settle();
+  assert.ok(ctl.datError?.includes('不匹配'), 'the mismatched BIN is reported');
+  ctl.ingest(null, 0, binFile());
+  await settle();
+  assert.notEqual(ctl.datError, BIN_ONLY_ERROR, 'the DAT was not dropped');
+  assert.equal(ctl.datError, null);
+  assert.ok(ctl.dat?.library, 'the kept DAT paired with the good BIN');
 });
 
 test('othersReadable: another readable file means one lost file, not a pulled card', async () => {
