@@ -153,7 +153,7 @@ def _verify(report: dict[str, Any]) -> None:
     check(pc["end"]["isLast"] is True and pc["end"]["visible"] is True, "End focuses the last cell and scrolls it into view")
     check(pc["home"]["id"] == pc["home"]["want"] and pc["home"]["visible"] is True, "Home focuses the first cell")
     check(pc["enterOpens"] == "editor", "Enter still opens the photo")
-    check(pc["escFromEditor"] == "grid", "Esc in the editor goes back to the grid")
+    check(pc["enterOpens"] == "editor" and pc["escFromEditor"] == "grid", "Esc in the editor goes back to the grid")
 
     position = pc["position"]
     check(position["topBefore"] > 100, f"the grid was scrolled ({position['topBefore']})")
@@ -188,8 +188,11 @@ def _verify(report: dict[str, Any]) -> None:
     asked = "清空这 53 张照片？" in clear["text"] and "调整也会一起丢掉。" in clear["text"]
     check(clear["dialog"] is True and asked, f"computer: clearing asks first ({clear['text']})")
     check("清空" in clear["text"] and "取消" in clear["text"] and clear["focusIn"] is True, "the question has 清空 / 取消 and takes focus")
-    check(pc["clearEsc"] == {"dialog": 0, "screen": "grid", "cells": True}, f"Esc cancels and keeps the photos ({pc['clearEsc']})")
-    check(pc["clearGo"] == "start", "清空 clears")
+    if clear["dialog"]:
+        check(pc["clearEsc"] == {"dialog": 0, "screen": "grid", "cells": True}, f"Esc cancels and keeps the photos ({pc['clearEsc']})")
+        check(pc["clearGo"] == "start", "清空 clears")
+    else:
+        check(False, "no confirmation to cancel with Esc")
 
     ph = steps.get("computerPhone", {})
     check(ph.get("layout", "").startswith("phone"), f"small computer window uses the phone layout ({ph.get('layout')})")
@@ -208,6 +211,7 @@ def _verify(report: dict[str, Any]) -> None:
     check(logo == {"sheet": 1, "screen": "editor", "focus": "名称"}, f"Esc in the logo name field closes nothing ({logo})")
 
     others = steps.get("others", {})
+    check(others.get("unreadableAuto") is True, "the 读不了 sheet that pops up by itself closes with one Esc")
     _sheet(others["unreadable"], "读不了", opener=True)
     _sheet(others["card"], "存储卡被拔出了")
     _sheet(others["mismatch"], "相机配方文件不匹配")

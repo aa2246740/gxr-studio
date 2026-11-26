@@ -522,6 +522,7 @@ async function computerOthers(browser) {
     if (auto) {
       await esc(page);
       step.unreadableAuto = (await count(page, '[data-state="unreadable"]')) === 0;
+      if (!step.unreadableAuto) await page.locator('.scrim').last().click({ position: { x: 4, y: 4 } });
     }
     step.unreadable = await escSheet(page, () => bad.click(), '[data-state="unreadable"]', { opener: '.gscroll .cell.err' });
     await ctx.close();
