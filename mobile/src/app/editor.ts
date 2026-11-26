@@ -13,12 +13,12 @@ import { EditorBand, positionFloatHist } from './editor_band';
 import { EditorBar, type BandTool, type BarTool } from './editor_bar';
 import { createHistWidget, drawHistCanvas, editedFlagsOf, fitGpuCanvas, observeStageBox, syncEditorBarOrder, type HistWidget, type StageBoxCache } from './editor_hist';
 import { createEditorIpadBridge, type EditorIpadBridge } from './editor_ipad_bridge';
-import { EditorMedia, NO_GPU_DETAIL, NO_GPU_TITLE, type MediaMode } from './editor_media';
+import { EditorMedia, NO_GPU_DETAIL, NO_GPU_RAW_DETAIL, NO_GPU_TITLE, type MediaMode } from './editor_media';
 import { openExportOptions, startQuickExport, syncExportDock } from './export_ui';
 import { releaseFinishDrawResources } from './finish_draw';
 import { photoExportSize } from './frame_state';
 import { FrameView } from './frame_view';
-import { noPreviewPlaceholder } from './gpu_loss';
+import { NO_PREVIEW_TEXT, noPreviewPlaceholder } from './gpu_loss';
 import { createHdrPreview } from './hdr_hookup';
 import { isIpadLayout, loadIpadHist, saveIpadHist, type LayoutMode } from './layout';
 import { lookCache } from './looks';
@@ -694,10 +694,11 @@ export class EditorView {
     if (!this.stageLabel) return;
     this.stageLabel.replaceChildren();
     const noGpu = !this.engine && !this.holding && this.caption === NO_GPU_TITLE;
+    const rawOnly = noGpu && !this.photo?.jpg && !this.photo?.bitmap; // 舞台显示「预览不了」时，这里说同一句话
     this.stageLabel.classList.toggle('nogpu', noGpu);
-    const text = this.holding ? '原图' : noGpu ? this.caption : this.lutLabel ? `LUT · ${this.lutLabel}${this.caption ? ` · ${this.caption}` : ''}` : this.caption;
+    const text = this.holding ? '原图' : rawOnly ? NO_PREVIEW_TEXT : noGpu ? this.caption : this.lutLabel ? `LUT · ${this.lutLabel}${this.caption ? ` · ${this.caption}` : ''}` : this.caption;
     if (text) this.stageLabel.append(el('span', 'tag neutral', text));
-    if (noGpu) this.stageLabel.append(el('span', 'nogpu-note', NO_GPU_DETAIL));
+    if (noGpu) this.stageLabel.append(el('span', 'nogpu-note', rawOnly ? NO_GPU_RAW_DETAIL : NO_GPU_DETAIL));
     this.hdr.paintLabel(this.stageLabel);
   }
 

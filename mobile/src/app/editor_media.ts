@@ -12,6 +12,8 @@ export type MediaMode = 'raw' | 'jpg' | 'still';
 export const NO_GPU_TITLE = '这个浏览器现在用不了显卡预览';
 // 「配方和 LUT」不拆行：字间用 U+2060（词连接符），「和」与「LUT」之间用不换行空格，折行时整组移到下一行，「LUT」不会单独一行。
 export const NO_GPU_DETAIL = '预览只显示相机 JPG，导出仍会套用配\u2060方\u2060和\u00a0LUT';
+/** 只有 RAW 的照片没有相机 JPG 可显示：舞台下面的第二行（导出走核心，不用显卡，照样套配方）。 */
+export const NO_GPU_RAW_DETAIL = '导出仍会套用配方';
 
 export interface EditorMediaCallbacks {
   api(): AppApi;

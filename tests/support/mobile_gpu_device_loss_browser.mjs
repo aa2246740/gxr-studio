@@ -155,6 +155,7 @@ function snapshot(page) {
       gpuVisible: visible(one('.stage canvas.gpu')),
       stillVisible: visible(one('.stage canvas.still')),
       noPreview: visible(noPreview) ? (noPreview.textContent || '').trim() : null,
+      label: [...document.querySelectorAll('.editor .band-hd .lbl > span')].filter(visible).map((node) => (node.textContent || '').trim()),
       notices: [...document.querySelectorAll('.nogpu-notice, .lbl.nogpu, .adj-disabled-note')].filter(visible).map((node) => node.className).sort(),
       adapterCalls: window.__loss.adapterCalls,
       adapterSinceLoss: window.__loss.adapterCalls - (window.__loss.adapterAtLoss ?? window.__loss.adapterCalls),

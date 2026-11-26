@@ -155,6 +155,7 @@ def test_raw_only_photo_after_loss_says_it_cannot_preview(report: dict[str, Any]
     assert raw["gpu"] == "0" and raw["gpuVisible"] is False, f"RAW-only photo opened on the lost GPU canvas: {raw}"
     assert raw["noPreview"], f"no explicit can't-preview state for a RAW-only photo: {raw}"
     assert raw["noPreview"] == ref["raw"]["noPreview"], (raw["noPreview"], ref["raw"]["noPreview"])
+    assert raw["label"] == ref["raw"]["label"] == [raw["noPreview"], "导出仍会套用配方"], (raw["label"], ref["raw"]["label"])
 
 
 def test_device_loss_raises_no_errors(report: dict[str, Any]) -> None:
