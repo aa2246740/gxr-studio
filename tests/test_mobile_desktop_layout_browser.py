@@ -223,7 +223,9 @@ def test_mobile_desktop_hover_and_cursors(tmp_path: Path) -> None:
         check(row is not None, f"ipad {name}: target is visible")
         check(row["cursor"] in ("auto", "default"), f"ipad {name}: cursor unchanged ({row['cursor']})")
         check(row["changed"] is False, f"ipad {name}: no hover style on touch")
-    check(pc["gridCellCursor"] == pad["gridCellCursor"], "grid cells are left to desktop-keys (same cursor as touch)")
+    # 网格格子的悬停由 desktop-keys 负责：合进来以后电脑上是手型，触屏不变。
+    check(pc["gridCellCursor"] == "pointer", f"computer grid cells use the hand cursor (desktop-keys): {pc['gridCellCursor']}")
+    check(pad["gridCellCursor"] in ("auto", "default"), f"touch grid cells keep the default cursor: {pad['gridCellCursor']}")
 
 
 NO_GPU_NOTE = "无显卡预览，暂不能调整"
