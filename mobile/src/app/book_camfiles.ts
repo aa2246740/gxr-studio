@@ -21,6 +21,8 @@ export interface PhotoDatTarget {
 
 /** 相机配方文件的上限：真的 DAT 不到 1 MB，超过这个一定不是，先拒绝再读。 */
 const MAX_DAT_BYTES = 16 << 20;
+/** 和核心 r5.rs MAX_LIBRARY_BYTES 一样：更大的 GXRFX.BIN 核心只说「文件过大」，不点名 BIN，这里先拦下，DAT 留着。 */
+const MAX_BIN_BYTES = 65_528;
 const FORGET_DAT_FAILED = '忘掉没有成功，相机配方文件还在。请再试一次。';
 /** 只选了 GXRFX.BIN、也没有可以配上的 GXRCE.DAT（只选 DAT 时核心说「缺少 GXRFX.BIN…」，两边对得上）。 */
 export const BIN_ONLY_ERROR = '还差 GXRCE.DAT，请把 GXRCE.DAT 和 GXRFX.BIN 一起选';
@@ -212,7 +214,7 @@ export class CamFilesController {
       this.host.onChanged();
       return;
     }
-    if (bin && bin.size > MAX_DAT_BYTES) {
+    if (bin && bin.size > MAX_BIN_BYTES) {
       this.datBusy = false;
       this.datError = '这个文件太大，不是相机配方文件。请重新选一次 GXRFX.BIN。';
       this.host.onChanged();
@@ -233,6 +235,12 @@ export class CamFilesController {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // 核心点名 GXRFX.BIN（不匹配或损坏）：坏的是这份 BIN，DAT 留着等下一份 BIN；缺 BIN 的 DAT 也留着。别的都是 DAT 本身不能用，丢掉。
+      if (seq === this.datSeq && bin && message.includes('不支持附加 GXRFX.BIN')) {
+        // 单文件配方的代数：多选的 BIN 用不上。丢掉这份 BIN，DAT 单独再读一次（新的 seq，finally 不会再动状态）。
+        this.pendingBin = null;
+        void this.setDat(file, count, null).catch(() => undefined);
+        return;
+      }
       const binFault = !!bin && message.startsWith('GXRFX.BIN');
       if (seq === this.datSeq && !binFault && !message.startsWith(MISSING_BIN)) this.dropPendingDat(file);
       if (seq === this.datSeq) this.datError = `无法读取相机配方文件：${message}`;
@@ -247,7 +255,7 @@ export class CamFilesController {
   private async setDatBytes(name: string, bytes: ArrayBuffer, count: number, bin: File): Promise<void> {
     const seq = ++this.datSeq;
     this.datNote = count > 1 ? `选了 ${count} 个 GXRCE.DAT，用的是修改时间最新的那个。` : null;
-    if (bin.size > MAX_DAT_BYTES) {
+    if (bin.size > MAX_BIN_BYTES) {
       this.datBusy = false;
       this.datError = '这个文件太大，不是相机配方文件。请重新选一次 GXRFX.BIN。';
       this.host.onChanged();

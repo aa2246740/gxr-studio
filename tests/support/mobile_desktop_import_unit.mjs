@@ -128,7 +128,8 @@ async function controller() {
     readDat: async (bytes, library) => {
       const kind = new Uint8Array(bytes)[0];
       if (kind === 2 && !library) throw new Error('缺少 GXRFX.BIN。请将 GXRCE.DAT 和 GXRFX.BIN 一起从存储卡复制到同一文件夹，再同时导入。');
-      if (kind !== 1 && kind !== 2) throw new Error('不是 GXRCE.DAT');
+      if (kind === 3 && library) throw new Error('这个代数使用单文件配方，不支持附加 GXRFX.BIN。请只选择 GXRCE.DAT。');
+      if (kind !== 1 && kind !== 2 && kind !== 3) throw new Error('不是 GXRCE.DAT');
       if (library && new Uint8Array(library)[0] === 9) throw new Error('GXRFX.BIN 与第 250 代 GXRCE.DAT 不匹配或已损坏。请从同一张存储卡一起复制。');
       return { bytes, summary: '{"generation":250}', listing: '{"units":[]}', entries: new Uint8Array(24 * 552), library: library ?? null };
     },
@@ -191,6 +192,29 @@ test('camfiles: a bad DAT picked together with a BIN is not kept for the next BI
   ctl.ingest(null, 0, binFile());
   await settle();
   assert.equal(ctl.datError, BIN_ONLY_ERROR, 'the bad DAT was dropped, so a lone BIN asks for the DAT');
+});
+
+test('camfiles: a GXRFX.BIN over the core library limit keeps the good DAT (review r3)', async () => {
+  const { ctl } = await controller();
+  ctl.ingest(datFile(2), 1, null);
+  await settle();
+  ctl.ingest(null, 0, new File([new Uint8Array(70_000)], 'GXRFX.BIN'));
+  await settle();
+  assert.ok(ctl.datError?.includes('GXRFX.BIN'), 'the oversize BIN is named');
+  ctl.ingest(null, 0, binFile());
+  await settle();
+  assert.equal(ctl.datError, null);
+  assert.ok(ctl.dat?.library, 'the kept DAT paired with the good BIN');
+});
+
+test('camfiles: a single-file generation DAT picked with a BIN is read on its own (review r3)', async () => {
+  const { ctl } = await controller();
+  ctl.ingest(datFile(3), 1, binFile());
+  await settle();
+  await settle();
+  assert.equal(ctl.datError, null);
+  assert.ok(ctl.dat, 'the DAT was taken without the BIN');
+  assert.equal(ctl.dat.library, null);
 });
 
 test('othersReadable: another readable file means one lost file, not a pulled card', async () => {
