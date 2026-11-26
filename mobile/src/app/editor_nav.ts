@@ -11,6 +11,7 @@ import { loadExportHdr, saveExportHdr, watchExportHdr } from '../lib/prefs';
 import { adoptedSelectionOf, DEFAULT_CARD, namesOnly, recipeUnitOf, shelf, shelves, tagAmountLevels } from '../lib/recipes';
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
 import { button, el, icon, ICON } from './dom';
+import { arrowsOwned, sheetOpen } from './keys';
 import { openExportOptions } from './export_ui';
 import { onCameraRecipe, photoMs, type AppApi, type Photo } from './model';
 import { openOffImageSheet } from './off_image_sheet';
@@ -330,6 +331,14 @@ export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, in
     posEl.textContent = on ? '原图' : posText;
     posEl.classList.toggle('holding', on);
   };
+  // 电脑键盘：焦点不在输入框、滑块、旋转尺、菜单这类自己用方向键的控件上，也没开着面板时，←/→ 换上一张、下一张（同左右滑）。
+  const onArrow = (ev: KeyboardEvent) => {
+    if (ev.defaultPrevented || (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') || ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    if (!nav.isConnected || sheetOpen() || arrowsOwned(ev.target)) return;
+    ev.preventDefault();
+    api.swipe(photo.id, ev.key === 'ArrowLeft' ? -1 : 1);
+  };
+  window.addEventListener('keydown', onArrow);
   const offHdr = watchExportHdr(syncHdr);
   const offBook = api.book().onChange(() => refresh());
   const offCam = onCameraRecipe((id) => {
@@ -341,6 +350,7 @@ export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, in
     refresh,
     setHolding,
     destroy: () => {
+      window.removeEventListener('keydown', onArrow);
       offHdr();
       offBook();
       offCam();

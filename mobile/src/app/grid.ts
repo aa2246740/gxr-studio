@@ -1,26 +1,20 @@
 import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type TimeGroup, type VRow } from '../lib/group';
 import { deviceName } from '../lib/device';
 import { calibDetail } from './calib_ui';
-import { groupsPresent } from '../lib/paste';
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
 import { button, el, icon } from './dom';
-import { cellAriaLabel, classifyLayout, gridColumns, isIpadLayout, viewportDims } from './layout';
+import { isComputer } from '../lib/save_mode';
+import { fillCell } from './grid_cell';
+import { arrowTarget, gridOrder, rangeBetween, rowBox } from './grid_nav';
+import { modKey, setGridMode, type GridMode } from './keys';
+import { classifyLayout, gridColumns, isIpadLayout, viewportDims } from './layout';
 import { openable, photoMs, unread, type AppApi, type Photo } from './model';
 import { groupsText, pasteState, rangeOf } from './paste_state';
 import { groupBody, openConfirm, pasteBar, pickBody, PASTE_ICON } from './paste_ui';
 
 const GAPS: GapMinutes[] = [1, 3, 5, 10];
-const bitmapIds = new WeakMap<ImageBitmap, number>();
-let nextBitmapId = 1;
-
-function gridBitmapId(bitmap: ImageBitmap): number {
-  let id = bitmapIds.get(bitmap);
-  if (!id) {
-    id = nextBitmapId++;
-    bitmapIds.set(bitmap, id);
-  }
-  return id;
-}
+/** 去编辑器前网格滚到哪儿了；从编辑器回来时（boot.back → show(focus)）接着用。 */
+let savedTop = 0;
 
 export class GridView {
   private scroller: HTMLElement | null = null;
@@ -51,6 +45,9 @@ export class GridView {
   private groupCountTotal = 0;
   private ro: ResizeObserver | null = null;
   private onResize: (() => void) | null = null;
+  /** Shift 点选一段的起点：选择模式里上一次点的那张。 */
+  private anchor: string | null = null;
+  private readonly mode: GridMode = { active: () => this.selecting && !!this.scroller?.isConnected, leave: () => this.toggleSelect(false), selectAll: () => this.selectAll() };
   private readonly host: HTMLElement;
   private readonly api: AppApi;
 
@@ -60,6 +57,8 @@ export class GridView {
   }
 
   destroy(): void {
+    if (this.scroller?.isConnected) savedTop = this.scroller.scrollTop;
+    setGridMode(null, this.mode);
     this.ro?.disconnect();
     this.ro = null;
     if (this.onResize) {
@@ -76,7 +75,9 @@ export class GridView {
     this.laidOutMs.clear();
   }
 
-  show(): void {
+  /** `focus`：从编辑器回来，滚回原来的位置，焦点放在编辑器最后看的那张上（同一帧里，手机上不跳）。 */
+  show(focus?: string): void {
+    setGridMode(this.mode);
     pasteState.sync(this.api);
     pasteState.gridShown();
     if (pasteState.pickNext && pasteState.clip) {
@@ -92,6 +93,29 @@ export class GridView {
     this.mount();
     this.relayout();
     if (this.picking) this.toggleSelect(true);
+    if (focus) this.reveal(focus, savedTop);
+  }
+
+  /** 把这一张滚进视野（先回到 `top`）、画出来、给它焦点。 */
+  private reveal(id: string, top?: number): void {
+    const scroller = this.scroller;
+    if (!scroller) return;
+    if (top !== undefined) scroller.scrollTop = top;
+    const box = rowBox(this.rows, id);
+    if (box && box.top < scroller.scrollTop) scroller.scrollTop = box.top;
+    else if (box && box.top + box.height > scroller.scrollTop + scroller.clientHeight) scroller.scrollTop = box.top + box.height - scroller.clientHeight;
+    this.renderWindow();
+    this.cellNodes.get(id)?.focus({ preventScroll: true });
+  }
+
+  /** 焦点在格子上：←/→ 按网格顺序走，↑/↓ 走到上下一行的同一列，Home/End 到头尾。 */
+  private onArrow(ev: KeyboardEvent): void {
+    const id = ev.target instanceof HTMLElement ? ev.target.closest<HTMLElement>('.cell')?.dataset.id : undefined;
+    if (!id || ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    const next = arrowTarget(this.rows, id, ev.key);
+    if (next === null) return;
+    ev.preventDefault();
+    this.reveal(next);
   }
 
   /** 缩略图或顺序变了。只重挂看得见的行。 */
@@ -173,6 +197,7 @@ export class GridView {
       },
       { passive: true },
     );
+    this.scroller.addEventListener('keydown', (ev) => this.onArrow(ev));
     this.scroller.addEventListener('pointerup', () => this.api.watch('scroll', false));
     this.scroller.addEventListener('pointercancel', () => this.api.watch('scroll', false));
 
@@ -356,7 +381,7 @@ export class GridView {
         bl.setAttribute('aria-hidden', 'true');
         raw.setAttribute('aria-hidden', 'true');
         cell.append(ck, bl, raw);
-        cell.addEventListener('click', () => this.onCell(id));
+        cell.addEventListener('click', (ev) => this.onCell(id, ev));
       }
       if (photo) this.fill(cell, photo);
       nextNodes.set(id, cell);
@@ -374,65 +399,20 @@ export class GridView {
   }
 
   private fill(cell: HTMLButtonElement, photo: Photo): void {
-    const selected = this.selected.has(photo.id);
-    cell.classList.toggle('skel', photo.status === 'pending');
-    cell.classList.toggle('err', photo.status === 'bad');
-    cell.classList.toggle('gone', unread(photo));
-    cell.classList.toggle('on', selected);
-    const raw = cell.querySelector('.raw');
-    const bl = cell.querySelector('.bl');
-    if (raw) {
-      raw.textContent = photo.status === 'bad' ? '读不了' : unread(photo) ? '卡' : !photo.bitmap && photo.status === 'ready' && !photo.jpg ? '只有 RAW' : '';
-    }
-    if (bl) {
-      bl.replaceChildren();
-      if (photo.jpg && !photo.dng) bl.append(el('span', 'bdg', 'JPG'));
-    }
-    // 04e：带着编辑（配方/LUT、调整/曲线、拉直、裁剪、边框、时间戳任一组）的照片右下角有铅笔，按现在的编辑状态挂上或拿掉。
-    const edited = groupsPresent(photo).length > 0;
-    const mark = cell.querySelector('.edt');
-    if (edited && !mark) {
-      const pencil = el('span', 'edt');
-      pencil.setAttribute('aria-hidden', 'true');
-      pencil.append(icon(PASTE_ICON.pencil));
-      cell.append(pencil);
-    } else if (!edited) mark?.remove();
-    cell.setAttribute(
-      'aria-label',
-      cellAriaLabel(
-        this.indexById.get(photo.id),
-        {
-          dng: photo.dng !== null,
-          jpg: photo.jpg !== null,
-          diptych: photo.diptych,
-          bad: photo.status === 'bad',
-          unread: unread(photo),
-        },
-        edited,
-        selected,
-      ),
-    );
-    const bmp = photo.bitmap;
-    if (!bmp || bmp.width <= 0 || bmp.height <= 0) return;
-    let canvas = cell.querySelector('canvas');
-    if (!canvas) {
-      canvas = document.createElement('canvas');
-      cell.prepend(canvas);
-    }
-    const drawnKey = `${photo.id}:${gridBitmapId(bmp)}`;
-    if (canvas.dataset.drawn === drawnKey) return;
-    canvas.width = bmp.width;
-    canvas.height = bmp.height;
-    canvas.getContext('2d')?.drawImage(bmp, 0, 0);
-    canvas.dataset.drawn = drawnKey;
+    fillCell(cell, photo, this.selected.has(photo.id), this.indexById.get(photo.id));
   }
 
-  private onCell(id: string): void {
+  /** 选择模式里：Shift 点选上次点的那张到这张，Cmd/Ctrl 点一张勾上或取消。不在选择模式时 Cmd/Ctrl 点一张就进选择模式并勾上它。 */
+  private onCell(id: string, ev?: MouseEvent): void {
     const photo = this.api.photo(id);
     if (!photo) return;
+    if (!this.selecting && ev && modKey(ev)) this.toggleSelect(true);
     if (this.selecting) {
-      if (this.selected.has(id)) this.selected.delete(id);
+      const range = ev?.shiftKey && this.anchor ? rangeBetween(gridOrder(this.rows), this.anchor, id) : null;
+      if (range) { this.selected.clear(); for (const one of range) this.selected.add(one); } // 和访达一样：Shift 点选换成锚点到这张这一段
+      else if (this.selected.has(id)) this.selected.delete(id);
       else this.selected.add(id);
+      if (!range) this.anchor = id;
       this.selectionChanged();
       return;
     }
@@ -447,6 +427,7 @@ export class GridView {
     this.selecting = on;
     if (!on) {
       this.selected.clear();
+      this.anchor = null;
       this.picking = false;
     }
     const choose = this.host.querySelector('.nb.bold');
@@ -786,9 +767,29 @@ export class GridView {
     wipe.append(wipeText);
     wipe.addEventListener('click', () => {
       this.closeSheet();
-      this.api.clear();
+      if (isComputer()) this.openSheet(this.confirmClear());
+      else this.api.clear();
     });
     sheet.append(wipe);
     this.openSheet(sheet);
+  }
+
+  /** 电脑上鼠标容易点错：清空前先问一句（手机、iPad 仍是点一下就清空）。Esc 和遮罩都是取消。 */
+  private confirmClear(): HTMLElement {
+    const dlg = el('div', 'dlg clear-dlg');
+    dlg.dataset.state = 'confirm-clear';
+    const acts = el('div', 'acts');
+    const cancel = button('btn lg', '取消');
+    cancel.dataset.act = 'clear-cancel';
+    cancel.addEventListener('click', () => this.closeSheet());
+    const go = button('btn danger lg', '清空');
+    go.dataset.act = 'clear-confirm';
+    go.addEventListener('click', () => {
+      this.closeSheet();
+      this.api.clear();
+    });
+    acts.append(cancel, go);
+    dlg.append(el('h2', '', `清空这 ${this.api.photos().length} 张照片？`), el('p', '', '调整也会一起丢掉。'), acts);
+    return dlg;
   }
 }

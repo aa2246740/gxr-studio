@@ -1,15 +1,23 @@
 // 底部面板生命周期登记表：切换照片、退出编辑器或清空会话时，统一取消所有挂在宿主上的工作表，
 // 清掉未落定的输入防抖定时器和正在进行的异步提交，恢复已落定的模型状态。
 
+import { noteRegistered } from './keys';
+
 const registry = new WeakMap<HTMLElement, Set<() => void>>();
 
-export function registerSheet(host: HTMLElement, onCancel: () => void): () => void {
+/**
+ * `escCancels: false`：这个面板的 Esc 不是「取消」而是和点遮罩一样关上（时间戳、边框更多选项：遮罩和「完成」都会留下刚打的字）。
+ * 切照片、退出编辑器时的 `cancelHostSheets` 照样调 onCancel。
+ */
+export function registerSheet(host: HTMLElement, onCancel: () => void, opts: { escCancels?: boolean } = {}): () => void {
   let set = registry.get(host);
   if (!set) {
     set = new Set();
     registry.set(host, set);
   }
   set.add(onCancel);
+  const live = set;
+  if (opts.escCancels !== false) noteRegistered(onCancel, () => live.has(onCancel)); // Esc 关最上面的这一层就是「取消」（keys.ts）
   return () => {
     set?.delete(onCancel);
   };

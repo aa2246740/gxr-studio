@@ -350,6 +350,8 @@ async function runParity(page) {
   const afterRepick = await page.evaluate((s) => window.__gxrEdits?.().find((r) => r.stem === s) ?? null, manifest.plans[0].stem);
   await page.locator('.nav .nb[aria-label="更多"]').click();
   await page.locator('.ms .lrow', { hasText: '清空照片，重新选' }).click();
+  // 电脑（没有触摸点）上清空前先问一句（desktop-keys）：点「清空」；手机上没有这一步。
+  await page.locator('.dlg[data-state="confirm-clear"] [data-act="clear-confirm"]').click({ timeout: 3_000 }).catch(() => {});
   await page.waitForSelector('[data-screen="start"]', { timeout: 10_000 });
   out.steps.repickCrop = afterRepick?.crop ?? null;
   out.steps.repickGeom = afterRepick?.geometry ?? null;
