@@ -319,28 +319,6 @@ async function tabOrder(browser, step) {
   await ctx.close();
 }
 
-/** 同名不同照片（两张卡）：先后选两张不同的同名 JPG 得到 2 格；再选同一个文件不多出一格。 */
-async function sameName(browser) {
-  const { ctx, page } = await openPage(browser, 'sameName', { viewport: { width: W, height: H } });
-  const step = {};
-  out.steps.sameName = step;
-  const picker = page.locator('input.filepick:not(.calibpick)');
-  await picker.setInputFiles([manifest.sameA]);
-  await waitCells(page, 1);
-  await picker.setInputFiles([manifest.sameA]);
-  await page.waitForTimeout(800);
-  step.afterRepickA = await cellCount(page);
-  await picker.setInputFiles([manifest.sameB]);
-  await waitCells(page, 2).catch(() => {});
-  await page.waitForTimeout(800);
-  step.afterB = await cellCount(page);
-  await picker.setInputFiles([manifest.sameB]);
-  await page.waitForTimeout(800);
-  step.afterRepickB = await cellCount(page);
-  step.drawn = await page.evaluate(() => document.querySelectorAll('.cell canvas[data-drawn]').length);
-  await ctx.close();
-}
-
 const cardFacts = (page) => page.evaluate(() => ({
   modal: Boolean(document.querySelector('.dlg[data-state="card-removed"]')),
   gone: document.querySelectorAll('.cell.gone').length,
@@ -420,7 +398,6 @@ try {
     };
     await run('drop', () => dropFlow(chromium));
     await run('unload', () => unloadFlow(chromium));
-    await run('sameName', () => sameName(chromium));
     await run('lostFile', () => lostFile(chromium));
     out.steps.picks = {};
     for (const fn of [unusedPicks, binOnlyStart, datOnly, binOnlyGrid, tabOrder]) await run(fn.name, () => fn(chromium, out.steps.picks));

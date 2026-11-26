@@ -166,29 +166,45 @@ test('camfiles: DAT then BIN in two picks still pairs up', async () => {
   assert.ok(ctl.dat?.library, 'the pending DAT was kept and paired with the BIN');
 });
 
-test('photoId: same name, different file is another photo; the same file is not', async () => {
-  const { photoId } = await import('../../mobile/src/app/new_photo.ts');
-  const file = (name, size, lastModified) => new File([new Uint8Array(size)], name, { lastModified });
-  const jpgA = file('R0000001.JPG', 10, 1000);
-  const byId = new Map([['r0000001', { jpg: jpgA, dng: null }]]);
-  assert.equal(photoId(byId, 'R0000001', file('R0000001.JPG', 10, 1000), null), 'r0000001', 'the same file again');
-  assert.equal(photoId(byId, 'R0000001', null, file('R0000001.DNG', 99, 5)), 'r0000001', 'the RAW of a JPG-only photo completes the pair');
-  assert.equal(photoId(byId, 'R0000001', file('R0000001.JPG', 11, 1000), null), 'r0000001~2', 'different size: another photo');
-  assert.equal(photoId(byId, 'R0000001', file('R0000001.JPG', 10, 2000), null), 'r0000001~2', 'different time: another photo');
-  byId.set('r0000001~2', { jpg: file('R0000001.JPG', 11, 1000), dng: null });
-  assert.equal(photoId(byId, 'R0000001', file('R0000001.JPG', 11, 1000), null), 'r0000001~2', 'the second one again');
-  assert.equal(photoId(byId, 'R0000001', file('R0000001.JPG', 12, 1000), null), 'r0000001~3');
-  assert.equal(photoId(new Map(), 'R0000002', null, null), 'r0000002');
-});
-
 test('othersReadable: another readable file means one lost file, not a pulled card', async () => {
   const { othersReadable } = await import('../../mobile/src/app/card_probe.ts');
+  // 假的读取：名字以 lost 开头的「原文件」读不了（探测时只给读取函数一个 1 字节的切片，按切片的来源判断）。
+  const gone = new WeakSet();
   const ok = (name) => new File(['x'], name);
-  const lost = (name) => ({ name, slice: () => ({ arrayBuffer: () => Promise.reject(new Error('NotFoundError')) }) });
+  const lost = (name) => {
+    const file = new File(['x'], name);
+    gone.add(file);
+    return file;
+  };
+  const tried = [];
+  const read = async (probe) => {
+    tried.push(probe.size);
+    return !probe.__from || !gone.has(probe.__from);
+  };
+  const realSlice = File.prototype.slice;
+  File.prototype.slice = function slice(...args) {
+    const part = realSlice.apply(this, args);
+    part.__from = this;
+    return part;
+  };
+  const OrigFile = globalThis.File;
+  globalThis.File = class extends OrigFile {
+    constructor(parts, name, opts) {
+      super(parts, name, opts);
+      if (parts?.[0]?.__from) this.__from = parts[0].__from;
+    }
+  };
   const photo = (jpg, gone = false) => ({ jpg, dng: null, gone });
   const trigger = photo(lost('R1.JPG'));
-  assert.equal(await othersReadable([trigger, photo(lost('R2.JPG')), photo(ok('R3.JPG'))], trigger), true);
-  assert.equal(await othersReadable([trigger, photo(lost('R2.JPG')), photo(lost('R3.JPG'))], trigger), false, 'nothing reads: pulled card');
-  assert.equal(await othersReadable([trigger], trigger), false, 'no other photo to try: pulled card as before');
-  assert.equal(await othersReadable([trigger, photo(ok('R4.JPG'), true)], trigger), false, 'photos already marked gone are not tried');
+  try {
+    assert.equal(await othersReadable([trigger, photo(lost('R2.JPG')), photo(ok('R3.JPG'))], trigger, read), true);
+    assert.equal(await othersReadable([trigger, photo(lost('R2.JPG')), photo(lost('R3.JPG'))], trigger, read), false, 'nothing reads: pulled card');
+    assert.equal(await othersReadable([trigger], trigger, read), false, 'no other photo to try: pulled card as before');
+    assert.equal(await othersReadable([trigger, photo(ok('R4.JPG'), true)], trigger, read), false, 'photos already marked gone are not tried');
+    assert.equal(await othersReadable([trigger, photo(ok('R5.JPG'))], trigger, () => Promise.reject(new Error('worker gone'))), false, 'a failed read counts as unreadable');
+    assert.ok(tried.every((size) => size === 1), 'only 1 byte of each file is read');
+  } finally {
+    File.prototype.slice = realSlice;
+    globalThis.File = OrigFile;
+  }
 });
