@@ -280,3 +280,20 @@ def test_mobile_desktop_adjust_slider_names(tmp_path: Path) -> None:
             want = f"{row['value']} EV" if key == "exposure_ev" else row["value"]
             check(row["valueText"] == want, f"{kind} {key}: aria-valuetext is the shown value: {row}")
             check(row["value"] not in ("0", "0.0"), f"{kind} {key}: ArrowRight moved the value: {row}")
+
+
+def test_mobile_desktop_crop_ruler_labels_never_cut(tmp_path: Path) -> None:
+    """L12：拉直尺上的度数要么整个看得见、要么藏起来；电脑、iPad、手机尺寸，0° 和转过几度后都查。"""
+    groups = _run(tmp_path, ["ruler"])["ruler"]
+    for kind in ("computer", "ipad", "phone"):
+        res = groups[kind]
+        check(res["errors"] == [], f"{kind}: no page errors: {res['errors']}")
+        for row in res["rows"]:
+            for when in ("rest", "turned"):
+                m = row[when]
+                check(m is not None, f"{kind} {row['size']} {when}: ruler visible")
+                check(m["cut"] == [], f"{kind} {row['size']} {when}: no label cut by the ruler edge: {m}")
+                # 手机横屏的尺子只有 180 宽：±5° 正好压在边上，只剩中间的 0°。
+                want = 3 if m["width"] >= 240 else 1
+                check(len(m["shown"]) >= want, f"{kind} {row['size']} {when}: labels still show: {m}")
+            check(row["turned"]["angle"] != row["rest"]["angle"], f"{kind} {row['size']}: arrow keys turned the ruler")

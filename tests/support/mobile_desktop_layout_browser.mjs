@@ -525,6 +525,52 @@ async function namesGroup(browser, url, kind, vp) {
   return { rows, errors };
 }
 
+/** L12：拉直尺上的度数，看得见的都整个落在尺子里；转几度后再看一次。 */
+function readRuler(page) {
+  return page.evaluate(() => {
+    const ruler = [...document.querySelectorAll('.editor .ruler')].find((n) => n.getClientRects().length > 0);
+    if (!ruler) return null;
+    const rr = ruler.getBoundingClientRect();
+    const cut = [];
+    const shown = [];
+    for (const label of ruler.querySelectorAll('.tnum')) {
+      const r = label.getBoundingClientRect();
+      if (getComputedStyle(label).visibility === 'hidden' || r.width === 0) continue;
+      if (r.right <= rr.left || r.left >= rr.right) continue;
+      shown.push(label.textContent);
+      if (r.left < rr.left - 0.5 || r.right > rr.right + 0.5) cut.push(label.textContent);
+    }
+    return { width: Math.round(rr.width), shown, cut, angle: ruler.getAttribute('aria-valuenow') };
+  });
+}
+
+async function rulerGroup(browser, url, kind, sizes) {
+  const rows = [];
+  const { ctx, page, errors } = await newPage(browser, 'metal', kind, { width: sizes[0][0], height: sizes[0][1] });
+  try {
+    await start(page, url);
+    await open(page, 'metal');
+    await tool(page, 'crop');
+    for (const [width, height] of sizes) {
+      await resize(page, { width, height });
+      const size = `${width}x${height}`;
+      const rest = await readRuler(page);
+      if (manifest.shotsDir) await page.locator('.editor .ruler:visible').first().screenshot({ path: path.join(manifest.shotsDir, `${manifest.shotsPrefix || 'shot'}-ruler-${kind}-${size}.png`) });
+      const ruler = page.locator('.editor .ruler:visible').first();
+      await ruler.focus();
+      for (let i = 0; i < 4; i += 1) await page.keyboard.press('ArrowRight');
+      await settle(page, 200);
+      const turned = await readRuler(page);
+      for (let i = 0; i < 4; i += 1) await page.keyboard.press('ArrowLeft');
+      await settle(page, 200);
+      rows.push({ size, rest, turned });
+    }
+  } finally {
+    await ctx.close();
+  }
+  return { rows, errors };
+}
+
 async function withBrowser(engine, run) {
   if (engine === 'webkit') {
     const exe = resolveWebKitExecutable();
@@ -581,6 +627,13 @@ const GROUPS = {
     return withBrowser('metal', async (browser) => ({
       computer: await namesGroup(browser, url, 'computer', { width: 1440, height: 900 }),
       phone: await namesGroup(browser, url, 'phone', { width: 390, height: 844 }),
+    }));
+  },
+  async ruler(url) {
+    return withBrowser('metal', async (browser) => ({
+      computer: await rulerGroup(browser, url, 'computer', [[1440, 900], [1024, 768], [2560, 1440]]),
+      ipad: await rulerGroup(browser, url, 'ipad', [[1180, 820], [1024, 1366]]),
+      phone: await rulerGroup(browser, url, 'phone', [[390, 844], [844, 390]]),
     }));
   },
   async fitTouch(url) {
