@@ -331,10 +331,10 @@ export class EditorView {
     this.stageZoom = new StageZoom(stage, pv, {
       isCropActive: () => this.activeTool === 'crop',
       onTap: () => this.toggleBandCollapsed(),
-      onSwipe: (dir) => {
-        if (this.photo) this.api.swipe(this.photo.id, dir);
-      },
+      onSwipe: (dir) => { if (this.photo) this.api.swipe(this.photo.id, dir); },
       onHold: (on) => this.setHolding(on),
+      imageSize: () => (this.photo ? photoExportSize(this.photo, this.engine) : null),
+      // 电脑上：Ctrl/⌘ + 滚轮、捏合、双击和 + / - / 0 缩放，F 收起面板，按住 \ 看原图（stage_zoom.ts）。
     });
     this.cropStage.bindGesture(stage);
 
