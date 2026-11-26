@@ -200,9 +200,10 @@ def test_mobile_touch_devices_keep_sharing(tmp_path: Path) -> None:
     steps, _out = _run(tmp_path, "touch")
     if steps.get("webkitMissing"):
         pytest.skip("Playwright WebKit is not installed")
-    for label, touch in (("webkitPhone", 1), ("webkitIpad", 5)):
+    for label in ("webkitPhone", "webkitIpad"):
         st = steps[label]
-        check(st["env"]["touch"] >= touch, f"{label}: has touch points")
+        # WebKit 手机（hasTouch）报 0 个触摸点但指针不精确；iPad 报 5 个。两者都不算电脑。
+        check(st["env"]["touch"] > 0 or st["env"]["fine"] is False, f"{label}: not a computer (touch or coarse pointer)")
         check(st["batch"]["label"] == "2 张做好了 · 存进相册", f"{label}: batch label unchanged")
         check("存进相册，打开系统分享" in st["batch"]["aria"], f"{label}: batch aria unchanged")
         check(st["batch"]["shared"] == 2, f"{label}: both files go to one share call")
