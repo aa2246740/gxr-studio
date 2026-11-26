@@ -2,6 +2,7 @@
 
 import type { Adjust } from '../../../frontend/src/index';
 import { curveJson } from '../lib/export_request';
+import { isComputer } from '../lib/save_mode';
 import { button, el, icon } from './dom';
 import { markControlDragEnd } from './drag_guard';
 import { zeroKnobs, type Knobs, type Photo } from './model';
@@ -206,7 +207,7 @@ export class AdjustView {
     const hintReset = button('fbtn', '全部重置');
     hintReset.dataset.act = 'adjust-reset-all';
     hintReset.addEventListener('click', () => this.resetAll());
-    hintRow.append(el('span', 'faint', '点两下圆点回到 0'), hintReset);
+    hintRow.append(el('span', 'faint', isComputer() ? '双击圆点回到 0' : '点两下圆点回到 0'), hintReset);
 
     panel.append(row, big, hintRow);
     this.showKnob();

@@ -12,6 +12,8 @@ export const DOWNLOAD_BACKUP = '已经开始下载。哪个文件没下下来，
 
 export const EXPORT_ICON = {
   export: 'M12 15V3M7.5 7.5 12 3l4.5 4.5M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7',
+  /** 电脑上「下载」用的：箭头朝下进托盘，和上面的共享图标同一种线条。 */
+  download: 'M12 3v12M7.5 10.5 12 15l4.5-4.5M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4',
   check: 'M5 12.5l4.5 4.5L19 7',
   info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5M12 8h.01',
   x: 'M6 6l12 12M18 6 6 18',
@@ -219,7 +221,7 @@ export function paintRunningSlot(opts: RunningBarRender): void {
     const label = readyShareLabel(positions, opts.carryChunk, opts.carryTotalChunks);
     const main = pillButton('es-main', 'es-blue', 'share-ready', opts.onShareCarryover);
     main.btn.setAttribute('aria-label', readyShareAriaLabel(positions, opts.carryChunk, opts.carryTotalChunks));
-    main.pill.append(exportIco(EXPORT_ICON.export, 'es-ico'), el('span', 'es-txt', label));
+    main.pill.append(exportIco(isComputer() ? EXPORT_ICON.download : EXPORT_ICON.export, 'es-ico'), el('span', 'es-txt', label));
 
     const side = pillButton('es-side es-run-pill', 'es-dark', 'toggle-details', opts.onToggleDetails);
     side.btn.setAttribute('aria-expanded', detailsOpen ? 'true' : 'false');
@@ -251,7 +253,7 @@ export function paintReadyBar(opts: ReadyBarRender): void {
     const label = readyShareLabel(positions, chunk, totalChunks);
     const main = pillButton('es-main', 'es-blue', 'share', opts.onShare);
     main.btn.setAttribute('aria-label', readyShareAriaLabel(positions, chunk, totalChunks));
-    main.pill.append(exportIco(EXPORT_ICON.export, 'es-ico'), el('span', 'es-txt', label));
+    main.pill.append(exportIco(isComputer() ? EXPORT_ICON.download : EXPORT_ICON.export, 'es-ico'), el('span', 'es-txt', label));
 
     if (failures.length > 0) {
       dock.dataset.visualState = 'partial-fail';

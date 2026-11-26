@@ -260,7 +260,7 @@ export function openOffImageSheet(host: HTMLElement, api: AppApi, photo: Photo):
   const notes = el('div', 'oi-notes');
   const noteCamera = el('p', '', NOTE_CAMERA);
   const noteCard = el('p', '', NOTE_CARD);
-  const noteFiles = el('p', 'oi-note-files', NOTE_FILES);
+  const noteFiles = el('p', 'oi-note-files', isComputer() ? '下载后把 GXROFF.JPG 拷到存储卡最外层。' : NOTE_FILES);
   notes.append(noteCamera, noteCard, noteFiles);
 
   const fallbackRow = el('div', 'oi-fallback');
