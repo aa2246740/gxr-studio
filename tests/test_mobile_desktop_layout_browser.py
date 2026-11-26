@@ -224,3 +224,43 @@ def test_mobile_desktop_hover_and_cursors(tmp_path: Path) -> None:
         check(row["cursor"] in ("auto", "default"), f"ipad {name}: cursor unchanged ({row['cursor']})")
         check(row["changed"] is False, f"ipad {name}: no hover style on touch")
     check(pc["gridCellCursor"] == pad["gridCellCursor"], "grid cells are left to desktop-keys (same cursor as touch)")
+
+
+NO_GPU_NOTE = "无显卡预览，暂不能调整"
+
+
+def test_mobile_desktop_no_gpu_locks_fine_tune_and_curves(tmp_path: Path) -> None:
+    """L7 / P2-9：没有显卡预览时配方微调滑块和曲线入口和「调整」一样停用、说同一句话；配方卡照样能选。Metal 下都能用。"""
+    groups = _run(tmp_path, ["lock"])["lock"]
+    metal = groups["metal"]
+    check(metal["errors"] == [], f"metal: no page errors: {metal['errors']}")
+    check(metal["recipe"]["knobCount"] >= 3 and metal["recipe"]["knobsDisabled"] == 0, f"metal: fine-tune sliders live: {metal['recipe']}")
+    check(metal["recipe"]["knobNote"] is None, "metal: no lock note")
+    check(metal["knobMoved"] is True, "metal: clicking a fine-tune track moves it")
+    check(
+        metal["adjust"]["sliderDisabled"] is False and metal["adjust"]["curvesDisabled"] is False,
+        f"metal: adjust and curves live: {metal['adjust']}",
+    )
+    check(metal["moreCurves"]["disabled"] is False, "metal: 更多 → 曲线 live")
+    for name in ("nogpu", "webkit", "webkitPhone"):
+        res = groups[name]
+        if res.get("skipped"):
+            continue
+        check(res["errors"] == [], f"{name}: no page errors: {res['errors']}")
+        rec = res["recipe"]
+        check(rec["knobCount"] >= 1 and rec["knobsDisabled"] == rec["knobCount"], f"{name}: every fine-tune slider is disabled: {rec}")
+        check(rec["knobReasons"] == [NO_GPU_NOTE], f"{name}: sliders are described by the note: {rec['knobReasons']}")
+        check(rec["knobNote"] == NO_GPU_NOTE, f"{name}: the note is visible on 配方: {rec['knobNote']}")
+        check(rec["knobOpacity"] == "0.35", f"{name}: same disabled look as 调整 ({rec['knobOpacity']})")
+        check(res["recipeClip"]["clipped"] == [], f"{name}: nothing clipped on 配方: {res['recipeClip']['clipped']}")
+        check(res["knobMoved"] is False, f"{name}: clicking a locked fine-tune track does nothing")
+        adj = res["adjust"]
+        check(adj["sliderDisabled"] is True and adj["sliderReason"] == NO_GPU_NOTE, f"{name}: adjust slider locked as before: {adj}")
+        check(adj["curvesDisabled"] is True and adj["curvesReason"] == NO_GPU_NOTE, f"{name}: 曲线 entry locked with the note: {adj}")
+        check(
+            res["moreCurves"]["disabled"] is True and NO_GPU_NOTE in res["moreCurves"]["text"],
+            f"{name}: 更多 → 曲线 locked: {res['moreCurves']}",
+        )
+    for name in ("nogpu", "webkit"):
+        if not groups[name].get("skipped"):
+            check(groups[name]["cardSwitched"] is True, f"{name}: recipe cards stay selectable")

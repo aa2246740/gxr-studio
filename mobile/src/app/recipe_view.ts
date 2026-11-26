@@ -28,6 +28,7 @@ import {
   bitmapId,
   buildIpadRecipeMeta,
   buildKnobRow,
+  knobLockNote,
   centerStripCard,
   makeRecipeFilterTile,
   makeRecipeLutSwitch,
@@ -586,6 +587,8 @@ export class RecipeView {
   private knobs(scene: Scene, card: Card, controls: Control[]): HTMLElement {
     const box = el('div', 'knobs');
     box.dataset.card = card.id;
+    box.dataset.disabled = scene.gpu ? '0' : '1';
+    if (!scene.gpu) box.append(knobLockNote());
     const saved = this.levelsOf(card, scene);
     for (const control of controls) {
       const row = buildKnobRow(
@@ -594,6 +597,7 @@ export class RecipeView {
         saved,
         (level) => this.setLevel(card, control.name, level),
         (text) => this.hooks.onScrub?.(text),
+        !scene.gpu,
       );
       row.hidden = !this.ipadMode && control.name !== this.activeKnob;
       box.append(row);

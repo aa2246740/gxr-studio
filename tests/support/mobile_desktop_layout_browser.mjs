@@ -410,6 +410,83 @@ async function hoverGroup(browser, url, kind, vp, engine = 'metal') {
   return { ...out, errors };
 }
 
+/** L7 / 曲线：没有显卡预览时配方微调、调整滑块和曲线入口一起停用，说同一句话；配方卡照样能选。 */
+function readLocks(page) {
+  return page.evaluate(() => {
+    const vis = (n) => Boolean(n) && n.getClientRects().length > 0 && getComputedStyle(n).visibility !== 'hidden';
+    const reason = (n) => {
+      const id = n?.getAttribute('aria-describedby');
+      return id ? (document.getElementById(id)?.textContent ?? '') : '';
+    };
+    const knobs = [...document.querySelectorAll('.editor .panel.recipe .knobs input[type="range"]')];
+    const note = document.querySelector('.editor .panel.recipe .knobs .adj-disabled-note');
+    return {
+      knobCount: knobs.length,
+      knobsDisabled: knobs.filter((n) => n.disabled).length,
+      knobReasons: [...new Set(knobs.map(reason))],
+      knobNote: note && vis(note) ? note.textContent : null,
+      knobOpacity: knobs[0] ? getComputedStyle(knobs[0]).opacity : null,
+    };
+  });
+}
+
+async function lockGroup(browser, url, engine, kind, vp) {
+  const { ctx, page, errors } = await newPage(browser, engine, kind, vp);
+  const out = {};
+  try {
+    await start(page, url);
+    await open(page, engine);
+    const ipad = await page.evaluate(() => document.querySelector('.app')?.dataset.layout?.startsWith('ipad') ?? false);
+    if (!ipad) {
+      // 手机：再点一下选中的配方卡进微调。
+      await page.locator('.editor .band .rc.on').first().click();
+      await settle(page, 300);
+    }
+    out.recipe = await readLocks(page);
+    out.recipeClip = await measureClip(page);
+    out.knobGeom = await page.evaluate(() => {
+      const r = (sel) => {
+        const n = document.querySelector(sel);
+        if (!n) return null;
+        const b = n.getBoundingClientRect();
+        return [Math.round(b.top), Math.round(b.height)];
+      };
+      return { knobs: r('.editor .panel.recipe .knobs'), row: r('.editor .panel.recipe .knobs .krow:not([hidden])'), input: r('.editor .panel.recipe .knobs .krow:not([hidden]) input'), fine: r('.editor .panel.recipe .recipe-fine') };
+    });
+    if (manifest.shotsDir) await shot(page, `lock-${engine}-${kind}-${vp.width}x${vp.height}-recipe`);
+    const knob = page.locator('.editor .panel.recipe .knobs .krow:not([hidden]) input[type="range"]').first();
+    if (await knob.isVisible().catch(() => false)) {
+      const before = await knob.inputValue();
+      const box = await knob.boundingBox();
+      await page.mouse.click(box.x + box.width * 0.9, box.y + box.height / 2);
+      await settle(page, 200);
+      out.knobMoved = (await knob.inputValue()) !== before;
+    }
+    if (ipad) {
+      const cardSel = '.editor .ipad-strip-host .recipe-strip-wrap .rc';
+      const was = await page.locator(`${cardSel}.on .nm`).first().textContent();
+      await page.locator(`${cardSel}.on + .rc`).first().click();
+      await settle(page, 600);
+      await dismissAsk(page);
+      out.cardSwitched = (await page.locator(`${cardSel}.on .nm`).first().textContent()) !== was;
+    }
+    await tool(page, 'adjust');
+    out.adjust = await page.evaluate(() => {
+      const reason = (n) => (n?.getAttribute('aria-describedby') ? (document.getElementById(n.getAttribute('aria-describedby'))?.textContent ?? '') : '');
+      const input = document.querySelector('.editor .panel.adjust .big input[type="range"]');
+      const curves = document.querySelector('.editor .panel.adjust [data-act="open-curves"]');
+      return { sliderDisabled: Boolean(input?.disabled), sliderReason: reason(input), curvesDisabled: Boolean(curves?.disabled), curvesReason: reason(curves) };
+    });
+    await tool(page, 'more');
+    await page.locator('[data-more="curves"]:visible').first().waitFor({ timeout: 10_000 });
+    out.moreCurves = await page.locator('[data-more="curves"]:visible').first().evaluate((n) => ({ disabled: n.disabled, text: n.textContent }));
+    if (manifest.shotsDir) await shot(page, `lock-${engine}-${kind}-${vp.width}x${vp.height}-more`);
+  } finally {
+    await ctx.close();
+  }
+  return { ...out, errors };
+}
+
 async function withBrowser(engine, run) {
   if (engine === 'webkit') {
     const exe = resolveWebKitExecutable();
@@ -453,6 +530,14 @@ const GROUPS = {
       ipad: await hoverGroup(browser, url, 'ipad', { width: 1180, height: 820 }),
       webkit: await withBrowser('webkit', (wk) => hoverGroup(wk, url, 'computer', { width: 1440, height: 900 }, 'webkit')),
     }));
+  },
+  async lock(url) {
+    const out = {};
+    out.metal = await withBrowser('metal', (b) => lockGroup(b, url, 'metal', 'computer', { width: 1440, height: 900 }));
+    out.nogpu = await withBrowser('nogpu', (b) => lockGroup(b, url, 'nogpu', 'computer', { width: 1440, height: 900 }));
+    out.webkit = await withBrowser('webkit', (b) => lockGroup(b, url, 'webkit', 'computer', { width: 1440, height: 900 }));
+    out.webkitPhone = await withBrowser('webkit', (b) => lockGroup(b, url, 'webkit', 'phone', { width: 390, height: 844 }));
+    return out;
   },
   async fitTouch(url) {
     return withBrowser('webkit', async (browser) => ({
