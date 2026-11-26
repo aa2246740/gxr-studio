@@ -232,8 +232,9 @@ export class CamFilesController {
       await this.finishSetDat(seq, file.name, bytes, bin ?? null);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // 这次带了 BIN 而失败：坏的是 BIN（不匹配或损坏），DAT 留着等下一份 BIN；只有单独的 DAT 被拒才丢掉。
-      if (seq === this.datSeq && !bin && !message.startsWith(MISSING_BIN)) this.dropPendingDat(file);
+      // 核心点名 GXRFX.BIN（不匹配或损坏）：坏的是这份 BIN，DAT 留着等下一份 BIN；缺 BIN 的 DAT 也留着。别的都是 DAT 本身不能用，丢掉。
+      const binFault = !!bin && message.startsWith('GXRFX.BIN');
+      if (seq === this.datSeq && !binFault && !message.startsWith(MISSING_BIN)) this.dropPendingDat(file);
       if (seq === this.datSeq) this.datError = `无法读取相机配方文件：${message}`;
     } finally {
       if (seq === this.datSeq) {

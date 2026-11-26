@@ -182,6 +182,17 @@ test('camfiles: a rejected BIN between the two picks keeps the good DAT for the 
   assert.ok(ctl.dat?.library, 'the kept DAT paired with the good BIN');
 });
 
+test('camfiles: a bad DAT picked together with a BIN is not kept for the next BIN (review r2)', async () => {
+  const { BIN_ONLY_ERROR } = await import('../../mobile/src/app/book_camfiles.ts');
+  const { ctl } = await controller();
+  ctl.ingest(datFile(9), 1, binFile());
+  await settle();
+  assert.equal(ctl.datError, '无法读取相机配方文件：不是 GXRCE.DAT');
+  ctl.ingest(null, 0, binFile());
+  await settle();
+  assert.equal(ctl.datError, BIN_ONLY_ERROR, 'the bad DAT was dropped, so a lone BIN asks for the DAT');
+});
+
 test('othersReadable: another readable file means one lost file, not a pulled card', async () => {
   const { othersReadable } = await import('../../mobile/src/app/card_probe.ts');
   // 假的读取：名字以 lost 开头的「原文件」读不了（探测时只给读取函数一个 1 字节的切片，按切片的来源判断）。

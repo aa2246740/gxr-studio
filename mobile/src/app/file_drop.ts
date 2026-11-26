@@ -137,11 +137,12 @@ export function bindFileDrop(shell: HTMLElement, take: (files: File[]) => void):
       showToast(shell, DROP_EDITOR_NOTE);
       return;
     }
-    const screenAt = shell.dataset.screen;
+    const clearedFrom = shell.dataset.screen === 'grid';
     droppedFiles(event.dataTransfer).then(
       ({ files, capped }) => {
-        // 展开文件夹期间点开了照片、清空了照片（网格回到开始页）或换了屏：这次作废
-        if (files.length && takes() && shell.dataset.screen === screenAt) take(files);
+        // 展开文件夹期间点开了照片，或在网格上清空了照片（回到开始页）：这次作废。从开始页进了网格照样加进去。
+        const cleared = clearedFrom && shell.dataset.screen === 'start';
+        if (files.length && takes() && !cleared) take(files);
         if (capped) showToast(shell, DROP_CAP_NOTE, 5000);
       },
       () => undefined,
