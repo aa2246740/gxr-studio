@@ -11,7 +11,9 @@
 /* ---------- iPad 公共：右边面板（带子放大） ---------- */
 .app[data-layout^="ipad"] .screen.editor { background: var(--surface-app); }
 .app[data-layout^="ipad"] .screen.editor .stage { background: #000; }
-.app[data-layout^="ipad"] .screen.editor .pv { inset: 8px; }
+/* 显式 1fr 网格：没有 WebGPU 时相机 JPG 画布是 width/height 100% + contain，隐式 auto 行会按画布本身比例撑高
+   （WebKit 把照片推到配方条下，Chromium 画得比舞台高）。和手机横屏一样把行列钉在舞台大小上（desktop-layout L1）。 */
+.app[data-layout^="ipad"] .screen.editor .pv { inset: 8px; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 .app[data-layout^="ipad"] .screen.editor .band { height: auto; min-height: 0; background: var(--surface-panel); box-shadow: none; }
 .app[data-layout^="ipad"] .screen.editor .band-top { height: 0; overflow: hidden; order: 99; }
 .app[data-layout^="ipad"] .screen.editor .band[data-export-slot="1"] .band-top { height: 44px; border-top: 1px solid var(--line-subtle); }
