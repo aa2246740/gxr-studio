@@ -146,6 +146,7 @@ async function shareFacts(page) {
 async function computer(browser) {
   const { ctx, page, downloads } = await openPage(browser, 'computer', { viewport: { width: 1280, height: 800 } }, []);
   const step = { env: await envFacts(page) };
+  out.steps.computer = step; // 中途出错时，已经量到的也在报告里
   await openPhoto(page, manifest.stems[0]);
   step.save = await saveButton(page);
   await page.locator('.editor .toolbar [data-act="export"]').click();
@@ -186,7 +187,7 @@ async function computer(browser) {
   // 一批停在内存上限（held）：点一次「下载」就放掉这一批、接着做排着的那张，不用再点「关闭」。
   await page.evaluate((n) => { window.__devExport.holdAfter = n; }, manifest.stems.length);
   await exportFromGrid(page, manifest.heldStems, '小', '低');
-  await waitPhase(page, ['held'], 900_000);
+  await waitPhase(page, ['held'], 300_000);
   const held = await readyButton(page);
   step.heldReady = { text: held.text, phase: await page.locator('.pdock').getAttribute('data-phase') };
   const beforeHeld = downloads.length;
