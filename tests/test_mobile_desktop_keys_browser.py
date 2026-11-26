@@ -118,7 +118,10 @@ def _sheet(step: dict[str, Any], what: str, focus: bool = True, opener: bool = F
 
 
 def test_mobile_desktop_keys(tmp_path: Path) -> None:
-    report = _run(tmp_path)
+    _verify(_run(tmp_path))
+
+
+def _verify(report: dict[str, Any]) -> None:
     steps = report["steps"]
     errors = {k: v for k, v in steps.items() if k.endswith("Error")}
     check(report["pageErrors"] == [], f"no page errors: {report['pageErrors']}")
@@ -194,6 +197,7 @@ def test_mobile_desktop_keys(tmp_path: Path) -> None:
     check(ph["moreState"] == {"esc": True, "button": True}, "更多: model after Esc equals after 关闭")
     curves = ph["curvesEsc"]
     check(curves == {"closed": True, "screen": "editor", "focusInSheet": True}, f"曲线: focus inside, one Esc closes it ({curves})")
+    check(ph["arrowNext"].startswith("2 /"), f"phone layout on a computer: ArrowRight goes to the next photo ({ph['arrowNext']})")
     check(ph["curvesState"] == {"same": True, "changed": True}, f"曲线: model after Esc equals after 完成 ({ph['curvesState']})")
     check("missing" not in ph["filter"], "配方筛选 tile is there")
     _sheet(ph["filter"], "配方筛选", opener=True)

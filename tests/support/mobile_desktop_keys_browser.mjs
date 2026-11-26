@@ -77,6 +77,14 @@ const count = (page, sel) => page.locator(sel).count();
 const screen = (page) => page.evaluate(() => document.querySelector('.app')?.dataset.screen ?? '');
 const title = (page) => page.evaluate(() => document.querySelector('.nav .t b')?.textContent?.trim() ?? '');
 
+/** 没有这些按键的老版本上量完一条后回到普通网格（用按钮），后面几条照样能量。 */
+async function ensureGrid(page) {
+  if ((await screen(page)) === 'editor') await backByButton(page);
+  if (await count(page, '.nav .nb.pick-cancel')) await page.locator('.nav .nb.pick-cancel').click();
+  if ((await title(page)).startsWith('已选')) await page.locator('.nav .nb.bold').click();
+  await frames(page, 2);
+}
+
 /** 打开一个面板（`open` 点开），量焦点，按 Tab 看还在不在里面，按一次 Esc，看它关没关、还在不在同一屏。 */
 async function escSheet(page, open, sheetSel, extraFocus = {}) {
   await open();
@@ -229,12 +237,14 @@ async function computerGrid(browser) {
   step.selectAll = await title(page);
   await esc(page);
   step.selectEsc = { title: await title(page), sel: await count(page, '.gscroll.sel'), choose: (await page.locator('.nav .nb.bold').innerText()).trim() };
+  await ensureGrid(page);
   // 不在选择模式：Cmd/Ctrl 点一张进选择模式并勾上它，不打开编辑器
   await page.locator(`.cell[data-id="${ids[3]}"]`).click({ modifiers: [mod] });
   await frames(page, 2);
   step.modEnter = { title: await title(page), screen: await screen(page) };
   await esc(page);
   step.modEnterEsc = await title(page);
+  await ensureGrid(page);
 
   // 方向键：从一整行（9 张）的第一张开始，下一行同一组，↓ 落在往后第 9 张（「第 1 张 → 第 10 张」）
   const start = await page.evaluate(() => {
@@ -272,6 +282,7 @@ async function computerGrid(browser) {
   await esc(page);
   await page.waitForFunction(() => document.querySelector('.app')?.dataset.screen === 'grid', null, { timeout: 30_000 }).catch(() => {});
   step.escFromEditor = await screen(page);
+  await ensureGrid(page);
 
   // 回到网格时的位置：滚到底、点开最后一张、〈 照片
   await page.locator('.gscroll').evaluate((s) => { s.scrollTop = s.scrollHeight; });
@@ -334,6 +345,7 @@ async function computerGrid(browser) {
   await esc(page);
   await page.waitForFunction(() => document.querySelector('.app')?.dataset.screen === 'grid', null, { timeout: 30_000 }).catch(() => {});
   step.second = { focus: await activeCell(page), want: pair[1] };
+  await ensureGrid(page);
 
   // 编辑器顶栏 ⋯（键盘打开）、导出选项、关机图（自己处理 Esc）、照片信息
   await openCellByKey(page, pair[0]);
@@ -377,6 +389,7 @@ async function computerGrid(browser) {
   step.pasteAllButton = await page.evaluate(() => document.querySelector('[data-act="paste-picked"]')?.textContent?.trim() ?? '');
   await esc(page);
   step.pasteEsc = await title(page);
+  await ensureGrid(page);
 
   // 清空前确认
   await page.locator('.nav .nb.plain').click();
@@ -386,6 +399,11 @@ async function computerGrid(browser) {
   if (step.clear.dialog) {
     await redact(page);
     await page.screenshot({ path: path.join(manifest.shots, 'computer-clear-confirm.png') });
+  }
+  if (!step.clear.dialog) {
+    step.clearGo = await screen(page);
+    await ctx.close();
+    return;
   }
   await esc(page);
   step.clearEsc = { dialog: await count(page, '.dlg[data-state="confirm-clear"]'), screen: await screen(page), cells: (await count(page, '.gscroll .cell')) > 0 };
@@ -433,9 +451,15 @@ async function computerPhoneLayout(browser) {
   const focusCurve = await curveDrag();
   await esc(page);
   step.curvesEsc = { closed: (await count(page, '.curves-sheet')) === 0, screen: await screen(page), focusInSheet: focusCurve.inSheet };
+  if (!step.curvesEsc.closed) await page.locator('.curves-sheet [data-act="close"]').click();
   const curveEsc = await edits(ids[0]);
   await page.keyboard.press('ArrowRight');
   await page.waitForFunction(() => document.querySelector('.editor .nav .t small')?.textContent?.trim().startsWith('2'), null, { timeout: 60_000 }).catch(() => {});
+  step.arrowNext = await pos(page);
+  if (!step.arrowNext.startsWith('2')) {
+    await backByButton(page);
+    await openCellByKey(page, ids[1]);
+  }
   await page.waitForSelector('.editor .toolbar [data-act="export"]');
   await curveDrag();
   await page.locator('.curves-sheet [data-act="close"]').click();
@@ -540,6 +564,7 @@ async function webkitComputer(webkit) {
     step.shift = await title(page);
     await esc(page);
     step.selectEsc = await title(page);
+    await ensureGrid(page);
     const first = await page.locator('.gscroll .cell').first().getAttribute('data-id');
     await openCellByKey(page, first);
     await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
@@ -551,6 +576,7 @@ async function webkitComputer(webkit) {
     await page.waitForFunction(() => document.querySelector('.app')?.dataset.screen === 'grid', null, { timeout: 30_000 }).catch(() => {});
     step.escBack = await screen(page);
     step.focus = await activeCell(page);
+    await ensureGrid(page);
     await page.locator('.nav .nb.plain').click();
     await page.locator('.ms .lrow:has(b.bad)').click();
     await frames(page, 2);
