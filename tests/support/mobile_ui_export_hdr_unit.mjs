@@ -107,6 +107,8 @@ test('notes per reason are the desktop HDR_NOTES, anything else HDR_UNSUPPORTED'
   assert.equal(hdr.hdrNote('capture_mismatch'), 'RAW 与 JPG 不是同一次拍摄');
   assert.equal(hdr.hdrNote('not_jpeg'), 'HDR 需要 JPEG 格式');
   assert.equal(hdr.hdrNote('frame_layout'), '这个边框样式不能存 HDR');
+  // desktop-accept F10：RAW 和相机 JPG 对不齐的一对有自己的一句，不再是笼统的「不支持」。
+  assert.equal(hdr.hdrNote('not_aligned'), 'RAW 和相机 JPG 画面对不上，这张存普通版本');
   assert.equal(hdr.hdrNote('no_curve'), '这张照片不支持 HDR');
   assert.equal(hdr.hdrNote(null), '这张照片不支持 HDR');
   assert.equal(hdr.hdrNote('toString'), '这张照片不支持 HDR');
