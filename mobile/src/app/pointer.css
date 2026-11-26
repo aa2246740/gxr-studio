@@ -1,4 +1,4 @@
-/* 电脑（有悬停、指针精确）上的手形光标和轻微悬停提示（desktop-layout L5）。有触摸的设备匹配不到这个媒体查询，
+/* 电脑（有悬停、指针精确）专用的样式：手形光标和轻微悬停提示（desktop-layout L5），大屏首屏不留大空档（L14）。有触摸的设备匹配不到这个媒体查询，
    shell.css 里的 button { cursor: default } 对它们照旧。图库网格的格子由 desktop-keys 负责，这里不碰。 */
 @media (hover: hover) and (pointer: fine) {
   .app button:not(:disabled):not(.gscroll .cell),
@@ -35,4 +35,9 @@
   .app .ch.edge.t, .app .ch.edge.b { cursor: ns-resize; }
   .app .ch.edge.l, .app .ch.edge.r { cursor: ew-resize; }
   .app .ruler { cursor: ew-resize; }
+
+  /* 首屏：iPad 版式里按钮靠 margin-top: auto 贴底，电脑大屏上会和内容隔开几百像素。电脑上整组内容竖直居中、按钮紧跟内容。 */
+  .app[data-layout^="ipad"] .start > .hero { margin-top: auto; }
+  .app[data-layout^="ipad"] .start .cta { margin-top: 12px; }
+  .app[data-layout^="ipad"] .start > .help { margin-bottom: auto; }
 }

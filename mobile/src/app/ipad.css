@@ -175,6 +175,7 @@
   .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip .cell.cv-auto { contain-intrinsic-size: 72px 48px; }
   .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-hist-area { padding-bottom: 8px; }
   .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-hist-slot .hist { height: 56px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .start { padding-top: 8px; padding-bottom: 12px; }
 }
 
 /* ---------- iPad 竖屏（13" 1024×1366）：照片铺满宽，下面配方卡、胶片条、工具带子（左右两半）、底栏 ---------- */

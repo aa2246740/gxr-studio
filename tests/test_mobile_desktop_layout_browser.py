@@ -297,3 +297,17 @@ def test_mobile_desktop_crop_ruler_labels_never_cut(tmp_path: Path) -> None:
                 want = 3 if m["width"] >= 240 else 1
                 check(len(m["shown"]) >= want, f"{kind} {row['size']} {when}: labels still show: {m}")
             check(row["turned"]["angle"] != row["rest"]["angle"], f"{kind} {row['size']}: arrow keys turned the ruler")
+
+
+def test_mobile_desktop_start_buttons_follow_the_content(tmp_path: Path) -> None:
+    """L14：电脑大屏首屏上按钮紧跟内容（不再隔几百像素贴底），矮窗口不出滚动条；iPad（有触摸）和手机照旧贴底。"""
+    groups = _run(tmp_path, ["start"])["start"]
+    for row in groups["computer"]["rows"]:
+        check(row["layout"] == "ipad-landscape", f"computer {row['size']}: desktop layout ({row['layout']})")
+        check(row["gap"] <= 40, f"computer {row['size']}: buttons sit right under the content ({row})")
+        check(row["scrolls"] is False, f"computer {row['size']}: the start screen fits without scrolling ({row})")
+        check(abs(row["topSpace"] - row["bottomSpace"]) <= 40 or row["topSpace"] <= 24, f"computer {row['size']}: the group is centred ({row})")
+    for kind in ("ipad", "phone"):
+        check(groups[kind]["errors"] == [], f"{kind}: no page errors")
+        for row in groups[kind]["rows"]:
+            check(row["bottomSpace"] <= 28 and row["gap"] > 100, f"{kind} {row['size']}: buttons still at the bottom ({row})")

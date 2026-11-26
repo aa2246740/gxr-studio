@@ -571,6 +571,42 @@ async function rulerGroup(browser, url, kind, sizes) {
   return { rows, errors };
 }
 
+/** L14：首屏上按钮和上面内容之间的空档，以及最后一行离首屏底边多远。 */
+async function startGroup(browser, url, kind, sizes) {
+  const rows = [];
+  const { ctx, page, errors } = await newPage(browser, 'metal', kind, { width: sizes[0][0], height: sizes[0][1] });
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await page.locator('.app[data-screen="start"][data-core="1"]').waitFor({ timeout: 60_000 });
+    for (const [width, height] of sizes) {
+      await resize(page, { width, height });
+      const size = `${width}x${height}`;
+      const row = await page.evaluate(() => {
+        const start = document.querySelector('.start');
+        const cta = start?.querySelector('.cta');
+        const prev = cta?.previousElementSibling;
+        const help = start?.querySelector(':scope > .help');
+        if (!start || !cta || !prev || !help) return null;
+        const s = start.getBoundingClientRect();
+        const c = cta.getBoundingClientRect();
+        return {
+          layout: document.querySelector('.app')?.dataset.layout ?? '',
+          gap: Math.round(c.top - prev.getBoundingClientRect().bottom),
+          ctaTop: Math.round(c.top),
+          bottomSpace: Math.round(s.bottom - help.getBoundingClientRect().bottom),
+          topSpace: Math.round(start.querySelector('.hero').getBoundingClientRect().top - s.top),
+          scrolls: start.scrollHeight > start.clientHeight + 1,
+        };
+      });
+      if (manifest.shotsDir) await shot(page, `start-${kind}-${size}`);
+      rows.push({ size, ...row });
+    }
+  } finally {
+    await ctx.close();
+  }
+  return { rows, errors };
+}
+
 async function withBrowser(engine, run) {
   if (engine === 'webkit') {
     const exe = resolveWebKitExecutable();
@@ -634,6 +670,13 @@ const GROUPS = {
       computer: await rulerGroup(browser, url, 'computer', [[1440, 900], [1024, 768], [2560, 1440]]),
       ipad: await rulerGroup(browser, url, 'ipad', [[1180, 820], [1024, 1366]]),
       phone: await rulerGroup(browser, url, 'phone', [[390, 844], [844, 390]]),
+    }));
+  },
+  async start(url) {
+    return withBrowser('metal', async (browser) => ({
+      computer: await startGroup(browser, url, 'computer', [[2560, 1440], [1920, 1080], [1440, 900], [1024, 768], [1280, 600], [1093, 614], [900, 590]]),
+      ipad: await startGroup(browser, url, 'ipad', [[1366, 1024], [1180, 820], [1024, 1366]]),
+      phone: await startGroup(browser, url, 'phone', [[390, 844], [440, 956]]),
     }));
   },
   async fitTouch(url) {
