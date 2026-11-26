@@ -311,3 +311,34 @@ def test_mobile_desktop_start_buttons_follow_the_content(tmp_path: Path) -> None
         check(groups[kind]["errors"] == [], f"{kind}: no page errors")
         for row in groups[kind]["rows"]:
             check(row["bottomSpace"] <= 28 and row["gap"] > 100, f"{kind} {row['size']}: buttons still at the bottom ({row})")
+
+
+def test_mobile_desktop_wheel_scrolls_strips(tmp_path: Path) -> None:
+    """P2-6：电脑上竖向滚轮让配方条（和溢出的胶片条）左右滚，滚不动时不拦，露细滚动条；iPad 触摸照旧。"""
+    groups = _run(tmp_path, ["wheel"])["wheel"]
+    for name in ("computer", "webkit"):
+        res = groups[name]
+        if res.get("skipped"):
+            continue
+        check(res["errors"] == [], f"{name}: no page errors: {res['errors']}")
+        down = res["recipeDown"]
+        check(
+            down["overflow"] > 0 and down["prevented"] is True and down["after"] > down["before"],
+            f"{name}: wheel scrolls the recipe strip: {down}",
+        )
+        check(down["scrollbar"] == "thin", f"{name}: thin scrollbar on the recipe strip: {down}")
+        for key in ("recipeUpAtStart", "recipeDownAtEnd", "filmNoOverflow"):
+            row = res[key]
+            check(row["prevented"] is False and row["after"] == row["before"], f"{name} {key}: wheel left alone when it can't scroll: {row}")
+        film = res["filmOverflow"]
+        check(
+            film["overflow"] > 0 and film["prevented"] is True and film["after"] > 0, f"{name}: wheel scrolls an overflowing filmstrip: {film}"
+        )
+        check(film["scrollbar"] == "thin", f"{name}: thin scrollbar on the filmstrip: {film}")
+    check(groups["computer"]["realWheel"] > 0, f"a real mouse wheel scrolls the recipe strip ({groups['computer']['realWheel']})")
+    pad = groups["ipad"]
+    check(pad["errors"] == [], f"ipad: no page errors: {pad['errors']}")
+    for key in ("recipeDown", "filmOverflow"):
+        row = pad[key]
+        check(row["prevented"] is False and row["after"] == row["before"], f"ipad {key}: touch device unchanged: {row}")
+        check(row["scrollbar"] == "none", f"ipad {key}: scrollbar still hidden: {row}")

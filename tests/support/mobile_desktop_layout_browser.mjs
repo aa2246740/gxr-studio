@@ -607,6 +607,73 @@ async function startGroup(browser, url, kind, sizes) {
   return { rows, errors };
 }
 
+/** P2-6：竖向滚轮在配方条和（溢出时的）胶片条上变成左右滚；滚到头或不溢出时不拦；电脑上露细滚动条。 */
+function wheelProbe(page, sel, deltaY) {
+  return page.evaluate(
+    ([q, dy]) => {
+      const strip = [...document.querySelectorAll(q)].find((n) => n.getClientRects().length > 0);
+      if (!strip) return null;
+      const before = strip.scrollLeft;
+      const ev = new WheelEvent('wheel', { deltaY: dy, bubbles: true, cancelable: true });
+      (strip.querySelector('button') ?? strip).dispatchEvent(ev);
+      return {
+        overflow: strip.scrollWidth - strip.clientWidth,
+        before: Math.round(before),
+        after: Math.round(strip.scrollLeft),
+        prevented: ev.defaultPrevented,
+        scrollbar: getComputedStyle(strip).scrollbarWidth,
+      };
+    },
+    [sel, deltaY],
+  );
+}
+
+async function wheelGroup(browser, url, kind, vp, engine = 'metal') {
+  const { ctx, page, errors } = await newPage(browser, engine, kind, vp);
+  const out = {};
+  try {
+    await start(page, url);
+    await open(page, engine);
+    const strip = '.editor .ipad-strip-host .recipe-strip-wrap .strip';
+    await page.evaluate((q) => {
+      const n = document.querySelector(q);
+      if (n) n.scrollLeft = 0;
+    }, strip);
+    out.recipeDown = await wheelProbe(page, strip, 240);
+    out.recipeUpAtStart = await (async () => {
+      await page.evaluate((q) => {
+        const n = document.querySelector(q);
+        if (n) n.scrollLeft = 0;
+      }, strip);
+      return wheelProbe(page, strip, -240);
+    })();
+    await page.evaluate((q) => {
+      const n = document.querySelector(q);
+      if (n) n.scrollLeft = n.scrollWidth;
+    }, strip);
+    out.recipeDownAtEnd = await wheelProbe(page, strip, 240);
+    // 真鼠标滚轮：停在配方条上滚一下。
+    await page.evaluate((q) => {
+      const n = document.querySelector(q);
+      if (n) n.scrollLeft = 0;
+    }, strip);
+    const box = await page.locator(strip).first().boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, 300);
+    await settle(page, 200);
+    out.realWheel = await page.evaluate((q) => Math.round(document.querySelector(q)?.scrollLeft ?? -1), strip);
+    out.filmNoOverflow = await wheelProbe(page, '.editor .ipad-filmstrip', 240);
+    await page.evaluate(() => {
+      const n = document.querySelector('.editor .ipad-filmstrip');
+      if (n) n.style.maxWidth = '160px';
+    });
+    out.filmOverflow = await wheelProbe(page, '.editor .ipad-filmstrip', 240);
+  } finally {
+    await ctx.close();
+  }
+  return { ...out, errors };
+}
+
 async function withBrowser(engine, run) {
   if (engine === 'webkit') {
     const exe = resolveWebKitExecutable();
@@ -677,6 +744,13 @@ const GROUPS = {
       computer: await startGroup(browser, url, 'computer', [[2560, 1440], [1920, 1080], [1440, 900], [1024, 768], [1280, 600], [1093, 614], [900, 590]]),
       ipad: await startGroup(browser, url, 'ipad', [[1366, 1024], [1180, 820], [1024, 1366]]),
       phone: await startGroup(browser, url, 'phone', [[390, 844], [440, 956]]),
+    }));
+  },
+  async wheel(url) {
+    return withBrowser('metal', async (browser) => ({
+      computer: await wheelGroup(browser, url, 'computer', { width: 1440, height: 900 }),
+      webkit: await withBrowser('webkit', (wk) => wheelGroup(wk, url, 'computer', { width: 1440, height: 900 }, 'webkit')),
+      ipad: await wheelGroup(browser, url, 'ipad', { width: 1180, height: 820 }),
     }));
   },
   async fitTouch(url) {

@@ -93,6 +93,22 @@ export function viewportDims(shell: HTMLElement): { width: number; height: numbe
   return { width, height };
 }
 
+/** 横向滚动的配方条和胶片条：电脑上普通的竖向滚轮也让它们左右滚（P2-6）。 */
+const WHEEL_STRIPS = '.strip, .ipad-filmstrip';
+const wheelShells = new WeakSet<HTMLElement>();
+
+/** 只在条子真能往那个方向滚时才接管（preventDefault）；横向滚动、捏合缩放（ctrlKey）和触摸设备照旧。 */
+function stripWheel(event: WheelEvent): void {
+  if (event.ctrlKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX) || !isComputer()) return;
+  const strip = event.target instanceof Element ? event.target.closest<HTMLElement>(WHEEL_STRIPS) : null;
+  if (!strip) return;
+  const max = strip.scrollWidth - strip.clientWidth;
+  const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? strip.clientWidth : 1);
+  if (max <= 0 || (delta < 0 && strip.scrollLeft <= 0) || (delta > 0 && strip.scrollLeft >= max - 1)) return;
+  event.preventDefault();
+  strip.scrollLeft += delta;
+}
+
 export interface LayoutWatch {
   mode(): LayoutMode;
   ipadSize(): IpadSize;
@@ -123,6 +139,11 @@ export function watchViewportLayout(
   };
 
   window.addEventListener('resize', check);
+  // 每个壳只挂一次（开始页和编辑器都会调这里），壳一直在，不用拆。
+  if (!wheelShells.has(shell)) {
+    wheelShells.add(shell);
+    shell.addEventListener('wheel', stripWheel, { passive: false });
+  }
   let observer: ResizeObserver | null = null;
   if (typeof ResizeObserver === 'function') {
     observer = new ResizeObserver(() => check());

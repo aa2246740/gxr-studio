@@ -40,4 +40,9 @@
   .app[data-layout^="ipad"] .start > .hero { margin-top: auto; }
   .app[data-layout^="ipad"] .start .cta { margin-top: 12px; }
   .app[data-layout^="ipad"] .start > .help { margin-bottom: auto; }
+
+  /* 配方条和胶片条：电脑上露一根细滚动条，看得出后面还有（P2-6）。胶片条要压过 ipad.css 里藏滚动条的那条（本文件排在它前面）。 */
+  .app .strip, .app[data-layout] .ipad-filmstrip.film { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.28) transparent; }
+  .app .strip::-webkit-scrollbar, .app[data-layout] .ipad-filmstrip.film::-webkit-scrollbar { display: block; height: 6px; }
+  .app .strip::-webkit-scrollbar-thumb, .app[data-layout] .ipad-filmstrip.film::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.28); border-radius: 3px; }
 }
