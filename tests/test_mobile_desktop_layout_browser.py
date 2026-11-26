@@ -326,7 +326,9 @@ def test_mobile_desktop_wheel_scrolls_strips(tmp_path: Path) -> None:
             down["overflow"] > 0 and down["prevented"] is True and down["after"] > down["before"],
             f"{name}: wheel scrolls the recipe strip: {down}",
         )
-        check(down["scrollbar"] == "thin", f"{name}: thin scrollbar on the recipe strip: {down}")
+        check(down["scrollbar"] != "none", f"{name}: the recipe strip's scrollbar is no longer hidden: {down}")
+        if name == "webkit":  # 无头 Chromium 总是藏滚动条，量不出来
+            check(down["bar"] >= 4, f"{name}: a visible scrollbar on the recipe strip: {down}")
         for key in ("recipeUpAtStart", "recipeDownAtEnd", "filmNoOverflow"):
             row = res[key]
             check(row["prevented"] is False and row["after"] == row["before"], f"{name} {key}: wheel left alone when it can't scroll: {row}")
@@ -334,11 +336,37 @@ def test_mobile_desktop_wheel_scrolls_strips(tmp_path: Path) -> None:
         check(
             film["overflow"] > 0 and film["prevented"] is True and film["after"] > 0, f"{name}: wheel scrolls an overflowing filmstrip: {film}"
         )
-        check(film["scrollbar"] == "thin", f"{name}: thin scrollbar on the filmstrip: {film}")
+        check(film["scrollbar"] != "none", f"{name}: the filmstrip's scrollbar is no longer hidden: {film}")
+        if name == "webkit":
+            check(film["bar"] >= 4, f"{name}: a visible scrollbar on the overflowing filmstrip: {film}")
     check(groups["computer"]["realWheel"] > 0, f"a real mouse wheel scrolls the recipe strip ({groups['computer']['realWheel']})")
     pad = groups["ipad"]
     check(pad["errors"] == [], f"ipad: no page errors: {pad['errors']}")
     for key in ("recipeDown", "filmOverflow"):
         row = pad[key]
         check(row["prevented"] is False and row["after"] == row["before"], f"ipad {key}: touch device unchanged: {row}")
-        check(row["scrollbar"] == "none", f"ipad {key}: scrollbar still hidden: {row}")
+        check(row["scrollbar"] == "none" and row["bar"] == 0, f"ipad {key}: scrollbar still hidden: {row}")
+
+
+def test_mobile_desktop_side_panel_scroll_cue(tmp_path: Path) -> None:
+    """P3-13：1440×900 和 1024×768 上侧边面板放不下时，电脑上有常驻滚动条（WebKit 量得出），
+    滚到底「全部重置」和最后一根微调整个露出来；iPad 触摸不变。"""
+    groups = _run(tmp_path, ["panel"])["panel"]
+    for name in ("metal", "webkit"):
+        res = groups[name]
+        if res.get("skipped"):
+            continue
+        check(res["errors"] == [], f"{name}: no page errors: {res['errors']}")
+        for row in res["rows"]:
+            for view in ("recipe", "adjust"):
+                m = row[view]
+                check(m is not None and m["lastReachable"] is True, f"{name} {row['size']} {view}: last control reachable: {m}")
+                if name == "webkit" and m["overflow"] > 0:
+                    check(m["bar"] >= 4, f"{name} {row['size']} {view}: overflowing panel shows a scrollbar: {m}")
+        check(any(row["recipe"]["overflow"] > 0 for row in res["rows"]), f"{name}: the recipe panel does overflow at these sizes")
+    pad = groups["ipad"]
+    if not pad.get("skipped"):
+        check(pad["errors"] == [], f"ipad: no page errors: {pad['errors']}")
+        for row in pad["rows"]:
+            for view in ("recipe", "adjust"):
+                check(row[view]["bar"] == 0, f"ipad {row['size']} {view}: touch keeps the overlay scrollbar: {row[view]}")

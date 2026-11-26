@@ -622,6 +622,8 @@ function wheelProbe(page, sel, deltaY) {
         after: Math.round(strip.scrollLeft),
         prevented: ev.defaultPrevented,
         scrollbar: getComputedStyle(strip).scrollbarWidth,
+        // 常驻滚动条占的高度（无头 Chromium 默认藏滚动条，只有 WebKit 量得出来）。
+        bar: strip.offsetHeight - strip.clientHeight - parseFloat(getComputedStyle(strip).borderTopWidth) - parseFloat(getComputedStyle(strip).borderBottomWidth),
       };
     },
     [sel, deltaY],
@@ -672,6 +674,44 @@ async function wheelGroup(browser, url, kind, vp, engine = 'metal') {
     await ctx.close();
   }
   return { ...out, errors };
+}
+
+/** P3-13：侧边面板放不下时，电脑上有常驻滚动条；滚到底，「全部重置」和最后一根配方微调整个露出来。 */
+function readPanel(page, lastSel) {
+  return page.evaluate((q) => {
+    const body = [...document.querySelectorAll('.editor .band .band-body')].find((n) => n.getClientRects().length > 0);
+    if (!body) return null;
+    const out = { overflow: body.scrollHeight - body.clientHeight, bar: body.offsetWidth - body.clientWidth };
+    body.scrollTop = body.scrollHeight;
+    const last = [...body.querySelectorAll(q)].filter((n) => n.getClientRects().length > 0).pop();
+    const b = body.getBoundingClientRect();
+    const r = last?.getBoundingClientRect();
+    out.lastText = last?.textContent?.trim().slice(0, 12) ?? null;
+    out.lastReachable = Boolean(r) && r.top >= b.top - 1 && r.bottom <= b.bottom + 1;
+    body.scrollTop = 0;
+    return out;
+  }, lastSel);
+}
+
+async function panelGroup(browser, url, engine, kind, sizes) {
+  const rows = [];
+  const { ctx, page, errors } = await newPage(browser, engine, kind, { width: sizes[0][0], height: sizes[0][1] });
+  try {
+    await start(page, url);
+    await open(page, engine);
+    for (const [width, height] of sizes) {
+      await resize(page, { width, height });
+      await tool(page, 'recipe');
+      const recipe = await readPanel(page, '.panel.recipe .knobs .krow');
+      await tool(page, 'adjust');
+      const adjust = await readPanel(page, '.panel.adjust [data-act="adjust-reset-all"]');
+      await tool(page, 'recipe');
+      rows.push({ size: `${width}x${height}`, recipe, adjust });
+    }
+  } finally {
+    await ctx.close();
+  }
+  return { rows, errors };
 }
 
 async function withBrowser(engine, run) {
@@ -752,6 +792,13 @@ const GROUPS = {
       webkit: await withBrowser('webkit', (wk) => wheelGroup(wk, url, 'computer', { width: 1440, height: 900 }, 'webkit')),
       ipad: await wheelGroup(browser, url, 'ipad', { width: 1180, height: 820 }),
     }));
+  },
+  async panel(url) {
+    return {
+      metal: await withBrowser('metal', (b) => panelGroup(b, url, 'metal', 'computer', [[1440, 900], [1024, 768]])),
+      webkit: await withBrowser('webkit', (b) => panelGroup(b, url, 'webkit', 'computer', [[1440, 900], [1024, 768]])),
+      ipad: await withBrowser('webkit', (b) => panelGroup(b, url, 'webkit', 'ipad', [[1180, 820], [1366, 1024]])),
+    };
   },
   async fitTouch(url) {
     return withBrowser('webkit', async (browser) => ({
