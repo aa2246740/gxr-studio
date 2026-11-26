@@ -22,6 +22,10 @@ export interface PhotoDatTarget {
 /** 相机配方文件的上限：真的 DAT 不到 1 MB，超过这个一定不是，先拒绝再读。 */
 const MAX_DAT_BYTES = 16 << 20;
 const FORGET_DAT_FAILED = '忘掉没有成功，相机配方文件还在。请再试一次。';
+/** 只选了 GXRFX.BIN、也没有可以配上的 GXRCE.DAT（只选 DAT 时核心说「缺少 GXRFX.BIN…」，两边对得上）。 */
+export const BIN_ONLY_ERROR = '还差 GXRCE.DAT，请把 GXRCE.DAT 和 GXRFX.BIN 一起选';
+/** 核心对缺 BIN 的双文件卡 DAT 说的话：这时留着这个 DAT，等用户补选 BIN。 */
+const MISSING_BIN = '缺少 GXRFX.BIN';
 
 export interface Dat {
   name: string;
@@ -175,7 +179,16 @@ export class CamFilesController {
       void this.setDat(this.pendingDat.file, this.pendingDat.count, binFile).catch(() => undefined);
     } else if (this.dat && binFile) {
       void this.setDatBytes(this.dat.name, this.dat.read.bytes.slice(0), 1, binFile).catch(() => undefined);
+    } else if (binFile) {
+      // 只有 BIN：说还差 DAT，换掉之前那条错误。BIN 照旧留着，之后单补 DAT 也能配上。
+      this.datError = BIN_ONLY_ERROR;
+      this.host.onChanged();
     }
+  }
+
+  /** 这个 DAT 本身不能用（太大、读不了、核心拒收且不是缺 BIN）：不再留着等补选 BIN。 */
+  private dropPendingDat(file: File): void {
+    if (this.pendingDat?.file === file) this.pendingDat = null;
   }
 
   /** 「清空照片，重新选」：保留已记住的相机配方文件，只清本批提示与未配对的半份文件。 */
@@ -193,6 +206,7 @@ export class CamFilesController {
     const seq = ++this.datSeq;
     this.datNote = count > 1 ? `选了 ${count} 个 GXRCE.DAT，用的是修改时间最新的那个。` : null;
     if (file.size > MAX_DAT_BYTES) {
+      this.dropPendingDat(file);
       this.datBusy = false;
       this.datError = '这个文件太大，不是相机配方文件。请重新选一次 GXRCE.DAT。';
       this.host.onChanged();
@@ -211,12 +225,15 @@ export class CamFilesController {
       const bytes = await this.io.readFile(file);
       if (seq !== this.datSeq) return;
       if (!bytes) {
+        this.dropPendingDat(file);
         this.datError = '读不了这个相机配方文件。请重新选一次 GXRCE.DAT。';
         return;
       }
       await this.finishSetDat(seq, file.name, bytes, bin ?? null);
     } catch (err) {
-      if (seq === this.datSeq) this.datError = `无法读取相机配方文件：${err instanceof Error ? err.message : String(err)}`;
+      const message = err instanceof Error ? err.message : String(err);
+      if (seq === this.datSeq && !message.startsWith(MISSING_BIN)) this.dropPendingDat(file);
+      if (seq === this.datSeq) this.datError = `无法读取相机配方文件：${message}`;
     } finally {
       if (seq === this.datSeq) {
         this.datBusy = false;
