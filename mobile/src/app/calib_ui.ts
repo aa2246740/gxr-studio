@@ -4,7 +4,7 @@
 import { UNIT_LABEL, unitLine, type UnitPack } from '../lib/calib';
 import { camFilesRememberedLabel } from '../lib/camfiles';
 import { DEFAULT_LABEL, DEFAULT_NOTE } from '../lib/default_calib';
-import { deviceName } from '../lib/device';
+import { isComputerDevice, thisDevice } from '../lib/device';
 import type { Book } from './book';
 import { button, el } from './dom';
 import type { AppApi } from './model';
@@ -72,7 +72,7 @@ function paint(card: HTMLElement, api: AppApi, book: Book): void {
     card.append(
       hd,
       why,
-      el('p', 's', `也可以用自己的校准：在 Mac 的 GXR Studio 里导出，用隔空投送发到这台 ${deviceName()}。`),
+      el('p', 's', isComputerDevice() ? '也可以用自己的校准：在 GXR Studio 里导出校准数据，再点下面的按钮选这个文件。' : `也可以用自己的校准：在 Mac 的 GXR Studio 里导出，用隔空投送发到${thisDevice()}。`),
       importButton(api, book, '选择校准数据文件', true),
     );
   }
@@ -115,7 +115,7 @@ function paintCamFiles(card: HTMLElement, api: AppApi, book: Book): void {
   const hd = el('div', 'hd');
   if (dat) {
     hd.append(el('b', '', '相机配方文件'), tag(camFilesRememberedLabel(dat.generation), 'ok'));
-    const note = el('p', 's', `只存在这台 ${deviceName()} 的浏览器里，不会上传。换新固件（配方库变了）时再换一份。`);
+    const note = el('p', 's', `只存在${thisDevice('的浏览器里，不会上传。换新固件（配方库变了）时再换一份。')}`);
     const acts = el('div', 'acts');
     const replace = button('btn', book.datBusy ? '正在读取…' : '换一份…');
     replace.dataset.act = 'camfiles-replace';
@@ -133,7 +133,7 @@ function paintCamFiles(card: HTMLElement, api: AppApi, book: Book): void {
     const emptyTag = el('span', 'tag neutral-tag', '未记住');
     emptyTag.style.marginLeft = 'auto';
     hd.append(el('b', '', '相机配方文件'), emptyTag);
-    const note = el('p', 's', `存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN。选一次就会留在这台 ${deviceName()}，以后只选照片。`);
+    const note = el('p', 's', `存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN。选一次就会留在${thisDevice('，以后只选照片。')}`);
     const pick = button('btn block', book.datBusy ? '正在读取…' : '选择相机配方文件…');
     pick.dataset.act = 'camfiles-pick';
     pick.disabled = book.datBusy;

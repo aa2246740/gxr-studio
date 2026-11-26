@@ -1,13 +1,13 @@
 // LUT 纯函数：12 个色彩空间、命名与声明识别、文件头署名读取、输入色彩空间选择建议、出图规格与令牌（照桌面 lut/*.py 实现，不碰 DOM/IDB/WASM）。
 
-import { deviceName, type DeviceEnv } from './device.ts';
+import { thisDevice, type DeviceEnv } from './device.ts';
 
 export const MAX_CUBE_BYTES = 64 << 20;
 /** 浏览器本地 LUT 库总大小上限（IndexedDB 与读取前的唯一常量）。 */
 export const MAX_LUT_LIBRARY_BYTES = 256 << 20;
 
 export function lutFootnote(env?: DeviceEnv): string {
-  return `LUT 只存在这台 ${deviceName(env)} 上，直接套在照片上，不写入相机。`;
+  return `LUT 只存在${thisDevice('上', env)}，直接套在照片上，不写入相机。`;
 }
 
 export const LUT_ERRORS = {

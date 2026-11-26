@@ -6,7 +6,7 @@ import type { Bake, CalibPick, CalibRead, CalibRestored, DatRead, Resolved } fro
 import type { BakeArgs, CalibCheckArgs } from '../core/protocol';
 import { modelIso, TEXT, UNIT_ISOS, type Unit, type UnitPack } from '../lib/calib';
 import { DEFAULT_LABEL, DEFAULT_TEXT } from '../lib/default_calib';
-import { deviceName } from '../lib/device';
+import { thisDevice } from '../lib/device';
 import type { StoredCamFiles } from '../lib/idb';
 import { selection, selectionKey, shelves, unitIndex, type Card, type Shelves } from '../lib/recipes';
 import { ZIP_LIMITS, type ZipFail } from '../lib/zip';
@@ -42,7 +42,7 @@ export type UnitState =
   | { state: 'invalid'; message: string };
 
 function notSavedText(): string {
-  return `校准数据没有存进这台 ${deviceName()}：这次能用，下次打开要重新导入。`;
+  return `校准数据没有存进${thisDevice('：这次能用，下次打开要重新导入。')}`;
 }
 const DELETE_FAILED = '删除没有成功，校准数据还在。请再试一次。';
 

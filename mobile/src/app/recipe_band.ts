@@ -2,7 +2,7 @@
 
 import { crossed, uncalibratedReason, type Unit } from '../lib/calib';
 import { DEFAULT_LABEL, DEFAULT_NOTE } from '../lib/default_calib';
-import { deviceName } from '../lib/device';
+import { isComputerDevice, thisDevice } from '../lib/device';
 import {
   CAMERA_RECIPE_LEVELS_UNKNOWN,
   choices,
@@ -275,7 +275,7 @@ export function openJpgInfoSheet(shell: HTMLElement, diptych: boolean): void {
 export function datFileBox(message: string, pickDat: () => void): HTMLElement {
   const box = el('div');
   box.append(el('p', 'dim', message));
-  const pick = button('btn primary block', '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
+  const pick = button('btn primary block', isComputerDevice() ? '选择 GXRCE.DAT 和 GXRFX.BIN' : '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
   pick.prepend(icon(FILE));
   pick.addEventListener('click', pickDat);
   box.append(pick);
@@ -327,7 +327,7 @@ export function buildStatusBlock(scene: RecipeStatusScene, pickCalib: () => void
   const bring = button('btn primary block', '导入校准数据');
   bring.prepend(icon(PLUS));
   bring.addEventListener('click', pickCalib);
-  box.append(banner, bring, el('p', 'faint small', `在 Mac 的 GXR Studio 里导出校准数据，用隔空投送发到这台 ${deviceName()}，再点上面的按钮。只需一次。`));
+  box.append(banner, bring, el('p', 'faint small', isComputerDevice() ? '在 GXR Studio 里导出校准数据，再点上面的按钮选这个文件。只需一次。' : `在 Mac 的 GXR Studio 里导出校准数据，用隔空投送发到${thisDevice()}，再点上面的按钮。只需一次。`));
   return box;
 }
 
@@ -394,7 +394,7 @@ export function openAskDatSheet(shell: HTMLElement, book: Book, pickDat: () => v
     scrim.remove();
     sheet.remove();
   };
-  const pick = button('btn primary lg block', '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
+  const pick = button('btn primary lg block', isComputerDevice() ? '选择 GXRCE.DAT 和 GXRFX.BIN' : '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
   pick.prepend(icon(FILE));
   pick.addEventListener('click', () => {
     close();

@@ -1,10 +1,11 @@
 // 导出 HDR 的几句话和计数。纯函数，不碰 DOM。原话来自设计稿 05a / 05b / 05c 和桌面
 // （web/assets/export.js 的 HDR_NO_RAW、hdrAvailable、hdrSummary，api/routes.py 的 HDR_NOTES）。
 
-import { deviceName, type DeviceEnv } from './device.ts';
+import { deviceName, isComputerDevice, type DeviceEnv } from './device.ts';
 
-/** 05a 开关下面那句（按设备名显示 iPad / iPhone）。 */
+/** 05a 开关下面那句（按设备名显示 iPad / iPhone；电脑上说支持 HDR 的屏幕）。 */
 export function hdrLine(env?: DeviceEnv): string {
+  if (isComputerDevice(env)) return '在支持 HDR 的屏幕上看，亮处会更亮，更接近你当时看到的；别的屏幕照常显示。';
   return `在 ${deviceName(env)} 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。`;
 }
 /** 桌面 HDR_NO_RAW：选中的照片一张 RAW 都没有时，开关停用，写这句。 */
