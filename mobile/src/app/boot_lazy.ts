@@ -129,6 +129,9 @@ function filePicker(className: string, multiple: boolean): HTMLInputElement {
   input.type = 'file';
   input.multiple = multiple;
   input.className = className;
+  // 看不见的选择框不进 Tab 顺序，读屏也跳过；可见的按钮照旧调 click() 打开选择窗口。
+  input.tabIndex = -1;
+  input.setAttribute('aria-hidden', 'true');
   return input;
 }
 
