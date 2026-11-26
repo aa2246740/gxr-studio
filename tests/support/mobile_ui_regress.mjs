@@ -284,6 +284,8 @@ const CASES = {
       await page.waitForSelector('[data-screen="grid"]');
       await page.getByRole('button', { name: '更多', exact: true }).click();
       await page.getByRole('button', { name: /清空照片，重新选/ }).click();
+      // 电脑（没有触摸点）上清空前先问一句（desktop-keys）：点「清空」；手机上没有这一步。
+      await page.locator('.dlg[data-state="confirm-clear"] [data-act="clear-confirm"]').click({ timeout: 3_000 }).catch(() => {});
       await page.waitForSelector('[data-screen="start"]');
       const mark = await page.evaluate(() => window.__made.length);
       await page.evaluate(() => window.__thumbHeld.splice(0).forEach((run) => run()));

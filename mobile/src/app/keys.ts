@@ -142,6 +142,16 @@ function flush(records: MutationRecord[], shell: HTMLElement, hooks: KeyHooks): 
   }
 }
 
+/**
+ * 全图（面板收起来）时先展开，下一次 Esc 才回网格。收起时点任一工具按钮就是展开。
+ * studio/desktop-stage 合进来以后，整个函数体换成一行：`return leaveStageFullView();`（stage_zoom.ts）。
+ */
+function leaveFullView(shell: HTMLElement): boolean {
+  const full = shell.querySelector<HTMLElement>('.screen.editor[data-collapsed="1"] .toolbar .tbtn[data-tool="recipe"]');
+  full?.click();
+  return !!full;
+}
+
 function escape(ev: KeyboardEvent, shell: HTMLElement, hooks: KeyHooks): void {
   // 滑块或裁剪框还按着：不切屏也不关面板，松手后一切照常（不会留下 data-drag="1"）。
   if (pressed > 0) return;
@@ -164,10 +174,7 @@ function escape(ev: KeyboardEvent, shell: HTMLElement, hooks: KeyHooks): void {
     gridMode.leave();
   } else if (screen === 'editor') {
     ev.preventDefault();
-    // 面板收起来的全图（点一下照片）：先展开，下一次 Esc 才回网格。收起时点任一工具按钮就是展开。
-    const full = shell.querySelector<HTMLElement>('.screen.editor[data-collapsed="1"] .toolbar .tbtn[data-tool="recipe"]');
-    if (full) full.click();
-    else hooks.back();
+    if (!leaveFullView(shell)) hooks.back();
   }
 }
 
