@@ -45,3 +45,10 @@
 /* 04e：带着编辑的照片右下角的铅笔（设计稿 ui.py 的 .cell .edt）。 */
 .cell .edt { position: absolute; right: 5px; bottom: 5px; width: 22px; height: 22px; border-radius: 6px; background: rgba(0, 0, 0, 0.66); display: grid; place-items: center; color: #fff; }
 .cell .edt .ico { width: 13px; height: 13px; stroke-width: 2.2; }
+/* 电脑上（能悬停、指针精确）：格子是可点的手形，悬停时略提亮、描一圈细边。触屏不变。 */
+@media (hover: hover) and (pointer: fine) {
+  .gscroll .cell { cursor: pointer; }
+  .gscroll .cell canvas { transition: filter 0.12s; }
+  .gscroll .cell:hover canvas { filter: brightness(1.1); }
+  .gscroll .cell:hover::before { content: ""; position: absolute; inset: 0; z-index: 1; box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.32); pointer-events: none; }
+}

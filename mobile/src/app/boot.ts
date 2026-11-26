@@ -34,6 +34,7 @@ import { dropReply, ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
 import { watchViewportLayout } from './layout';
+import { installKeys } from './keys';
 
 class App implements AppApi {
   private readonly byId = new Map<string, Photo>();
@@ -394,8 +395,7 @@ class App implements AppApi {
 
   back(): void {
     this.warm = null;
-    if (this.byId.size) this.showGrid(true);
-    else this.showStart();
+    if (this.byId.size) this.showGrid(true, this.screen === 'editor' ? this.editing?.id : undefined); else this.showStart(); // 回到原来的位置和刚看的那张
   }
 
   takeWarm(id: string, version: number): ArrayBuffer | null {
@@ -512,7 +512,7 @@ class App implements AppApi {
     this.syncDock();
   }
 
-  private showGrid(remount: boolean): void {
+  private showGrid(remount: boolean, focus?: string): void {
     const mod = this.gridChunk.loaded;
     // 照片都是网格分包到了以后才导入的，有照片就有网格；万一没有，就回开始页。
     if (!mod) return this.showStart();
@@ -522,7 +522,7 @@ class App implements AppApi {
     if (this.screen !== 'grid') this.resetPerf();
     if (!this.grid || remount || this.screen !== 'grid') {
       this.grid?.destroy(); this.grid = new mod.GridView(this.view, this);
-      this.grid.show();
+      this.grid.show(focus);
     } else this.grid.refresh();
     this.screen = 'grid';
     this.syncDock();
@@ -789,7 +789,7 @@ export async function bootApp(root: HTMLElement, pageErrors: string[]): Promise<
   const dom = createBootDom(root);
   const perfOn = new URLSearchParams(location.search).get('perf') === '1';
   const app = new App(dom.shell, dom.view, dom.picker, dom.calibPicker, dom.lutPicker, dom.perf, perfOn, pageErrors);
-  bindPickers(dom, app);
+  bindPickers(dom, app); installKeys(dom.shell, { screen: () => dom.shell.dataset.screen ?? '', back: () => app.back() }); // Esc、Tab 和面板焦点（keys.ts）
   app.start();
   await coreReady;
   // 开发服务器：两个分包和显卡引擎都到了才标 data-core，测试照旧在那之后切屏。
