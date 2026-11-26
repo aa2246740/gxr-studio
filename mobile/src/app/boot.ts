@@ -29,6 +29,7 @@ import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
 import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, type AppApi, type FullRead, type Photo } from './model';
 import { newPhoto } from './new_photo';
+import { othersReadable } from './card_probe';
 import { unusedNote } from './import_note';
 import { showToast } from './toast';
 import { guardUnload } from './unload_guard';
@@ -462,7 +463,20 @@ class App implements AppApi {
   markGone(id: string, version: number): void {
     if (!this.current(id, version)) return;
     const photo = this.byId.get(id);
-    if (photo) this.failCard(photo);
+    if (photo) this.lostFile(photo, version);
+  }
+
+  /** 一个文件读不了：别的照片还读得到，就只是这一张（挪走、删了），标成读不了；都读不到才按拔卡处理。 */
+  private lostFile(photo: Photo, version: number): void {
+    if (this.cardIsOut) return this.failCard(photo);
+    const session = this.generation;
+    othersReadable(this.byId.values(), photo).then((ok) => {
+      if (session !== this.generation || !this.current(photo.id, version, photo)) return;
+      if (!ok) return this.failCard(photo);
+      if (this.screen === 'editor' && this.editing === photo) return this.markBad(photo.id, version);
+      photo.status = 'bad';
+      this.afterRead(photo);
+    }, () => undefined);
   }
 
   watch(kind: 'scroll' | 'drag', on: boolean): void {
@@ -663,7 +677,7 @@ class App implements AppApi {
       }
     }
     if (!reply.ok && reply.gone) {
-      this.failCard(photo);
+      this.lostFile(photo, version);
       return;
     }
     if (!reply.ok) {
