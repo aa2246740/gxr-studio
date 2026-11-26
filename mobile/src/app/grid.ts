@@ -1,5 +1,5 @@
 import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type TimeGroup, type VRow } from '../lib/group';
-import { deviceName } from '../lib/device';
+import { cardHelpTitle, saveWord } from '../lib/device';
 import { calibDetail } from './calib_ui';
 import { groupsPresent } from '../lib/paste';
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
@@ -714,7 +714,7 @@ export class GridView {
   private cardText(sheet: HTMLElement, ready: number, missing: number): void {
     const first = sheet.querySelector('p.ready');
     const second = sheet.querySelector('p.missing');
-    if (first) first.textContent = `已经读进来的 ${ready} 张照片不受影响，可以接着换配方、存到相册。`;
+    if (first) first.textContent = `已经读进来的 ${ready} 张照片不受影响，可以接着换配方、${saveWord()}。`;
     if (second) second.textContent = `还有 ${missing} 张没读完。把卡插回去，再点「重新选照片」，选同样的照片；做过的设置会保留。`;
   }
 
@@ -767,7 +767,7 @@ export class GridView {
     const rows: Array<[string, string, () => void]> = [
       ['添加照片', '再从存储卡里选几张', () => this.api.addPhotos()],
       ['校准数据', calibDetail(this.api), () => this.api.showCalib()],
-      [`怎么把卡插到 ${deviceName()}`, this.api.hasDat() ? '相机配方文件已选上' : '需要配方时再选 GXRCE.DAT 和 GXRFX.BIN', () => this.api.showHelp()],
+      [cardHelpTitle(), this.api.hasDat() ? '相机配方文件已选上' : '需要配方时再选 GXRCE.DAT 和 GXRFX.BIN', () => this.api.showHelp()],
     ];
     for (const [title, detail, run] of rows) {
       const line = button('lrow', '');
