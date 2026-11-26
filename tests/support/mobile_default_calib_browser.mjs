@@ -352,8 +352,9 @@ async function runHeldQuick() {
   rmSync(release, { force: true });
   const d = await quickPage('quick-D');
   shares = await d.page.evaluate(() => window.__shareLog.calls.length);
-  for (let i = 0; i < 3; i += 1) await tapExport(d.page);
+  // 等待从第一次点击就开始算：t0 记在三次点击之前，三次 click 本身花的时间（机器忙时一秒多）不再被算成「开始得太早」。
   const t0 = Date.now();
+  for (let i = 0; i < 3; i += 1) await tapExport(d.page);
   await d.page.waitForFunction(() => window.__devExport?.flow?.current() != null, null, { timeout: 60_000, polling: 50 });
   const startedAfter = Date.now() - t0;
   const started = await batchNow(d.page);
