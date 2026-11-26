@@ -7,6 +7,9 @@
    - 合并菜单瓷砖（`.lut-menu-tile`）在横屏下保持隐藏，不出现重复的导入按钮。
 2. 320×568 手机竖屏空库状态下导入损坏的 `.cube` 文件时，报错条（`.lut-err`）底沿与空库说明（`.lut-foot`）顶沿之间
    至少留出 4 px 间距，且空库说明不超出面板或被裁切。
+3. 手机竖屏（320/375/390/440）和 iPad（1024×1366、1366×1024）在两种状态下的每个框，和 5d972bf8 存下的基线
+   （`support/lut_landscape_baseline.json`）相差不超过 1 px。
+4. 横屏的检查再在藏掉无显卡说明条的版式（有 WebGPU 的 Safari，面板更高）上做一遍。
 
 仅使用合成 DNG+JPG 与合成 `.cube` 夹具，不接触真实照片；stdout 仅输出脱敏 JSON。
 """
@@ -36,6 +39,27 @@ from test_mobile_ui_browser import MODULES, PKG, RUNTIME, SAMPLES, _free_port, _
 pytestmark = pytest.mark.browser_serial
 
 REPO = Path(__file__).resolve().parents[1]
+# 竖屏和 iPad 的框在 5d972bf8 上量出来的值（固定 WebKit）。横屏改动不许动它们。
+BASELINE = Path(__file__).resolve().parent / "support" / "lut_landscape_baseline.json"
+BOX_TOLERANCE = 1.0
+BOX_KEYS = (
+    "panel",
+    "stage",
+    "band",
+    "bar",
+    "dock",
+    "ipadMeta",
+    "notice",
+    "sw",
+    "wrap",
+    "pin",
+    "strip",
+    "importBtn",
+    "spaceBtn",
+    "menuTile",
+    "foot",
+    "err",
+)
 FORBIDDEN_PORTS = {60887, 18772, 18801, 18802, 18803, 5290}
 
 DRIVER_JS = r"""
@@ -91,7 +115,12 @@ const BASELINE_VPS = [
 
 const failures = [];
 const pageErrors = [];
-const summary = { landscape: { empty: {}, three: {} }, err320: null, baseline: { empty: {}, three: {} }, shots: [] };
+const summary = {
+  landscape: { empty: {}, three: {}, emptyNoNotice: {}, threeNoNotice: {} },
+  err320: null,
+  baseline: { empty: {}, three: {} },
+  shots: [],
+};
 
 function redact(text) {
   return String(text)
@@ -233,6 +262,7 @@ async function measureLutPanel(page) {
     const bandEl = document.querySelector('.editor .band');
     const dockEl = document.querySelector('.editor .ipad-dock');
     const ipadMetaEl = panelEl?.querySelector(':scope > .ipad-lut-meta');
+    const noticeEl = document.querySelector('.editor .nogpu-notice');
 
     const panel = rect(panelEl);
     const stage = rect(stageEl);
@@ -249,6 +279,7 @@ async function measureLutPanel(page) {
     const band = rect(bandEl);
     const dock = rect(dockEl);
     const ipadMeta = rect(ipadMetaEl);
+    const notice = rect(noticeEl);
 
     const cards = [...(stripEl?.querySelectorAll('.rc') ?? [])].map((node) => {
       const box = rect(node);
@@ -290,6 +321,7 @@ async function measureLutPanel(page) {
       bar,
       dock,
       ipadMeta,
+      notice,
       sw,
       wrap,
       pin,
@@ -406,6 +438,24 @@ function assertLandscape(tag, m, wantEmpty) {
   }
 }
 
+/** 横屏各视口过一遍；`noNotice` 时先藏掉无显卡说明条（有 WebGPU 的 Safari 没有这条，面板更高）。 */
+async function landscapePass(page, state, wantEmpty, noNotice) {
+  const tag = noNotice ? await page.addStyleTag({ content: '.nogpu-notice { display: none !important; }' }) : null;
+  try {
+    for (const vp of LANDSCAPE_VPS) {
+      await setVp(page, vp, 'phone-landscape');
+      const m = await measureLutPanel(page);
+      summary.landscape[noNotice ? `${state}NoNotice` : state][vp.label] = m;
+      const label = `${noNotice ? 'nonotice ' : ''}${state} ${vp.label}`;
+      check(noNotice ? m.notice === null : Boolean(m.notice), `${label}: no-GPU notice ${noNotice ? 'still shown' : 'missing'}`);
+      assertLandscape(`fix1 ${label}`, m, wantEmpty);
+      if (!noNotice && vp.label === '844x390') await saveCrop(page, `844x390-${state}`, 'landscape');
+    }
+  } finally {
+    if (tag) await tag.evaluate((node) => node.remove());
+  }
+}
+
 const browser = await webkit.launch({ headless: true, executablePath });
 const ctx = await browser.newContext({
   viewport: { width: 390, height: 844 },
@@ -444,14 +494,9 @@ try {
     summary.baseline.empty[vp.label] = await measureLutPanel(page);
   }
 
-  // 2) Fix 1 (empty library) on phone landscape
-  for (const vp of LANDSCAPE_VPS) {
-    await setVp(page, vp, 'phone-landscape');
-    const m = await measureLutPanel(page);
-    summary.landscape.empty[vp.label] = m;
-    assertLandscape(`fix1 empty ${vp.label}`, m, true);
-    if (vp.label === '844x390') await saveCrop(page, '844x390-empty', 'landscape');
-  }
+  // 2) Fix 1 (empty library) on phone landscape, with and without the no-GPU notice
+  await landscapePass(page, 'empty', true, false);
+  await landscapePass(page, 'empty', true, true);
 
   // 3) Fix 2: 320 portrait with broken .cube import error
   await setVp(page, BASELINE_VPS[0], 'phone-portrait');
@@ -498,14 +543,9 @@ try {
     summary.baseline.three[vp.label] = await measureLutPanel(page);
   }
 
-  // Fix 1 (3 imported LUTs) on phone landscape
-  for (const vp of LANDSCAPE_VPS) {
-    await setVp(page, vp, 'phone-landscape');
-    const m = await measureLutPanel(page);
-    summary.landscape.three[vp.label] = m;
-    assertLandscape(`fix1 three ${vp.label}`, m, false);
-    if (vp.label === '844x390') await saveCrop(page, '844x390-three', 'landscape');
-  }
+  // Fix 1 (3 imported LUTs) on phone landscape, with and without the no-GPU notice
+  await landscapePass(page, 'three', false, false);
+  await landscapePass(page, 'three', false, true);
 } catch (err) {
   failures.push(`threw: ${redact(err?.stack || err?.message || err)}`);
 } finally {
@@ -541,6 +581,33 @@ def _stop(proc: subprocess.Popen[bytes] | None) -> None:
 def _redacted_tail(text: str) -> str:
     cleaned = re.sub(r"/(?:Volumes|Users|private|var/folders|tmp)/\S+", "[path]", text)
     return cleaned[-500:].strip()
+
+
+def _boxes(measure: dict[str, Any]) -> dict[str, list[float] | None]:
+    """一次 measureLutPanel 里的每个框（x、y、w、h），卡片按顺序和名字记。"""
+    out: dict[str, list[float] | None] = {}
+    for key in BOX_KEYS:
+        value = measure[key]
+        out[key] = None if value is None else [value["x"], value["y"], value["w"], value["h"]]
+    for i, card in enumerate(measure["cards"]):
+        box = card["box"]
+        out[f"card{i}:{card['name']}"] = None if box is None else [box["x"], box["y"], box["w"], box["h"]]
+    return out
+
+
+def _box_drift(want: dict[str, Any], got: dict[str, Any]) -> list[str]:
+    drift: list[str] = []
+    for state, views in want.items():
+        for label, boxes in views.items():
+            now = _boxes(got[state][label])
+            for key in sorted(set(boxes) | set(now)):
+                a, b = boxes.get(key, "missing"), now.get(key, "missing")
+                same = a == b or (
+                    isinstance(a, list) and isinstance(b, list) and all(abs(x - y) <= BOX_TOLERANCE for x, y in zip(a, b, strict=True))
+                )
+                if not same:
+                    drift.append(f"{state} {label} {key}: {a} -> {b}")
+    return drift
 
 
 def _cube(title: str, shift: float) -> str:
@@ -690,3 +757,9 @@ def test_mobile_lut_landscape_and_320_error_spacing_webkit(tmp_path: Path) -> No
     assert result.returncode == 0, report.get("failures")
     assert report["ok"], report.get("failures")
     assert report["pageErrors"] == [], report["pageErrors"]
+    baseline = json.loads(BASELINE.read_text(encoding="utf-8"))["boxes"]
+    assert {state: sorted(views) for state, views in baseline.items()} == {
+        state: sorted(report["summary"]["baseline"][state]) for state in ("empty", "three")
+    }
+    drift = _box_drift(baseline, report["summary"]["baseline"])
+    assert drift == [], "portrait / iPad LUT boxes moved more than 1 px from 5d972bf8:\n" + "\n".join(drift)
