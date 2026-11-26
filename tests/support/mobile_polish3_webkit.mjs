@@ -1,7 +1,8 @@
 // polish-3 回归驱动（固定 Playwright WebKit，没有 WebGPU，生产 mobile/dist）。
-// 用法：node mobile_polish3_webkit.mjs <runtime.mjs> <manifest.json>；manifest 给 distDir、photos（raw、jpeg、pair）、cubes 和 cubeTitles（llog709、slog3、srgb）、out，可选 shotsDir、shotsPrefix。
+// 用法：node mobile_polish3_webkit.mjs <runtime.mjs> <manifest.json>；manifest 给 distDir、photos（raw、jpeg、pair）、cubes 和 cubeTitles（每个内置色彩空间一个，键是空间 id）、out，可选 shotsDir、shotsPrefix。
 // 1. 无显卡说明条：iPad 和手机横屏里，只有 RAW（没有 JPG、没有内嵌预览）的那张和舞台说同一句；有 JPG 的照旧。
 // 2. 手机横屏 LUT 色彩空间瓷砖：只显示短名，不带「· 文件已写明」，不在词中间折行，不被裁切；aria-label 仍是全文。
+//    WebKit 和固定 Chromium 各查一遍（Chromium 会在连字符处折行，WebKit 不会）。
 // 3. 手机横屏焦点顺序：Tab 一路走下去（WebKit 默认 Tab 不停在按钮上，这一项用固定 Chromium、去掉 navigator.gpu），
 //    右边一列的顺序和画面从上到下一致；读屏走的 DOM 顺序也一样。转竖屏再转回来也对。
 // 只用合成照片；输出只写脱敏 JSON。没装 WebKit 时报告 { skipped }。HTTP 服务只绑 127.0.0.1 临时端口（避开禁用端口）。
@@ -203,9 +204,10 @@ async function pickLut(page, title) {
   await settle(page);
 }
 
-async function spaceScenario(browser, url) {
+async function spaceScenario(browser, url, engine) {
   const land = [{ width: 844, height: 390 }, { width: 667, height: 375 }];
   const { ctx, page, errors } = await newPage(browser, land[0], false);
+  if (engine === 'chromium') await ctx.addInitScript(() => Object.defineProperty(navigator, 'gpu', { value: undefined }));
   try {
     await start(page, url);
     await open(page, ID.pair);
@@ -219,7 +221,7 @@ async function spaceScenario(browser, url) {
       for (const vp of land) {
         await resize(page, vp, 'phone-landscape');
         row.tiles[`${key}-${vp.width}x${vp.height}`] = await readSpaceTile(page);
-        await shot(page, `space-${key}-${vp.width}x${vp.height}`, '.editor .panel.lut .lut-pin');
+        await shot(page, `space-${engine}-${key}-${vp.width}x${vp.height}`, '.editor .panel.lut .lut-pin');
       }
     }
     await resize(page, { width: 390, height: 844 }, 'phone-portrait');
@@ -332,7 +334,15 @@ try {
   await run('noticeIpadPortrait', () => noticeScenario(browser, server.url, { width: 820, height: 1180 }, 'ipad-portrait', true));
   await run('noticeLandscape844', () => noticeScenario(browser, server.url, { width: 844, height: 390 }, 'phone-landscape', false));
   await run('noticeLandscape667', () => noticeScenario(browser, server.url, { width: 667, height: 375 }, 'phone-landscape', false));
-  await run('spaceTile', () => spaceScenario(browser, server.url));
+  await run('spaceTile', () => spaceScenario(browser, server.url, 'webkit'));
+  await run('spaceTileChromium', async () => {
+    const chromium = await launchPinnedChromium({ args: ['--disable-gpu'] });
+    try {
+      return await spaceScenario(chromium, server.url, 'chromium');
+    } finally {
+      await chromium.close();
+    }
+  });
   await run('focus', () => focusScenario(server.url));
 } finally {
   await browser.close();

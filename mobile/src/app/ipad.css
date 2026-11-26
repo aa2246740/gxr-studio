@@ -285,8 +285,9 @@
   padding: 2px 3px;
   gap: 2px;
 }
-/* 窄瓷砖只在空格和标点处折行（「L-Log」「Rec.709」「色域」不拆开）。最长的内置短名「徕卡 L-Log（Rec.709 色域）」和最宽的词
-   「S-Gamut3」「（Rec.709」在 10px 下都比 43pt 的内容宽，所以这里用 9/10px、左右各留 1px、最多 4 行（40pt，瓷砖内容高 41pt）。 */
+/* 窄瓷砖只在词之间折行（lut_view.ts 的 spaceWords：空格处和全角左括号前；「S-Log3」「（Rec.709」「色域）」不拆开）。
+   最长的内置短名「徕卡 L-Log（Rec.709 色域）」和最宽的词「S-Gamut3」「（Rec.709」在 10px 下都比 43pt 的内容宽，
+   所以这里用 9/10px、左右各留 1px、最多 4 行（40pt，瓷砖内容高 41pt）。 */
 .app[data-layout="phone-landscape"] .panel.lut .lut-pin .rc.lut-space-tile .filter-th { padding: 2px 1px; }
 .app[data-layout="phone-landscape"] .panel.lut .lut-pin .rc.lut-space-tile .lut-space-txt {
   font-size: 9px;
@@ -296,6 +297,7 @@
   word-break: keep-all;
   overflow-wrap: normal;
 }
+.app[data-layout="phone-landscape"] .panel.lut .lut-pin .rc.lut-space-tile .lut-space-w { white-space: nowrap; }
 /* 49pt 宽的窄瓷砖只放短名，「· 文件已写明」这类来源标记不显示（aria-label 和色彩空间面板里还有全文）。 */
 .app[data-layout="phone-landscape"] .panel.lut .lut-pin .rc.lut-space-tile .lut-space-src { display: none; }
 .app[data-layout="phone-landscape"] .panel.lut .lut-strip-wrap .strip {

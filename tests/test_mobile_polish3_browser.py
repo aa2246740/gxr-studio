@@ -2,8 +2,8 @@
 
 1. iPad 和手机横屏的无显卡说明条：只有 RAW、没有 JPG 也没有内嵌预览的那张，说「这张只有 RAW，现在预览不了」和
    「导出仍会套用配方」，和舞台中间一致；有 JPG 的照旧说「预览只显示相机 JPG…」。转竖屏再转回来不变。
-2. 手机横屏 LUT 色彩空间瓷砖（844×390、667×375）：只显示短名，不带「· 文件已写明」，最长的内置名和词最宽的内置名
-   也不在词中间折行、不被裁切；按钮 aria-label 仍是全文。
+2. 手机横屏 LUT 色彩空间瓷砖（844×390、667×375）：每个内置空间都只显示短名，不带「· 文件已写明」，不在词中间折行
+   （只在空格和全角左括号前折行）、不被裁切；按钮 aria-label 仍是全文。WebKit 和固定 Chromium 都查。
 3. 手机横屏焦点顺序：Tab 走到的（固定 Chromium）和读屏走的 DOM 顺序里，右边一列控件的顺序和画面从上到下一致；
    转竖屏、再转回横屏也对。
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -36,14 +37,25 @@ NO_GPU_TITLE = "这个浏览器现在用不了显卡预览"
 NO_GPU_DETAIL = "预览只显示相机 JPG，导出仍会套用配\u2060方\u2060和\u00a0LUT"
 NO_PREVIEW_TEXT = "这张只有 RAW，现在预览不了"
 NO_GPU_RAW_DETAIL = "导出仍会套用配方"
-# lib/lut.ts 里最长的内置短名，以及它允许折行的位置（空格处、全角左括号前）。
-LONGEST = "徕卡 L-Log（Rec.709 色域）"
-LONGEST_WORDS = ["徕卡", "L-Log", "（Rec.709", "色域）"]
-# 词最宽的内置短名（「S-Gamut3」）。
-WIDEST = "索尼 S-Log3 / S-Gamut3"
-WIDEST_WORDS = ["索尼", "S-Log3", "/", "S-Gamut3"]
-CUBE_TITLES = {"llog709": "Leica Long", "slog3": "Sony Wide", "srgb": "Plain Web"}
-CUBE_INPUTS = {"llog709": "L-Log709", "slog3": "S-Log3 S-Gamut3", "srgb": "sRGB"}
+# lib/lut.ts 里的全部内置色彩空间：id → 短名。每个空间配一个在「# Input:」里写明它的 .cube。
+SPACES_TS = REPO / "mobile" / "src" / "lib" / "lut.ts"
+SPACE_LABELS = dict(re.findall(r"\{ id: '([^']+)', label: '[^']*', shortLabel: '([^']+)'", SPACES_TS.read_text(encoding="utf-8")))
+CUBE_INPUTS = {
+    "srgb": "sRGB",
+    "rec709": "Rec.709",
+    "gamma24": "Gamma 2.4",
+    "flog": "F-Log",
+    "flog2": "F-Log2",
+    "llog": "L-Log",
+    "llog709": "L-Log709",
+    "vlog": "V-Log",
+    "slog3": "S-Log3",
+    "slog3-sgamut3": "S-Log3 S-Gamut3",
+    "applelog": "Apple Log",
+    "linear": "Linear",
+}
+CUBE_TITLES = {key: f"Tile {i:02d}" for i, key in enumerate(CUBE_INPUTS, start=1)}
+LANDSCAPE_VPS = ("844x390", "667x375")
 
 
 @pytest.fixture(scope="module")
@@ -60,7 +72,7 @@ def report(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     dng, jpg = _synth_pair(pair_dir, "R9980301")
     cubes = {}
     for key, declared in CUBE_INPUTS.items():
-        path = tmp / f"{key}.cube"
+        path = tmp / f"s{CUBE_TITLES[key][-2:]}.cube"
         path.write_text(_cube(CUBE_TITLES[key], 0.05).replace("# Input: sRGB", f"# Input: {declared}"), encoding="utf-8")
         cubes[key] = str(path)
     out = tmp / "report.json"
@@ -124,26 +136,35 @@ def test_no_gpu_notice_matches_the_stage_for_raw_only(report: dict[str, Any], na
         assert row["rawBack"] == raw, (row["rawBack"], raw)
 
 
+def _words(label: str) -> list[str]:
+    """短名里不许拆开的词：只能在空格处和全角左括号前折行。"""
+    return [part for piece in label.split(" ") for part in re.split(r"(?=（)", piece) if part]
+
+
 def _breaks_mid_word(lines: list[str], words: list[str]) -> list[str]:
-    joined = [line.replace(" ", "") for line in lines]
-    return [word for word in words if not any(word in line for line in joined)]
+    return [word for word in words if not any(word in line for line in lines)]
 
 
-@pytest.mark.parametrize("vp", ["844x390", "667x375"])
-@pytest.mark.parametrize(
-    ("key", "label", "words"),
-    [("llog709", LONGEST, LONGEST_WORDS), ("slog3", WIDEST, WIDEST_WORDS), ("srgb", "sRGB", ["sRGB"])],
-)
-def test_landscape_space_tile_shows_short_label_without_mid_word_breaks(
-    report: dict[str, Any], vp: str, key: str, label: str, words: list[str]
-) -> None:
-    tile = _scenario(report, "spaceTile")["tiles"][f"{key}-{vp}"]
-    assert tile is not None and tile["layout"] == "phone-landscape", tile
-    assert tile["shown"] == label, f"narrow landscape tile should show only the short label: {tile}"
-    assert "".join(tile["lines"]).replace(" ", "") == label.replace(" ", ""), tile
-    assert _breaks_mid_word(tile["lines"], words) == [], f"label breaks mid-word: {tile['lines']}"
-    assert not tile["clipped"] and tile["inButton"], f"label clipped or outside the tile: {tile}"
-    assert tile["aria"] == f"色彩空间：{label} · 文件已写明", tile["aria"]
+def test_every_built_in_space_has_a_cube() -> None:
+    assert len(SPACE_LABELS) >= 12, SPACE_LABELS
+    assert set(CUBE_INPUTS) == set(SPACE_LABELS)
+
+
+@pytest.mark.parametrize("scenario", ["spaceTile", "spaceTileChromium"])
+@pytest.mark.parametrize("key", sorted(CUBE_INPUTS))
+def test_landscape_space_tile_shows_short_label_without_mid_word_breaks(report: dict[str, Any], scenario: str, key: str) -> None:
+    label = SPACE_LABELS[key]
+    bad = []
+    for vp in LANDSCAPE_VPS:
+        tile = _scenario(report, scenario)["tiles"][f"{key}-{vp}"]
+        assert tile is not None and tile["layout"] == "phone-landscape", tile
+        assert tile["shown"] == label, f"{vp}: narrow landscape tile should show only the short label: {tile}"
+        assert "".join(tile["lines"]).replace(" ", "") == label.replace(" ", ""), tile
+        if _breaks_mid_word(tile["lines"], _words(label)):
+            bad.append(f"{vp}: {tile['lines']}")
+        assert not tile["clipped"] and tile["inButton"], f"{vp}: label clipped or outside the tile: {tile}"
+        assert tile["aria"] == f"色彩空间：{label} · 文件已写明", tile["aria"]
+    assert bad == [], f"{label!r} breaks mid-word: {bad}"
 
 
 def test_portrait_space_menu_keeps_the_full_text(report: dict[str, Any]) -> None:
