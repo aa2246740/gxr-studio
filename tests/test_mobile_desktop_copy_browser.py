@@ -140,7 +140,8 @@ def test_mobile_desktop_copy_computer_has_no_phone_words(tmp_path: Path, monkeyp
     check("双击圆点回到 0" in screens["adjust"]["text"], "computer: adjust hint says 双击")
     check(screens["lut"]["dom"] == "LUT 只存在这台电脑上，直接套在照片上，不写入相机。", "computer: LUT footnote")
     check("在支持 HDR 的屏幕上看" in screens["exportOptions"]["text"], "computer: HDR line")
-    check("下载后把 GXROFF.JPG 拷到存储卡最外层" in screens["offImage"]["text"], "computer: off-image note")
+    off_text = screens["offImage"]["text"]
+    check("改回 GXROFF.JPG" in off_text and off_text.count("拷到存储卡最外层") == 1, "computer: off-image note, copy step said once")
     check("标志只保存在这台电脑上" in screens["logo"]["text"], "computer: logo footnote")
     glyphs = screens["exportOptions"]["glyphs"]
     check(any(g["text"] == "下载" for g in glyphs), f"computer: export options has a 下载 button: {glyphs}")

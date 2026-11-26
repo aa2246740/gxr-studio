@@ -34,7 +34,7 @@ const CUBE_LINE_ERRORS: ReadonlyArray<[RegExp, string]> = [
 const CUBE_ERRORS: ReadonlyArray<[RegExp, string]> = [
   [/^No (closing quotation|escaped character)$/, '引号没有配对，不是有效的 LUT'],
   [/^utf-8 decode error\b/, '不是文本文件，不是有效的 LUT'],
-  [/^(invalid literal for int\(\)|could not convert string to float)\b/, '里有读不懂的数字，不是有效的 LUT'],
+  [/^(invalid literal for int\(|could not convert string to float\b)/, '有读不懂的数字，不是有效的 LUT'],
 ];
 
 /** 导入 .cube 失败时那句话：「第 4 行读不懂，不是有效的 LUT」。认不出的英文退回 LUT_ERRORS.cube_unreadable。 */
@@ -47,7 +47,7 @@ export function cubeErrorText(raw: string): string {
   }
   const hit = CUBE_ERRORS.find(([re]) => re.test(text));
   if (hit) return hit[1];
-  return /[一-鿿]/.test(text) ? text : LUT_ERRORS.cube_unreadable;
+  return /^([A-Z0-9_.]+ ?)?[一-鿿]/.test(text) ? text : LUT_ERRORS.cube_unreadable; // 中文开头（或「LUT 」这类大写缩写后接中文）才算已经是中文
 }
 
 export function ignoredFilesMessage(count: number): string {

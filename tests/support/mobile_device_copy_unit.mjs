@@ -141,7 +141,10 @@ test('cubeErrorText: the parser English becomes Chinese with the line number kep
   assert.equal(cubeErrorText('line 40: unexpected data row'), '第 40 行多出了一行数据');
   assert.equal(cubeErrorText('line 7: something new'), '第 7 行读不懂，不是有效的 LUT');
   assert.equal(cubeErrorText('No closing quotation'), '引号没有配对，不是有效的 LUT');
-  assert.equal(cubeErrorText("could not convert string to float: \"x\""), '里有读不懂的数字，不是有效的 LUT');
+  assert.equal(cubeErrorText("could not convert string to float: \"x\""), '有读不懂的数字，不是有效的 LUT');
+  assert.equal(cubeErrorText("invalid literal for int() with base 10: 'x'"), '有读不懂的数字，不是有效的 LUT');
+  assert.equal(cubeErrorText("invalid literal for int() with base 10: '三'"), '有读不懂的数字，不是有效的 LUT');
+  assert.equal(cubeErrorText('Unknown 中文 token'), LUT_ERRORS.cube_unreadable);
   assert.equal(cubeErrorText('LUT 数据行数与声明不符'), 'LUT 数据行数与声明不符');
   assert.equal(cubeErrorText('Something else'), LUT_ERRORS.cube_unreadable);
 });

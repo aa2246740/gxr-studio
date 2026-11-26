@@ -119,7 +119,7 @@ export function renderStart(host: HTMLElement, api: AppApi): void {
 // 电脑上的三步：插卡、在弹出的窗口里选照片、第一次再选配方文件。没有第二行小字。
 const COMPUTER_STEPS: Array<[string, string]> = [
   ['把存储卡插进电脑的 SD 卡槽，或用读卡器接上', ''],
-  ['点「选照片」，在弹出的窗口里打开存储卡的 DCIM 文件夹，选好 RAW 和 JPG（可以 ⌘A / Ctrl+A 全选）', ''],
+  ['点选照片的按钮（「选照片」或「从存储卡选照片」），在弹出的窗口里打开存储卡的 DCIM 文件夹，选好 RAW 和 JPG（可以 ⌘A / Ctrl+A 全选）', ''],
   ['第一次用时，再选存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN', ''],
 ];
 
