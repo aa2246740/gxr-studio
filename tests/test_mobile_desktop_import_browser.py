@@ -53,6 +53,21 @@ def steps(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     bad_dir.mkdir()
     bad_dat = bad_dir / "GXRCE.DAT"
     bad_dat.write_bytes(os.urandom(4096))
+    same = []
+    for folder, pair in (("cardA", pair_a), ("cardB", pair_b)):
+        (tmp_path / folder).mkdir()
+        target = tmp_path / folder / "R0000001.JPG"
+        shutil.copyfile(pair[1], target)
+        same.append(str(target))
+    card = tmp_path / "card"
+    card.mkdir()
+    card_pairs = [_card250_pair(i) for i in range(1, 12)]
+    card_files = []
+    for pair in card_pairs:
+        for src in pair:
+            target = card / src.name
+            shutil.copyfile(src, target)
+            card_files.append(str(target))
     shots = os.environ.get("GXR_DESKTOP_IMPORT_SHOTS", "")
     if shots:
         Path(shots).mkdir(parents=True, exist_ok=True)
@@ -68,6 +83,12 @@ def steps(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
         "badDat": str(bad_dat),
         "dat": str(dat250),
         "bin": str(fx250),
+        "sameA": same[0],
+        "sameB": same[1],
+        "cardDir": str(card),
+        "cardFiles": card_files,
+        "cardStems": [pair[0].stem for pair in card_pairs],
+        "lostFiles": [str(card / src.name) for src in card_pairs[0]],
         "shotsDir": shots,
         "reportPath": str(report_path),
     }
@@ -180,3 +201,24 @@ def test_mobile_desktop_hidden_inputs_not_tab_stops(steps: dict[str, Any]) -> No
     check(not any(stop.startswith("input:file") for stop in picks["tabOrder"]), f"Tab never reaches a hidden input: {picks['tabOrder']}")
     check(any("#pick-photos" in stop for stop in picks["tabOrder"]), "Tab still reaches the visible buttons")
     check(picks["choosers"] == {"camfiles": True, "photos": True}, f"visible buttons still open the multi-file chooser: {picks['choosers']}")
+
+
+def test_mobile_desktop_same_name_different_photo(steps: dict[str, Any]) -> None:
+    _flows_ok(steps, "sameName")
+    same = steps["sameName"]
+    check(same["afterRepickA"] == 1, f"re-picking the same file does not duplicate: {same['afterRepickA']}")
+    check(same["afterB"] == 2, f"a different photo with the same name is kept as a second photo: {same['afterB']}")
+    check(same["afterRepickB"] == 2, f"re-picking that second file does not duplicate: {same['afterRepickB']}")
+    check(same["drawn"] == 2, f"both photos show a thumbnail: {same['drawn']}")
+
+
+def test_mobile_desktop_one_lost_file_is_not_a_pulled_card(steps: dict[str, Any]) -> None:
+    _flows_ok(steps, "lostFile")
+    lost = steps["lostFile"]
+    one = lost["oneFile"]
+    check(one["cells"] == 11, f"11 photos loaded: {one['cells']}")
+    check(one["modal"] is False, "one deleted file: no 「存储卡被拔出了」 sheet")
+    check(one["gone"] == 0, f"one deleted file: no cell gets the card mark: {one['gone']}")
+    check(one["err"] == [lost["lostId"]], "one deleted file: only that photo is marked 读不了")
+    whole = lost["wholeFolder"]
+    check(whole["modal"] is True and whole["gone"] > 0, f"whole folder gone: the pulled-card sheet as before: {whole}")

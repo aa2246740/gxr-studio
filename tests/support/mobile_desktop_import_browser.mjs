@@ -4,10 +4,10 @@
 // 隐私：stdout 只有一行 JSON；报告里只有计数、布尔和界面上的固定文案，没有照片名、拍摄时间或 EXIF。
 // 截图只拍开始页和提示条本身（manifest.shotsDir 有值才拍）。
 
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { cellOf } from './mobile_ui_export_parity.mjs';
+import { cellOf, exportFromGrid, waitPhase } from './mobile_ui_export_parity.mjs';
 
 const [runtime, url, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -319,6 +319,59 @@ async function tabOrder(browser, step) {
   await ctx.close();
 }
 
+/** 同名不同照片（两张卡）：先后选两张不同的同名 JPG 得到 2 格；再选同一个文件不多出一格。 */
+async function sameName(browser) {
+  const { ctx, page } = await openPage(browser, 'sameName', { viewport: { width: W, height: H } });
+  const step = {};
+  out.steps.sameName = step;
+  const picker = page.locator('input.filepick:not(.calibpick)');
+  await picker.setInputFiles([manifest.sameA]);
+  await waitCells(page, 1);
+  await picker.setInputFiles([manifest.sameA]);
+  await page.waitForTimeout(800);
+  step.afterRepickA = await cellCount(page);
+  await picker.setInputFiles([manifest.sameB]);
+  await waitCells(page, 2).catch(() => {});
+  await page.waitForTimeout(800);
+  step.afterB = await cellCount(page);
+  await picker.setInputFiles([manifest.sameB]);
+  await page.waitForTimeout(800);
+  step.afterRepickB = await cellCount(page);
+  step.drawn = await page.evaluate(() => document.querySelectorAll('.cell canvas[data-drawn]').length);
+  await ctx.close();
+}
+
+const cardFacts = (page) => page.evaluate(() => ({
+  modal: Boolean(document.querySelector('.dlg[data-state="card-removed"]')),
+  gone: document.querySelectorAll('.cell.gone').length,
+  err: [...document.querySelectorAll('.cell.err')].map((c) => c.dataset.id),
+  cells: document.querySelectorAll('.cell').length,
+}));
+
+/** 导出时一个文件被删了：只标这一张读不了，不弹「存储卡被拔出了」；整个文件夹都没了才按拔卡处理。 */
+async function lostFile(browser) {
+  const { ctx, page } = await openPage(browser, 'lostFile', { viewport: { width: W, height: H } });
+  const step = {};
+  out.steps.lostFile = step;
+  await page.locator('input.filepick:not(.calibpick)').setInputFiles(manifest.cardFiles);
+  await waitCells(page, manifest.cardStems.length);
+  for (const file of manifest.lostFiles) rmSync(file);
+  const [lost, a, b, c, d] = manifest.cardStems;
+  await exportFromGrid(page, [lost, a, b], '小', '低');
+  await waitPhase(page, ['ready', 'stopped', 'held'], 600_000);
+  await page.waitForTimeout(1500);
+  step.oneFile = await cardFacts(page);
+  step.lostId = lost.toLowerCase();
+  if (await page.locator('.ms[data-state="unreadable"]').count()) await page.locator('.scrim').last().click({ position: { x: 5, y: 5 } });
+  await page.evaluate(() => window.__devExport?.flow?.clear());
+  rmSync(manifest.cardDir, { recursive: true, force: true });
+  await exportFromGrid(page, [c, d], '小', '低');
+  await page.waitForFunction(() => Boolean(document.querySelector('.dlg[data-state="card-removed"]')) || ['ready', 'stopped'].includes(document.querySelector('.pdock')?.dataset.phase), null, { timeout: 600_000 });
+  await page.waitForTimeout(1500);
+  step.wholeFolder = await cardFacts(page);
+  await ctx.close();
+}
+
 function webkitExecutable(webkit) {
   const direct = webkit.executablePath();
   if (direct && existsSync(direct)) return direct;
@@ -367,6 +420,8 @@ try {
     };
     await run('drop', () => dropFlow(chromium));
     await run('unload', () => unloadFlow(chromium));
+    await run('sameName', () => sameName(chromium));
+    await run('lostFile', () => lostFile(chromium));
     out.steps.picks = {};
     for (const fn of [unusedPicks, binOnlyStart, datOnly, binOnlyGrid, tabOrder]) await run(fn.name, () => fn(chromium, out.steps.picks));
   } finally {
