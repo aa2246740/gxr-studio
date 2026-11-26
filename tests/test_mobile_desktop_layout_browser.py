@@ -190,3 +190,37 @@ def test_mobile_desktop_short_windows(tmp_path: Path) -> None:
     check(got == CLASSIFY, f"computer layouts: {got}")
     touch = groups["phone"]["layouts"]
     check(touch == TOUCH_CLASSIFY, f"touch layouts unchanged: {touch}")
+
+
+HOVER_POINTER = ("tab", "download", "more", "back", "recipeCard", "stripSwitch", "filmCell", "chip")
+RESIZE_CURSORS = {"cornerTL": "nwse-resize", "cornerTR": "nesw-resize", "edgeT": "ns-resize", "edgeL": "ew-resize", "ruler": "ew-resize"}
+
+
+def test_mobile_desktop_hover_and_cursors(tmp_path: Path) -> None:
+    """L5：电脑上按钮、配方卡、胶囊和胶片条有手形光标和悬停提示，裁剪手柄和拉直尺有方向光标；iPad（有触摸）不变。"""
+    groups = _run(tmp_path, ["hover"])["hover"]
+    for engine in ("computer", "webkit"):
+        pc = groups[engine]
+        if pc.get("skipped"):
+            continue
+        check(pc["errors"] == [], f"{engine}: no page errors: {pc['errors']}")
+        check(pc["media"] == {"hover": True, "fine": True}, f"{engine} context hovers with a fine pointer: {pc['media']}")
+        for name in HOVER_POINTER:
+            row = pc[name]
+            check(row is not None, f"{engine} {name}: target is visible")
+            check(row["cursor"] == "pointer", f"{engine} {name}: pointer cursor ({row['cursor']})")
+            check(row["hit"] == "self", f"{engine} {name}: the mouse is over it ({row['hit']})")
+            check(row["changed"] is True, f"{engine} {name}: hover changes how it looks")
+        for name, want in RESIZE_CURSORS.items():
+            row = pc[name]
+            check(row is not None and row["cursor"] == want, f"{engine} {name}: {want} cursor ({row})")
+    pc = groups["computer"]
+    pad = groups["ipad"]
+    check(pad["errors"] == [], f"ipad: no page errors: {pad['errors']}")
+    check(pad["media"] == {"hover": False, "fine": False}, f"touch context has no hover and a coarse pointer: {pad['media']}")
+    for name in (*HOVER_POINTER, *RESIZE_CURSORS):
+        row = pad[name]
+        check(row is not None, f"ipad {name}: target is visible")
+        check(row["cursor"] in ("auto", "default"), f"ipad {name}: cursor unchanged ({row['cursor']})")
+        check(row["changed"] is False, f"ipad {name}: no hover style on touch")
+    check(pc["gridCellCursor"] == pad["gridCellCursor"], "grid cells are left to desktop-keys (same cursor as touch)")

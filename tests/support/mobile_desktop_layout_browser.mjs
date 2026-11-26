@@ -347,6 +347,69 @@ async function classifyGroup(browser, url, kind, sizes) {
   return { layouts: out, errors };
 }
 
+/** L5：悬停前后比计算样式（底色、颜色、滤镜、阴影、透明度）和光标。sub 是真正变亮的子节点（配方卡的缩略图）。 */
+const HOVER_TARGETS = {
+  recipe: [
+    ['tab', '.editor .toolbar .tbtn[data-tool="adjust"]'],
+    ['download', '.editor .toolbar [data-act="export"]'],
+    ['more', '.editor .nav [data-act="editor-more"]'],
+    ['back', '.editor .nav .nav-back'],
+    ['recipeCard', '.editor .ipad-strip-host .recipe-strip-wrap .rc.on + .rc', '.th'],
+    ['stripSwitch', '.editor .ipad-recipe-strip .vseg-btn:not(.on)'],
+    ['filmCell', '.editor .ipad-filmstrip .cell:not(.cur)'],
+  ],
+  adjust: [['chip', '.editor .panel.adjust .adjust-row .chip:not(.on)']],
+  crop: [
+    ['cornerTL', '.editor .crop-overlay .ch.corner.tl'],
+    ['cornerTR', '.editor .crop-overlay .ch.corner.tr'],
+    ['edgeT', '.editor .crop-overlay .ch.edge.t'],
+    ['edgeL', '.editor .crop-overlay .ch.edge.l'],
+    ['ruler', '.editor .ruler'],
+  ],
+};
+
+async function hoverStyle(page, sel, sub) {
+  const loc = page.locator(sel).first();
+  if (!(await loc.isVisible().catch(() => false))) return null;
+  const read = () =>
+    loc.evaluate((node, subSel) => {
+      const target = (subSel && node.querySelector(subSel)) || node;
+      const cs = getComputedStyle(target);
+      return { cursor: getComputedStyle(node).cursor, sig: [cs.backgroundColor, cs.color, cs.filter, cs.boxShadow, cs.opacity].join('|') };
+    }, sub ?? null);
+  await page.mouse.move(2, Math.round((await page.evaluate(() => innerHeight)) / 2));
+  await settle(page, 80);
+  const before = await read();
+  const box = await loc.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await settle(page, 80);
+  const after = await read();
+  const hit = await loc.evaluate((node, [x, y]) => {
+    const top = document.elementFromPoint(x, y);
+    return top === node || node.contains(top) ? 'self' : `${top?.tagName.toLowerCase()}.${String(top?.className || '').split(' ')[0]}`;
+  }, [box.x + box.width / 2, box.y + box.height / 2]);
+  await page.mouse.move(2, Math.round((await page.evaluate(() => innerHeight)) / 2));
+  return { cursor: after.cursor, restCursor: before.cursor, changed: before.sig !== after.sig, hit, cls: await loc.getAttribute('class') };
+}
+
+async function hoverGroup(browser, url, kind, vp, engine = 'metal') {
+  const { ctx, page, errors } = await newPage(browser, engine, kind, vp);
+  const out = {};
+  try {
+    await start(page, url);
+    out.media = await page.evaluate(() => ({ hover: matchMedia('(hover: hover)').matches, fine: matchMedia('(pointer: fine)').matches }));
+    out.gridCellCursor = await page.locator('.gscroll .cell').first().evaluate((n) => getComputedStyle(n).cursor);
+    await open(page, engine);
+    for (const [toolId, targets] of Object.entries(HOVER_TARGETS)) {
+      await tool(page, toolId);
+      for (const [name, sel, sub] of targets) out[name] = await hoverStyle(page, sel, sub);
+    }
+  } finally {
+    await ctx.close();
+  }
+  return { ...out, errors };
+}
+
 async function withBrowser(engine, run) {
   if (engine === 'webkit') {
     const exe = resolveWebKitExecutable();
@@ -382,6 +445,13 @@ const GROUPS = {
       ...(await shortGroup(browser, url, manifest.shortSizes)),
       computer: await classifyGroup(browser, url, 'computer', manifest.classifySizes),
       phone: await classifyGroup(browser, url, 'phone', manifest.classifySizes),
+    }));
+  },
+  async hover(url) {
+    return withBrowser('metal', async (browser) => ({
+      computer: await hoverGroup(browser, url, 'computer', { width: 1440, height: 900 }),
+      ipad: await hoverGroup(browser, url, 'ipad', { width: 1180, height: 820 }),
+      webkit: await withBrowser('webkit', (wk) => hoverGroup(wk, url, 'computer', { width: 1440, height: 900 }, 'webkit')),
     }));
   },
   async fitTouch(url) {
