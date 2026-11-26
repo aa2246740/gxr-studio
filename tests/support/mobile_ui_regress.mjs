@@ -219,8 +219,8 @@ const CASES = {
       const queued = await page.evaluate(() => window.__uploads.length);
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
-      // 卡拔了：b 的整份读取回 gone。
-      await page.evaluate((name) => window.__rewrite('full', { ok: false, gone: true, bytes: undefined }, name, true), bName);
+      // 卡拔了：之后每个文件的整份读取都回 gone（只有一个文件读不了算那一张没了，不算拔卡，见 card_probe.ts）。
+      await page.evaluate(() => window.__rewrite('full', { ok: false, gone: true, bytes: undefined }, undefined, true));
       await page.locator(`.cell[data-id="${b}"]`).click();
       await page.waitForSelector('[data-state="card-removed"]', { timeout: 60_000 });
       const before = { dialog: await page.locator('[data-state="card-removed"]').innerText(), subtitle: await page.locator('.nav small').innerText() };
@@ -645,8 +645,9 @@ const CASES = {
       const before = await page.evaluate(() => window.__gxrEngine.stats());
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
-      // 卡拔了：之后对这个文件的整份读取都报 NotReadableError 那一类（Worker 回 gone）。
-      await page.evaluate((name) => window.__rewrite('full', { ok: false, gone: true, bytes: undefined }, name, true), bName);
+      // 卡拔了：之后每个文件的整份读取都报 NotReadableError 那一类（Worker 回 gone）。只有一个文件读不了算那一张没了，
+      // 不算拔卡（card_probe.ts 先试读别的照片）。
+      await page.evaluate(() => window.__rewrite('full', { ok: false, gone: true, bytes: undefined }, undefined, true));
       await page.evaluate(() => { window.__fullReads = []; });
       await page.locator(`.cell[data-id="${b}"]`).click();
       await page.waitForSelector('[data-state="card-removed"]', { timeout: 60_000 });

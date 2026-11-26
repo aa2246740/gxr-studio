@@ -9,7 +9,6 @@ import './frame.css';
 import './ipad.css';
 import './shell.css';
 import type { Engine, RawLayout, Scene } from '../../../frontend/src/index';
-import { zeroGeometry } from '../lib/crop';
 import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
@@ -28,8 +27,12 @@ import type { GridView } from './grid';
 import { dropGpuState, EngineSlot } from './gpu_loss';
 import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
-import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
-import { DEFAULT_FRAME, DEFAULT_STAMP } from '../lib/frame_spec';
+import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, type AppApi, type FullRead, type Photo } from './model';
+import { newPhoto } from './new_photo';
+import { othersReadable } from './card_probe';
+import { unusedNote } from './import_note';
+import { showToast } from './toast';
+import { guardUnload } from './unload_guard';
 import { dropReply, ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
@@ -460,7 +463,21 @@ class App implements AppApi {
   markGone(id: string, version: number): void {
     if (!this.current(id, version)) return;
     const photo = this.byId.get(id);
-    if (photo) this.failCard(photo);
+    if (photo) this.lostFile(photo, version, false);
+  }
+
+  /** 一个文件读不了：别的照片还读得到就只标这一张读不了（`sheet`：读缩略图时照坏文件那样弹提示；导出失败只标格子），都读不到才按拔卡处理。 */
+  private lostFile(photo: Photo, version: number, sheet: boolean): void {
+    if (this.cardIsOut) return this.failCard(photo);
+    const session = this.generation;
+    othersReadable(this.byId.values(), photo, (file) => this.reader.read(file).then((reply) => reply.ok)).then((ok) => {
+      if (session !== this.generation || !this.current(photo.id, version, photo)) return;
+      if (!ok) return this.failCard(photo);
+      if (this.screen === 'editor' && this.editing === photo) return this.markBad(photo.id, version);
+      photo.status = 'bad';
+      if (sheet) this.afterRead(photo);
+      else if (this.screen === 'grid') this.grid?.update(photo.id);
+    }, () => undefined);
   }
 
   watch(kind: 'scroll' | 'drag', on: boolean): void {
@@ -531,6 +548,7 @@ class App implements AppApi {
 
   private syncDock(): void {
     this.editorMod?.syncExportDock(this.shell);
+    guardUnload(this.byId.size > 0 || this.exporter?.current()?.phase === 'running'); // 电脑上刷新、关页前先问一声
   }
 
   /**
@@ -584,6 +602,8 @@ class App implements AppApi {
   private ingest(files: File[]): void {
     const classified = classify(files.map((file) => ({ name: file.name, lastModified: file.lastModified })));
     this.ignoredCount += classified.ignored;
+    const note = unusedNote(classified); // 不是相机照片的文件说一句；一个都没用上也说
+    if (note) showToast(this.shell, note, 5000);
     this.recipeBook.ingestCamFiles(
       classified.datIndex !== null ? files[classified.datIndex] : null,
       classified.datCount,
@@ -594,38 +614,7 @@ class App implements AppApi {
       const id = item.stem.toLowerCase();
       let photo = this.byId.get(id);
       if (!photo) {
-        photo = {
-          id,
-          stem: item.stem,
-          version: 0,
-          dng: null,
-          jpg: null,
-          diptych: false,
-          lastModified: item.lastModified,
-          captureMs: null,
-          status: 'pending',
-          gone: false,
-          cached: null,
-          checked: null,
-          bitmap: null,
-          neutral: null,
-          knobs: zeroKnobs(),
-          curve: null,
-          rev: 0,
-          jpgMeta: null,
-          dngMeta: null,
-          border: { ...DEFAULT_FRAME },
-          stamp: { ...DEFAULT_STAMP },
-          frameMeta: null,
-          frame: null,
-          geometry: zeroGeometry(),
-          crop: null,
-          choice: null,
-          levels: new Map(),
-          memory: new Map(),
-          lut: null,
-          looks: new Map(),
-        };
+        photo = newPhoto(id, item.stem, item.lastModified);
         this.byId.set(id, photo);
       }
       if (item.jpgIndex !== null) {
@@ -689,7 +678,7 @@ class App implements AppApi {
       }
     }
     if (!reply.ok && reply.gone) {
-      this.failCard(photo);
+      this.lostFile(photo, version, true);
       return;
     }
     if (!reply.ok) {
