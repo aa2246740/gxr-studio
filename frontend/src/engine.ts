@@ -6,7 +6,7 @@ import geoWgsl from './shaders/geo.wgsl?raw';
 import binWgsl from './shaders/bin.wgsl?raw';
 import presentWgsl from './shaders/present.wgsl?raw';
 import histWgsl from './shaders/hist.wgsl?raw';
-import { type GainMeta, HdrOutput, type HdrOutputMode, f16ToF32, presentMap } from './hdr_output';
+import { type GainMeta, HdrOutput, type HdrOutputMode, f16ToF32, presentMap, srgbDecode } from './hdr_output';
 import {
   type PairInfo,
   type PairSourceConfig,
@@ -1006,7 +1006,7 @@ export class Engine {
   }
 
   /**
-   * 把一张合成的 SDR 图和增益网格画进离屏 rgba16float，读回线性 RGBA。
+   * 把一张合成的 SDR 图和增益网格画进离屏 rgba16float（和 HDR 画布同一条管道），读回后按画布的 sRGB 解码成线性 RGBA。
    * 不碰画布，也不改 SDR 的成片纹理。给着色器公式对拍用。
    */
   async renderHdrSample(input: {
@@ -1059,9 +1059,9 @@ export class Engine {
       for (let x = 0; x < input.width; x++) {
         const i = y * (bpr / 2) + x * 4;
         const o = (y * input.width + x) * 4;
-        rgba[o] = f16ToF32(raw[i] ?? 0);
-        rgba[o + 1] = f16ToF32(raw[i + 1] ?? 0);
-        rgba[o + 2] = f16ToF32(raw[i + 2] ?? 0);
+        rgba[o] = srgbDecode(f16ToF32(raw[i] ?? 0));
+        rgba[o + 1] = srgbDecode(f16ToF32(raw[i + 1] ?? 0));
+        rgba[o + 2] = srgbDecode(f16ToF32(raw[i + 2] ?? 0));
         rgba[o + 3] = f16ToF32(raw[i + 3] ?? 0);
       }
     }

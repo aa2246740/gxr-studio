@@ -159,7 +159,16 @@ export class Book {
     return this.generation;
   }
 
+  /**
+   * 换了显卡引擎（设备丢了是 null，之后可能重建）：旧引擎上的固定键全没了，记录跟着清掉。
+   * 做好的表还在 JS 里（done），下次用到时 gpuKey 再装进新的引擎。
+   */
   attach(engine: Engine | null): void {
+    if (engine !== this.engine) {
+      this.slotOf.clear();
+      this.ownerOf.clear();
+      this.slotUse.length = 0;
+    }
     this.engine = engine;
   }
 
