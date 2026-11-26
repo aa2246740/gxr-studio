@@ -58,6 +58,22 @@ interface Slot {
   sub: HTMLElement;
 }
 
+/**
+ * 色彩空间短名拆成一个个不折行的词（ipad.css 在手机横屏给 `.lut-space-w` 设 nowrap）：空格分开的每一段，以及全角左括号开头的一段。
+ * 只在词之间（空格处、括号前的 <wbr>）折行。Chromium 会在「S-Log3」的连字符处折行，WebKit 会把「（」挂在行尾。
+ */
+function spaceWords(label: string): Node[] {
+  const out: Node[] = [];
+  label.split(' ').forEach((piece, i) => {
+    if (i) out.push(document.createTextNode(' '));
+    piece.split(/(?=（)/).forEach((part, j) => {
+      if (j) out.push(document.createElement('wbr'));
+      out.push(el('span', 'lut-space-w', part));
+    });
+  });
+  return out;
+}
+
 export class LutView {
   private token = 0;
   private thumbToken = 0;
@@ -237,13 +253,13 @@ export class LutView {
     return true;
   }
 
-  private spaceButtonLabel(record: LutRecord | undefined): { text: string; warn: boolean } {
-    if (!record) return { text: '色彩空间', warn: false };
+  private spaceButtonLabel(record: LutRecord | undefined): { text: string; warn: boolean; base: string; tag: string } {
+    if (!record) return { text: '色彩空间', warn: false, base: '色彩空间', tag: '' };
     const choice = computeInputChoice(record);
-    if (!record.input_space) return { text: '选色彩空间', warn: true };
+    if (!record.input_space) return { text: '选色彩空间', warn: true, base: '选色彩空间', tag: '' };
     const tag = choice.default_input_source === 'required' ? '' : SOURCE_TAGS[choice.default_input_source];
     const base = spaceShortLabel(record.input_space);
-    return { text: tag ? `${base} · ${tag}` : base, warn: false };
+    return { text: tag ? `${base} · ${tag}` : base, warn: false, base, tag };
   }
 
   private makeModeSwitch(): HTMLElement {
@@ -355,7 +371,9 @@ export class LutView {
 
     this.pin.hidden = this.ipadMode;
     const sp = this.spaceButtonLabel(selectedRec);
-    this.spaceTxt.textContent = sp.text;
+    // 来源标记单独一段：手机横屏的窄瓷砖只显示短名（ipad.css 藏掉这段），全文仍在 aria-label 和色彩空间面板里。
+    this.spaceTxt.replaceChildren(...spaceWords(sp.base));
+    if (sp.tag) this.spaceTxt.append(el('span', 'lut-space-src', ` · ${sp.tag}`));
     this.spaceBtn.classList.toggle('warn', sp.warn);
     this.spaceBtn.disabled = !selectedRec;
     this.spaceBtn.classList.toggle('collapsed', !selectedRec);
