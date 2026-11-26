@@ -146,7 +146,7 @@ async function shot(page, name) {
   if (!manifest.shotsDir) return;
   fs.mkdirSync(manifest.shotsDir, { recursive: true });
   // 隐私：网格日期头、胶片条时间段和边框上的拍摄信息都盖掉。
-  const mask = [page.locator('.gscroll .gh'), page.locator('.ipad-filmstrip .fgh'), page.locator('.stage .pv-deco')];
+  const mask = ['.gscroll .gh', '.gscroll .day', '.screen:not(.editor) > .nav small', '.ipad-filmstrip .fgh', '.stage .pv-deco'].map((q) => page.locator(q));
   await page.screenshot({ path: path.join(manifest.shotsDir, `${manifest.shotsPrefix || 'shot'}-${name}.png`), animations: 'disabled', mask });
 }
 

@@ -390,7 +390,8 @@ const CASES = {
 
   /** 曲线页能调，不再是「这项下一步做」。 */
   async 'later-tabs'() {
-    const { page, context, errors } = await makePage({ gpu: false });
+    // 曲线没有显卡预览时和「调整」一起停用（desktop-layout L7 / P2-9），所以这一项要在有显卡（SwiftShader）的页面里开。
+    const { page, context, errors } = await makePage({ gpu: true });
     try {
       await pick(page, [manifest.jpgs[0]]);
       await page.locator('.cell').first().click();
@@ -812,7 +813,8 @@ const CASES = {
 
   /** 网格「已编辑」角标覆盖全部编辑组（曲线、裁剪、拉直、边框、印记、显示 LUT），撤回/重置后消失。 */
   async 'grid-edited-badges'() {
-    const { page, context, errors } = await makePage({ gpu: false });
+    // 曲线没有显卡预览时和「调整」一起停用（desktop-layout L7 / P2-9），所以这一项要在有显卡（SwiftShader）的页面里开。
+    const { page, context, errors } = await makePage({ gpu: true });
     try {
       await pick(page, [manifest.jpg]);
       const badgeInGrid = async () => {
