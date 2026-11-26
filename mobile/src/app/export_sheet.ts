@@ -29,6 +29,8 @@ export interface ExportSheetData {
   failures: readonly Failure[];
   savedCount: number;
   failurePosition: (id: string) => number | null;
+  /** 失败以后这张照片已经重新选过（重试会用新的 File）。 */
+  replaced?: (id: string) => boolean;
   chunk: number;
   totalChunks: number;
   noShare: boolean;
@@ -183,7 +185,8 @@ export class ExportDetailsSheet {
       }
       const acts = el('div', 'es-fail-acts');
       // 文件读不了：旧的 File 句柄已经失效，重试只会再失败一次。按钮改成「重新选这张」，打开选照片，选好以后接着重试（F11）。
-      const reads = failures.filter((f) => f.kind === 'read').length;
+      // 已经重新选过的那张照常「重试」。
+      const reads = failures.filter((f) => f.kind === 'read' && !data.replaced?.(f.id)).length;
       const others = failures.length - reads;
       if (reads) {
         const repick = button('fbtn fill-ctl', reads === 1 ? '重新选这张' : `重新选这 ${reads} 张`);

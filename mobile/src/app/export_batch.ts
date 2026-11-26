@@ -224,6 +224,16 @@ export class ExportBatch {
     this.kick();
   }
 
+  /** 这一张失败以后照片又选过一次（版本变了）：重试会用新的 File。 */
+  fileReplaced(id: string): boolean {
+    const item = this.item(id);
+    if (!item) return false;
+    const now = this.host.photo(batchPhotoId(item));
+    if (now && now.version !== item.version) return true;
+    const src = item.sourcePhotoId ? this.host.photo(item.sourcePhotoId) : null;
+    return Boolean(src && src.version !== item.sourceVersion);
+  }
+
   /** 「停止」：马上关掉 Worker，做好的留着，没做的不算失败。 */
   stop(): void {
     if (this.phase !== 'running') return;
