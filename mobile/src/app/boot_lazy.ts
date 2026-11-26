@@ -4,6 +4,7 @@
 
 import { Engine } from '../../../frontend/src/index';
 import { neutralBake, NEUTRAL_BAKE_KEY } from '../lib/neutral';
+import { bindFileDrop } from './file_drop';
 
 export type ChunkKey = 'grid' | 'editor';
 
@@ -169,6 +170,8 @@ export function bindPickers(dom: BootDom, app: { take(files: File[]): void; take
     dom.lutPicker.value = '';
     if (files.length) app.takeLuts(files);
   });
+  // 拖进窗口的文件和文件夹：和「选照片」走同一个 take。
+  bindFileDrop(dom.shell, (files) => app.take(files));
 }
 
 /** 显卡引擎（WebGPU）。建不起来就是 null，编辑器只显示相机 JPG；出错交给 `report`。 */
