@@ -430,7 +430,7 @@ try {
   await page.locator('.cell').first().tap();
   await page.waitForSelector('.editor', { timeout: 30_000 });
   const askLater = page.locator('.ask-sheet button', { hasText: '先不用' });
-  if (await askLater.isVisible({ timeout: 2_000 }).catch(() => false)) {
+  if (await askLater.waitFor({ state: 'visible', timeout: 2_000 }).then(() => true, () => false)) {
     await askLater.tap();
     await page.waitForFunction(() => !document.querySelector('.ask-sheet'), null, { timeout: 5_000 });
   }

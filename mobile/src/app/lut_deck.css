@@ -241,7 +241,7 @@
   white-space: normal;
   overflow-wrap: break-word;
 }
-/* 空库且导入报错条显示时（top:2px, height:16px），在下方 66pt 剩余高度中居中，320pt 竖屏下与报错条至少留出 7pt 间距。 */
+/* 空库且导入报错条显示时（top:2px, height:16px），说明下移居中；适用于所有手机竖屏宽度，320pt 下与报错条至少留出 7pt 间距。 */
 .app[data-layout="phone-portrait"] .panel.lut:has(> .lut-err:not([hidden])) > .lut-foot,
 .app:not([data-layout]) .panel.lut:has(> .lut-err:not([hidden])) > .lut-foot {
   margin-top: 18px;
