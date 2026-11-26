@@ -28,7 +28,7 @@ import { dropGpuState, EngineSlot } from './gpu_loss';
 import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
 import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, type AppApi, type FullRead, type Photo } from './model';
-import { newPhoto } from './new_photo';
+import { newPhoto, photoId } from './new_photo';
 import { othersReadable } from './card_probe';
 import { unusedNote } from './import_note';
 import { showToast } from './toast';
@@ -610,7 +610,7 @@ class App implements AppApi {
     );
     const generation = this.generation;
     for (const item of classified.photos) {
-      const id = item.stem.toLowerCase();
+      const id = photoId(this.byId, item.stem, item.jpgIndex !== null ? files[item.jpgIndex] : null, item.dngIndex !== null ? files[item.dngIndex] : null);
       let photo = this.byId.get(id);
       if (!photo) {
         photo = newPhoto(id, item.stem, item.lastModified);

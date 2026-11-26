@@ -38,3 +38,21 @@ export function newPhoto(id: string, stem: string, lastModified: number): Photo 
     looks: new Map(),
   };
 }
+
+function sameFile(had: File | null, incoming: File | null): boolean {
+  return !had || !incoming || (had.size === incoming.size && had.lastModified === incoming.lastModified);
+}
+
+/**
+ * 这次选进来的一张（同一次里按主文件名配好的 JPG / DNG）该落在哪个 id 上（2026-11-26）。
+ * 和已有的那张同名、同类文件的大小和修改时间也一样（或那张还没有这一类文件）：是同一张，重新选不会多出一张。
+ * 同名但文件不一样（两张卡上的同名照片）：是另一张，id 后面加「~2」「~3」，两张都留着。
+ */
+export function photoId(byId: ReadonlyMap<string, Photo>, stem: string, jpg: File | null, dng: File | null): string {
+  const base = stem.toLowerCase();
+  for (let n = 1; ; n += 1) {
+    const id = n === 1 ? base : `${base}~${n}`;
+    const had = byId.get(id);
+    if (!had || (sameFile(had.jpg, jpg) && sameFile(had.dng, dng))) return id;
+  }
+}
