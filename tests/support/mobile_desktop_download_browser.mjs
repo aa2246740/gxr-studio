@@ -181,15 +181,25 @@ async function computer(browser) {
   step.backupText = (await page.locator('.links[data-state="download-backup"] p').count())
     ? (await page.locator('.links[data-state="download-backup"] p').first().innerText()).trim()
     : '';
+  const backupOpen = (await page.locator('.ms[data-state="download-backup"]').count()) > 0;
   await page.keyboard.press('Escape');
-  step.backupClosedByEsc = (await page.locator('[data-state="download-backup"]').count()) === 0;
+  step.backupClosedByEsc = backupOpen && (await page.locator('[data-state="download-backup"]').count()) === 0;
 
   // 一批停在内存上限（held）：点一次「下载」就放掉这一批、接着做排着的那张，不用再点「关闭」。
   await page.evaluate((n) => { window.__devExport.holdAfter = n; }, manifest.stems.length);
   await exportFromGrid(page, manifest.heldStems, '小', '低');
-  await waitPhase(page, ['held'], 300_000);
+  // 没有 holdAfter 的代码（比如改动之前）根本不会停在 held：看到「做好了」或者等不到就记下看到的阶段，不在这里报错，
+  // 让 Python 先按就绪条和兜底链接判，held 的几条排在后面。
+  await waitPhase(page, ['held', 'ready', 'stopped'], 300_000).catch(() => {});
+  const heldPhase = await page.locator('.pdock').getAttribute('data-phase').catch(() => null);
+  if (heldPhase !== 'held') {
+    step.heldReady = { text: '', phase: heldPhase ?? 'missing' };
+    step.share = await shareFacts(page);
+    await ctx.close();
+    return;
+  }
   const held = await readyButton(page);
-  step.heldReady = { text: held.text, phase: await page.locator('.pdock').getAttribute('data-phase') };
+  step.heldReady = { text: held.text, phase: heldPhase };
   const beforeHeld = downloads.length;
   await held.btn.click();
   step.heldNames = await saveDownloads(downloads, beforeHeld, manifest.stems.length, 'computerH-');

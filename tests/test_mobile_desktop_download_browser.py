@@ -132,7 +132,7 @@ def test_mobile_desktop_download(tmp_path: Path) -> None:
     check(pc["backupText"].startswith("已经开始下载"), "computer: backup links say the downloads started")
     check(pc["backupClosedByEsc"] is True, "computer: Esc closes the backup links")
     check(pc["heldReady"]["phase"] == "held" and pc["heldReady"]["text"].endswith("2 张做好了 · 下载"), "computer: batch held at the cap")
-    check(len(pc["heldNames"]) == 2, "computer: one tap downloads both held files")
+    check(len(pc.get("heldNames", [])) == 2, "computer: one tap downloads both held files")
     check(pc["phaseAfterHeldTap"] in ("running", "ready"), "computer: the held batch resumes in the same tap")
     check(sorted(pc["backupDuringResume"]) == sorted(pc["heldNames"]), "computer: backup still lists the held files while it resumes")
     check(pc["restReady"]["text"].endswith("做好了 · 下载"), "computer: the queued photo finished without a second click")
