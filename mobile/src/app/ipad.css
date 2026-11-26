@@ -159,6 +159,21 @@
 .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip .cell { width: 96px; height: 64px; }
 .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip .cell.cv-auto { contain-intrinsic-size: 96px 64px; }
 
+/* ---------- 电脑上又矮又宽的窗口（高 590–699，只有电脑会在这个高度分到 iPad 横屏，见 layout.ts）：下面两条和直方图变矮，
+   面板和照片多留点高度（desktop-layout L2）。有触摸的设备短边不到 700 就是手机版式，碰不到这里。 ---------- */
+@media (max-height: 699px) {
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .screen.editor { grid-template-rows: 44px minmax(0, 1fr) 71px 180px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-recipe-strip { height: 104px; padding: 8px 14px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-strip-host .rc { width: 96px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-strip-host .rc .th { height: 56px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-strip-host .rc .nm { margin-top: 4px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip { padding-top: 8px; padding-bottom: 8px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip .cell { width: 72px; height: 48px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip .cell.cv-auto { contain-intrinsic-size: 72px 48px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-hist-area { padding-bottom: 8px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-hist-slot .hist { height: 56px; }
+}
+
 /* ---------- iPad 竖屏（13" 1024×1366）：照片铺满宽，下面配方卡、胶片条、工具带子（左右两半）、底栏 ---------- */
 .app[data-layout="ipad-portrait"] .screen.editor { display: flex; flex-direction: column; }
 .app[data-layout="ipad-portrait"] .screen.editor > .nav { order: 1; }

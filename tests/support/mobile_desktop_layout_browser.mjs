@@ -212,6 +212,141 @@ async function fitGroup(browser, url, engine, kind, sizes) {
   return { rows, errors, adapter };
 }
 
+/** 看得见、但被不能滚动的祖先或视口裁掉的控件（能滚到的不算）；页面本身不该有滚动。只写类名和可见文字，不写照片信息。 */
+function measureClip(page) {
+  return page.evaluate(() => {
+    const vw = innerWidth;
+    const vh = innerHeight;
+    const vis = (n) => {
+      const r = n.getBoundingClientRect();
+      const cs = getComputedStyle(n);
+      return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && Number(cs.opacity) > 0.05 && !n.closest('.sr-only, [hidden]');
+    };
+    const desc = (n) => `${n.tagName.toLowerCase()}.${String(n.className || '').trim().split(/\s+/).slice(0, 2).join('.')}${n.dataset.tool ? `[${n.dataset.tool}]` : ''}`;
+    const controls = [...document.querySelectorAll('.app button, .app input:not([type="file"]), .app [role="slider"], .app [role="tab"], .app [tabindex="0"]')].filter(vis);
+    const clipped = [];
+    for (const n of controls) {
+      const r = n.getBoundingClientRect();
+      let box = { l: 0, t: 0, r: vw, b: vh };
+      let scrollX = false;
+      let scrollY = false;
+      for (let p = n.parentElement; p && p !== document.body; p = p.parentElement) {
+        const cs = getComputedStyle(p);
+        const pr = p.getBoundingClientRect();
+        if (/(auto|scroll)/.test(cs.overflowX)) scrollX = true;
+        else if (cs.overflowX !== 'visible' && !scrollX) box = { ...box, l: Math.max(box.l, pr.left), r: Math.min(box.r, pr.right) };
+        if (/(auto|scroll)/.test(cs.overflowY)) scrollY = true;
+        else if (cs.overflowY !== 'visible' && !scrollY) box = { ...box, t: Math.max(box.t, pr.top), b: Math.min(box.b, pr.bottom) };
+      }
+      const outX = !scrollX && (r.left < box.l - 1 || r.right > box.r + 1);
+      const outY = !scrollY && (r.top < box.t - 1 || r.bottom > box.b + 1);
+      if (outX || outY) clipped.push(`${desc(n)} ${(n.getAttribute('aria-label') || n.textContent || '').trim().slice(0, 12)}`);
+    }
+    const strip = (sel) => {
+      const n = document.querySelector(sel);
+      if (!n || !vis(n)) return null;
+      const r = n.getBoundingClientRect();
+      return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), inside: r.left >= -1 && r.top >= -1 && r.right <= vw + 1 && r.bottom <= vh + 1 };
+    };
+    const film = document.querySelector('.editor .ipad-filmstrip');
+    const filmCells = film && vis(film) ? [...film.querySelectorAll('.cell')].filter(vis).map((c) => Math.round(c.getBoundingClientRect().height)) : [];
+    return {
+      layout: document.querySelector('.app')?.dataset.layout ?? '',
+      screen: document.querySelector('.app')?.dataset.screen ?? '',
+      pageScroll: document.documentElement.scrollWidth > vw + 1 || document.documentElement.scrollHeight > vh + 1,
+      clipped: clipped.slice(0, 12),
+      recipeStrip: strip('.editor .ipad-recipe-strip'),
+      filmstrip: strip('.editor .ipad-filmstrip'),
+      filmCells,
+      // 侧边面板不用滚动就能看到的完整控件数，以及舞台的高度：太矮时面板只剩直方图、照片很小。
+      panel: (() => {
+        const body = document.querySelector('.editor .band .band-body');
+        if (!body || !vis(body)) return null;
+        const br = body.getBoundingClientRect();
+        const inView = [...body.querySelectorAll('button, input[type="range"], [role="slider"]')].filter(vis).filter((n) => {
+          const r = n.getBoundingClientRect();
+          return r.top >= br.top - 1 && r.bottom <= br.bottom + 1;
+        }).length;
+        return { h: Math.round(br.height), scrollH: body.scrollHeight, inView };
+      })(),
+      stageH: Math.round(document.querySelector('.editor .stage')?.getBoundingClientRect().height ?? 0),
+      gridCols: Number(document.querySelector('.gscroll [style*="--grid-cols"]')?.style.getPropertyValue('--grid-cols') || 0),
+    };
+  });
+}
+
+async function closeSheets(page) {
+  for (const sel of ['.ms.export [data-act="close"]', '.ms.export .nb', '.ms .hd .nb']) {
+    const btn = page.locator(sel).first();
+    if (await btn.isVisible().catch(() => false)) {
+      await btn.click();
+      await settle(page, 300);
+      return;
+    }
+  }
+}
+
+/** L2：每个尺寸量网格、编辑器（配方、调整、裁剪、导出选项）和胶片条；在胶片条上点第二张能换照片。 */
+async function shortGroup(browser, url, sizes) {
+  const rows = [];
+  const { ctx, page, errors } = await newPage(browser, 'metal', 'computer', { width: sizes[0][0], height: sizes[0][1] });
+  try {
+    await start(page, url);
+    for (const [width, height] of sizes) {
+      const size = `${width}x${height}`;
+      await resize(page, { width, height });
+      const row = { size, grid: await measureClip(page) };
+      if (manifest.shotsDir && manifest.shotSizes?.includes(size)) await shot(page, `short-${size}-grid`);
+      await open(page, 'metal');
+      for (const id of ['recipe', 'adjust', 'crop']) {
+        await tool(page, id);
+        row[id] = await measureClip(page);
+        if (manifest.shotsDir && manifest.shotSizes?.includes(size)) await shot(page, `short-${size}-${id}`);
+      }
+      await tool(page, 'recipe');
+      await page.locator('.editor .nav [data-act="editor-more"]').click();
+      await page.locator('[data-act="more-export-options"]').click();
+      await page.locator('.ms.export').first().waitFor({ timeout: 10_000 });
+      await settle(page, 300);
+      row.exportOptions = await measureClip(page);
+      await closeSheets(page);
+      const filmCells = page.locator('.editor .ipad-filmstrip .cell');
+      row.filmSwitch = null;
+      if ((await filmCells.count()) >= 2 && (await filmCells.nth(1).isVisible())) {
+        const before = await page.evaluate(() => document.querySelector('.screen.editor')?.dataset.photo ?? '');
+        await filmCells.nth(1).click();
+        row.filmSwitch = await page
+          .waitForFunction((was) => (document.querySelector('.screen.editor')?.dataset.photo ?? '') !== was, before, { timeout: 15_000 })
+          .then(() => true, () => false);
+        await settle(page, 400);
+      }
+      await page.locator('button.nav-back').click();
+      await page.locator('.app[data-screen="grid"]').waitFor({ timeout: 10_000 });
+      rows.push(row);
+    }
+  } finally {
+    await ctx.close();
+  }
+  return { rows, errors };
+}
+
+/** 只量版式名：电脑（没有触摸）和手机/iPad（有触摸）在给定尺寸上分到哪种版式。 */
+async function classifyGroup(browser, url, kind, sizes) {
+  const { ctx, page, errors } = await newPage(browser, 'metal', kind, { width: sizes[0][0], height: sizes[0][1] });
+  const out = {};
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await page.locator('.app[data-core="1"]').waitFor({ timeout: 60_000 });
+    for (const [width, height] of sizes) {
+      await resize(page, { width, height });
+      out[`${width}x${height}`] = await page.evaluate(() => document.querySelector('.app')?.dataset.layout ?? '');
+    }
+  } finally {
+    await ctx.close();
+  }
+  return { layouts: out, errors };
+}
+
 async function withBrowser(engine, run) {
   if (engine === 'webkit') {
     const exe = resolveWebKitExecutable();
@@ -241,6 +376,13 @@ const GROUPS = {
       });
     }
     return out;
+  },
+  async short(url) {
+    return withBrowser('metal', async (browser) => ({
+      ...(await shortGroup(browser, url, manifest.shortSizes)),
+      computer: await classifyGroup(browser, url, 'computer', manifest.classifySizes),
+      phone: await classifyGroup(browser, url, 'phone', manifest.classifySizes),
+    }));
   },
   async fitTouch(url) {
     return withBrowser('webkit', async (browser) => ({

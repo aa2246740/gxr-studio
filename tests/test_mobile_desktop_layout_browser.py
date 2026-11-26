@@ -37,16 +37,44 @@ def check(ok: bool, label: str) -> None:
     assert ok, label
 
 
+# L2：电脑上这些又宽又矮的窗口要用 iPad/电脑版式，而且什么都不裁、胶片条能用；矮于门槛的、手机模拟尺寸仍是手机版式。
+SHORT_SIZES = [(1093, 614), (1280, 600), (1366, 650), (960, 600), (1280, 650), (900, 590)]
+CLASSIFY = {
+    "1093x614": "ipad-landscape",
+    "1280x600": "ipad-landscape",
+    "1366x650": "ipad-landscape",
+    "960x600": "ipad-landscape",
+    "1280x650": "ipad-landscape",
+    "900x590": "ipad-landscape",
+    "899x600": "phone-landscape",
+    "1280x589": "phone-landscape",
+    "800x600": "phone-landscape",
+    "844x390": "phone-landscape",
+    "667x375": "phone-landscape",
+    "956x440": "phone-landscape",
+    "390x844": "phone-portrait",
+    "600x900": "phone-portrait",
+    "1024x768": "ipad-landscape",
+}
+TOUCH_CLASSIFY = {
+    **CLASSIFY,
+    **{k: "phone-landscape" for k in ("1093x614", "1280x600", "1366x650", "960x600", "1280x650", "900x590", "899x600", "1280x589")},
+}
+
+
 def _run(tmp_path: Path, groups: list[str]) -> dict[str, Any]:
     _prereq()
     _need((DIST / "index.html").is_file(), "mobile/dist is missing; run make mobile-build")
     _raw250, _lib250, dat250, fx250 = _need_g185_or_g250(250)
-    dng, jpg = _card250_pair(1)
+    pairs = [_card250_pair(i) for i in (1, 2, 3)]
     out = tmp_path / "report.json"
     manifest = {
         "distDir": str(DIST),
-        "files": [str(dng), str(jpg), str(dat250), str(fx250)],
-        "stem": dng.stem,
+        "files": [str(p) for pair in pairs for p in pair] + [str(dat250), str(fx250)],
+        "stem": pairs[0][0].stem,
+        "shortSizes": [list(s) for s in SHORT_SIZES],
+        "shotSizes": ["1093x614", "1366x650", "1280x650"],
+        "classifySizes": [[int(n) for n in k.split("x")] for k in CLASSIFY],
         "groups": groups,
         "out": str(out),
         "shotsDir": os.environ.get("GXR_DESKTOP_LAYOUT_SHOTS", ""),
@@ -134,3 +162,31 @@ def test_mobile_desktop_touch_fit_unchanged(tmp_path: Path) -> None:
             check(row["view"]["layout"] == want[size], f"{kind} {size}: layout {row['view']['layout']}")
             _inside(row["view"]["photo"], row["view"]["pv"], f"{kind} {size}")
             _near(row["crop"]["cbox"], row["crop"]["photo"], f"{kind} {size} crop frame")
+
+
+def test_mobile_desktop_short_windows(tmp_path: Path) -> None:
+    """L2：电脑上 1093×614、1280×600、1366×650、960×600、1280×650 用 iPad/电脑版式，网格和编辑器都不裁，胶片条能用。"""
+    groups = _run(tmp_path, ["short"])["short"]
+    check(groups["errors"] == [], f"no page errors: {groups['errors']}")
+    for row in groups["rows"]:
+        size = row["size"]
+        for view in ("grid", "recipe", "adjust", "crop", "exportOptions"):
+            m = row[view]
+            check(m["layout"] == "ipad-landscape", f"{size} {view}: iPad/desktop layout ({m['layout']})")
+            check(m["pageScroll"] is False, f"{size} {view}: the page itself does not scroll")
+            check(m["clipped"] == [], f"{size} {view}: nothing clipped: {m['clipped']}")
+        check(row["grid"]["gridCols"] >= 5, f"{size}: grid has desktop columns ({row['grid']['gridCols']})")
+        for view in ("recipe", "adjust", "crop"):
+            m = row[view]
+            check(m["recipeStrip"] is not None and m["recipeStrip"]["inside"], f"{size} {view}: recipe strip visible: {m['recipeStrip']}")
+            check(m["filmstrip"] is not None and m["filmstrip"]["inside"], f"{size} {view}: filmstrip visible: {m['filmstrip']}")
+            check(len(m["filmCells"]) >= 2 and min(m["filmCells"]) >= 44, f"{size} {view}: filmstrip cells usable: {m['filmCells']}")
+            check(m["stageH"] >= 360, f"{size} {view}: the stage keeps room for the photo ({m['stageH']} px)")
+            check(m["panel"] is not None and m["panel"]["h"] >= 180, f"{size} {view}: side panel keeps room ({m['panel']})")
+        check(row["recipe"]["panel"]["inView"] >= 3, f"{size}: recipe panel shows 3 controls without scrolling ({row['recipe']['panel']})")
+        check(row["adjust"]["panel"]["inView"] >= 9, f"{size}: adjust panel shows its chips and slider ({row['adjust']['panel']})")
+        check(row["filmSwitch"] is True, f"{size}: clicking the second filmstrip cell opens it")
+    got = groups["computer"]["layouts"]
+    check(got == CLASSIFY, f"computer layouts: {got}")
+    touch = groups["phone"]["layouts"]
+    check(touch == TOUCH_CLASSIFY, f"touch layouts unchanged: {touch}")
