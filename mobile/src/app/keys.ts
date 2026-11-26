@@ -105,7 +105,8 @@ function addLayer(scrim: HTMLElement, opener: HTMLElement | null): Layer {
   const own = !!(sheet && active && sheet.contains(active));
   const layer: Layer = { scrim, sheet, cancel: null, cancelLive: () => false, opener: own ? lastPressed : opener, own };
   layers.push(layer);
-  if (!own && sheet) focusables(sheet)[0]?.focus({ preventScroll: true });
+  // 先给按钮：文字框一拿到焦点，手机上就会弹出键盘。
+  if (!own && sheet) focusables(sheet).find((node) => !inTextField(node) && !(node instanceof HTMLInputElement && node.type === 'file'))?.focus({ preventScroll: true });
   return layer;
 }
 
@@ -175,17 +176,12 @@ function trapTab(ev: KeyboardEvent): void {
   if (!top || top.own || !top.sheet) return;
   const nodes = focusables(top.sheet);
   if (!nodes.length) return;
-  const first = nodes[0];
-  const last = nodes[nodes.length - 1];
+  // 自己走一格：Safari 默认 Tab 跳过按钮，不能靠浏览器。
+  ev.preventDefault();
   const active = current();
-  const inside = !!active && top.sheet.contains(active);
-  if (ev.shiftKey && (!inside || active === first)) {
-    ev.preventDefault();
-    last.focus({ preventScroll: true });
-  } else if (!ev.shiftKey && (!inside || active === last)) {
-    ev.preventDefault();
-    first.focus({ preventScroll: true });
-  }
+  const at = active ? nodes.indexOf(active) : -1;
+  const next = at < 0 ? (ev.shiftKey ? nodes.length - 1 : 0) : (at + (ev.shiftKey ? -1 : 1) + nodes.length) % nodes.length;
+  nodes[next].focus({ preventScroll: true });
 }
 
 function onKey(ev: KeyboardEvent, shell: HTMLElement, hooks: KeyHooks): void {
@@ -228,5 +224,13 @@ export function installKeys(shell: HTMLElement, hooks: KeyHooks): void {
   window.addEventListener('blur', () => {
     pressed = 0;
   });
+  // 在窗口外松手时收不到 pointerup：再动一下、手里没按着，就不算按着了。
+  window.addEventListener(
+    'pointermove',
+    (ev) => {
+      if (pressed && ev.buttons === 0 && ev.pointerType === 'mouse') pressed = 0;
+    },
+    { capture: true, passive: true },
+  );
   new MutationObserver((records) => flush(records, shell, hooks)).observe(shell, { childList: true, subtree: true });
 }

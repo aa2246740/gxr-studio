@@ -776,7 +776,7 @@ export class GridView {
 
   /** 电脑上鼠标容易点错：清空前先问一句（手机、iPad 仍是点一下就清空）。Esc 和遮罩都是取消。 */
   private confirmClear(): HTMLElement {
-    const dlg = el('div', 'dlg');
+    const dlg = el('div', 'dlg clear-dlg');
     dlg.dataset.state = 'confirm-clear';
     const acts = el('div', 'acts');
     const cancel = button('btn lg', '取消');
