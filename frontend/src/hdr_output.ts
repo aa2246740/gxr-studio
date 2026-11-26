@@ -4,7 +4,7 @@ import hdrWgsl from './shaders/hdr_present.wgsl?raw';
 import { type GainMeta, type HdrOutputMode, gainWeight } from './hdr_math';
 
 export type { GainMeta, GainTexture, HdrOutputMode } from './hdr_math';
-export { f16ToF32, gainWeight, presentMap } from './hdr_math';
+export { f16ToF32, gainWeight, presentMap, srgbDecode } from './hdr_math';
 
 export class HdrOutput {
   readonly module: GPUShaderModule;

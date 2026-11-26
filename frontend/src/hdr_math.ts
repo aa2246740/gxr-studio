@@ -29,6 +29,13 @@ export function gainWeight(meta: GainMeta, headroom: number | null | undefined):
   return Math.min(1, Math.max(0, (H - meta.cap_min) / span));
 }
 
+/** 画布 colorSpace 'srgb' 的解码：sRGB EOTF，按扩展 sRGB 延伸到 1 以上（负数取对称）。HDR 显示遍写的是这种编码值。 */
+export function srgbDecode(e: number): number {
+  const a = Math.abs(e);
+  const l = a <= 0.04045 ? a / 12.92 : ((a + 0.055) / 1.055) ** 2.4;
+  return e < 0 ? -l : l;
+}
+
 export function f16ToF32(h: number): number {
   const sign = (h & 0x8000) !== 0 ? -1 : 1;
   const exp = (h & 0x7c00) >> 10;
