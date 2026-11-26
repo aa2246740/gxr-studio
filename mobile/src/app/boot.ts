@@ -9,7 +9,6 @@ import './frame.css';
 import './ipad.css';
 import './shell.css';
 import type { Engine, RawLayout, Scene } from '../../../frontend/src/index';
-import { zeroGeometry } from '../lib/crop';
 import { classify, sortIds } from '../lib/group';
 import { loadGap, loadOrder, saveGap, saveOrder } from '../lib/prefs';
 import { formatStats, measureInterval, watchFrames, type PerfStats } from '../ui/perf';
@@ -28,8 +27,8 @@ import type { GridView } from './grid';
 import { dropGpuState, EngineSlot } from './gpu_loss';
 import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
-import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, zeroKnobs, type AppApi, type FullRead, type Photo } from './model';
-import { DEFAULT_FRAME, DEFAULT_STAMP } from '../lib/frame_spec';
+import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, type AppApi, type FullRead, type Photo } from './model';
+import { newPhoto } from './new_photo';
 import { dropReply, ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
@@ -594,38 +593,7 @@ class App implements AppApi {
       const id = item.stem.toLowerCase();
       let photo = this.byId.get(id);
       if (!photo) {
-        photo = {
-          id,
-          stem: item.stem,
-          version: 0,
-          dng: null,
-          jpg: null,
-          diptych: false,
-          lastModified: item.lastModified,
-          captureMs: null,
-          status: 'pending',
-          gone: false,
-          cached: null,
-          checked: null,
-          bitmap: null,
-          neutral: null,
-          knobs: zeroKnobs(),
-          curve: null,
-          rev: 0,
-          jpgMeta: null,
-          dngMeta: null,
-          border: { ...DEFAULT_FRAME },
-          stamp: { ...DEFAULT_STAMP },
-          frameMeta: null,
-          frame: null,
-          geometry: zeroGeometry(),
-          crop: null,
-          choice: null,
-          levels: new Map(),
-          memory: new Map(),
-          lut: null,
-          looks: new Map(),
-        };
+        photo = newPhoto(id, item.stem, item.lastModified);
         this.byId.set(id, photo);
       }
       if (item.jpgIndex !== null) {
