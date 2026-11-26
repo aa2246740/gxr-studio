@@ -15,7 +15,7 @@ const { launchPinnedChromium, pinnedRuntime, verifyPinnedRuntime } = await impor
 verifyPinnedRuntime();
 const BROWSER_DIRS = [process.env.PLAYWRIGHT_BROWSERS_PATH, pinnedRuntime.browsersPath].filter(Boolean);
 
-const out = { pageErrors: [], steps: {}, error: null };
+const out = { pageErrors: [], steps: {}, flowErrors: {}, error: null };
 const GPU_ARGS = ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--use-webgpu-adapter=swiftshader'];
 const IPAD_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15';
 const W = 1440;
@@ -237,86 +237,86 @@ async function unloadFlow(browser) {
   await ctx.close();
 }
 
-/** 没用上的文件、只选 GXRFX.BIN、Tab 顺序（开始页）。 */
-async function pickFlow(browser) {
-  const step = {};
-  out.steps.picks = step;
-  {
-    const { ctx, page } = await openPage(browser, 'picks', { viewport: { width: W, height: H } });
-    const picker = page.locator('input.filepick:not(.calibpick)');
-    await picker.setInputFiles([manifest.txt]);
-    step.nothingToast = await waitToast(page);
-    step.nothingScreen = await page.evaluate(() => document.querySelector('.app')?.dataset.screen);
-    await shoot(page, 'note-nothing-usable.png');
-    await page.evaluate(() => document.querySelectorAll('.ftoast').forEach((n) => n.remove()));
-    await picker.setInputFiles([...manifest.pairs, ...manifest.renamed]);
-    await waitCells(page, 2).catch(() => {});
-    step.someToast = await waitToast(page);
-    step.someCells = await cellCount(page);
-    await shoot(page, 'note-two-unused.png', page.locator('.ftoast'));
-    await ctx.close();
+/** 没用上的文件、只选 GXRFX.BIN、Tab 顺序（开始页）。每一段各开一个新页面，一段出错不挡后面几段。 */
+async function unusedPicks(browser, step) {
+  const { ctx, page } = await openPage(browser, 'picks', { viewport: { width: W, height: H } });
+  const picker = page.locator('input.filepick:not(.calibpick)');
+  await picker.setInputFiles([manifest.txt]);
+  step.nothingToast = await waitToast(page);
+  step.nothingScreen = await page.evaluate(() => document.querySelector('.app')?.dataset.screen);
+  await shoot(page, 'note-nothing-usable.png');
+  await page.evaluate(() => document.querySelectorAll('.ftoast').forEach((n) => n.remove()));
+  await picker.setInputFiles([...manifest.pairs, ...manifest.renamed]);
+  await waitCells(page, 2).catch(() => {});
+  step.someToast = await waitToast(page);
+  step.someCells = await cellCount(page);
+  await shoot(page, 'note-two-unused.png', page.locator('.ftoast'));
+  await ctx.close();
+}
+
+async function binOnlyStart(browser, step) {
+  const { ctx, page } = await openPage(browser, 'binOnly', { viewport: { width: W, height: H } });
+  const picker = page.locator('input.filepick:not(.calibpick)');
+  const startErr = () => page.evaluate(() => document.querySelector('[data-state="start-dat-error"]')?.textContent ?? null);
+  await picker.setInputFiles([manifest.badDat]);
+  await page.waitForFunction(() => Boolean(document.querySelector('[data-state="start-dat-error"]')), null, { timeout: 30_000 }).catch(() => {});
+  step.badDatError = await startErr();
+  await picker.setInputFiles([manifest.bin]);
+  await page.waitForTimeout(800);
+  step.binOnlyStart = await startErr();
+  await shoot(page, 'start-bin-only.png');
+  await picker.setInputFiles([manifest.dat]);
+  await page.waitForFunction(() => window.__gxrBook && !window.__gxrBook.datBusy, null, { timeout: 30_000 }).catch(() => {});
+  await page.waitForTimeout(300);
+  step.datAfterBin = await page.evaluate(() => ({ generation: window.__gxrBook?.dat?.generation ?? null, library: Boolean(window.__gxrBook?.dat?.library) }));
+  await ctx.close();
+}
+
+async function datOnly(browser, step) {
+  const { ctx, page } = await openPage(browser, 'datOnly', { viewport: { width: W, height: H } });
+  const picker = page.locator('input.filepick:not(.calibpick)');
+  await picker.setInputFiles([manifest.dat]);
+  await page.waitForFunction(() => Boolean(document.querySelector('[data-state="start-dat-error"]')), null, { timeout: 30_000 }).catch(() => {});
+  step.datOnlyStart = await page.evaluate(() => document.querySelector('[data-state="start-dat-error"]')?.textContent ?? null);
+  await picker.setInputFiles(manifest.pairs);
+  await waitCells(page, 2);
+  step.datOnlyGrid = await page.evaluate(() => document.querySelector('.datline')?.textContent ?? null);
+  await ctx.close();
+}
+
+async function binOnlyGrid(browser, step) {
+  const { ctx, page } = await openPage(browser, 'binGrid', { viewport: { width: W, height: H } });
+  const picker = page.locator('input.filepick:not(.calibpick)');
+  await picker.setInputFiles(manifest.pairs);
+  await waitCells(page, 2);
+  await picker.setInputFiles([manifest.bin]);
+  await page.waitForTimeout(800);
+  step.binOnlyGrid = await page.evaluate(() => {
+    const line = document.querySelector('.datline');
+    return line && !line.hidden ? line.textContent : null;
+  });
+  await ctx.close();
+}
+
+async function tabOrder(browser, step) {
+  const { ctx, page } = await openPage(browser, 'tab', { viewport: { width: W, height: H } });
+  step.inputs = await page.evaluate(() => [...document.querySelectorAll('input[type="file"]')].map((i) => ({ tab: i.tabIndex, hidden: i.getAttribute('aria-hidden') })));
+  const order = [];
+  for (let n = 0; n < 16; n += 1) {
+    await page.keyboard.press('Tab');
+    order.push(await page.evaluate(() => {
+      const a = document.activeElement;
+      return a ? `${a.tagName.toLowerCase()}${a.type ? `:${a.type}` : ''}${a.dataset?.act ? `#${a.dataset.act}` : ''}` : 'none';
+    }));
   }
-  {
-    const { ctx, page } = await openPage(browser, 'binOnly', { viewport: { width: W, height: H } });
-    const picker = page.locator('input.filepick:not(.calibpick)');
-    const startErr = () => page.evaluate(() => document.querySelector('[data-state="start-dat-error"]')?.textContent ?? null);
-    await picker.setInputFiles([manifest.badDat]);
-    await page.waitForFunction(() => Boolean(document.querySelector('[data-state="start-dat-error"]')), null, { timeout: 30_000 }).catch(() => {});
-    step.badDatError = await startErr();
-    await picker.setInputFiles([manifest.bin]);
-    await page.waitForTimeout(800);
-    step.binOnlyStart = await startErr();
-    await shoot(page, 'start-bin-only.png');
-    await picker.setInputFiles([manifest.dat]);
-    await page.waitForFunction(() => window.__gxrBook && !window.__gxrBook.datBusy, null, { timeout: 30_000 }).catch(() => {});
-    await page.waitForTimeout(300);
-    step.datAfterBin = await page.evaluate(() => ({ generation: window.__gxrBook?.dat?.generation ?? null, library: Boolean(window.__gxrBook?.dat?.library) }));
-    await ctx.close();
-  }
-  {
-    const { ctx, page } = await openPage(browser, 'datOnly', { viewport: { width: W, height: H } });
-    const picker = page.locator('input.filepick:not(.calibpick)');
-    await picker.setInputFiles([manifest.dat]);
-    await page.waitForFunction(() => Boolean(document.querySelector('[data-state="start-dat-error"]')), null, { timeout: 30_000 }).catch(() => {});
-    step.datOnlyStart = await page.evaluate(() => document.querySelector('[data-state="start-dat-error"]')?.textContent ?? null);
-    await picker.setInputFiles(manifest.pairs);
-    await waitCells(page, 2);
-    step.datOnlyGrid = await page.evaluate(() => document.querySelector('.datline')?.textContent ?? null);
-    await ctx.close();
-  }
-  {
-    const { ctx, page } = await openPage(browser, 'binGrid', { viewport: { width: W, height: H } });
-    const picker = page.locator('input.filepick:not(.calibpick)');
-    await picker.setInputFiles(manifest.pairs);
-    await waitCells(page, 2);
-    await picker.setInputFiles([manifest.bin]);
-    await page.waitForTimeout(800);
-    step.binOnlyGrid = await page.evaluate(() => {
-      const line = document.querySelector('.datline');
-      return line && !line.hidden ? line.textContent : null;
-    });
-    await ctx.close();
-  }
-  {
-    const { ctx, page } = await openPage(browser, 'tab', { viewport: { width: W, height: H } });
-    step.inputs = await page.evaluate(() => [...document.querySelectorAll('input[type="file"]')].map((i) => ({ tab: i.tabIndex, hidden: i.getAttribute('aria-hidden') })));
-    const order = [];
-    for (let n = 0; n < 16; n += 1) {
-      await page.keyboard.press('Tab');
-      order.push(await page.evaluate(() => {
-        const a = document.activeElement;
-        return a ? `${a.tagName.toLowerCase()}${a.type ? `:${a.type}` : ''}${a.dataset?.act ? `#${a.dataset.act}` : ''}` : 'none';
-      }));
-    }
-    step.tabOrder = order;
-    const chooser = async (act) => {
-      const wait = page.waitForEvent('filechooser', { timeout: 5_000 }).then((fc) => fc.isMultiple()).catch(() => null);
-      await page.locator(`[data-act="${act}"]`).click();
-      return wait;
-    };
-    step.choosers = { camfiles: await chooser('pick-camfiles'), photos: await chooser('pick-photos') };
-    await ctx.close();
-  }
+  step.tabOrder = order;
+  const chooser = async (act) => {
+    const wait = page.waitForEvent('filechooser', { timeout: 5_000 }).then((fc) => fc.isMultiple()).catch(() => null);
+    await page.locator(`[data-act="${act}"]`).click();
+    return wait;
+  };
+  step.choosers = { camfiles: await chooser('pick-camfiles'), photos: await chooser('pick-photos') };
+  await ctx.close();
 }
 
 function webkitExecutable(webkit) {
@@ -357,9 +357,18 @@ async function webkitTouch(browser, label, options, inits) {
 try {
   const chromium = await launchPinnedChromium({ args: GPU_ARGS });
   try {
-    await dropFlow(chromium);
-    await unloadFlow(chromium);
-    await pickFlow(chromium);
+    // 每一段各记各的错（改动之前的代码在半路就会卡住），后面几段照样跑。
+    const run = async (name, fn) => {
+      try {
+        await fn();
+      } catch (err) {
+        out.flowErrors[name] = String(err?.message ?? err).split('\n')[0].slice(0, 200);
+      }
+    };
+    await run('drop', () => dropFlow(chromium));
+    await run('unload', () => unloadFlow(chromium));
+    out.steps.picks = {};
+    for (const fn of [unusedPicks, binOnlyStart, datOnly, binOnlyGrid, tabOrder]) await run(fn.name, () => fn(chromium, out.steps.picks));
   } finally {
     await chromium.close();
   }

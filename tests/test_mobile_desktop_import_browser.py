@@ -78,7 +78,13 @@ def steps(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     check(result.returncode == 0 and report.get("error") is None, f"driver completed without error: {report.get('error')}")
     check(report["pageErrors"] == [], f"no page errors: {report['pageErrors']}")
-    return dict(report["steps"])
+    return {**report["steps"], "flowErrors": report["flowErrors"]}
+
+
+def _flows_ok(steps: dict[str, Any], *names: str) -> None:
+    """驱动的每一段各记各的错：这几段都跑完了。"""
+    errors = {name: steps["flowErrors"][name] for name in names if name in steps["flowErrors"]}
+    check(not errors, f"driver flows completed: {errors}")
 
 
 def _prevented(rows: list[dict[str, Any]], kind: str) -> list[bool]:
@@ -86,6 +92,7 @@ def _prevented(rows: list[dict[str, Any]], kind: str) -> list[bool]:
 
 
 def test_mobile_desktop_drop_on_start_and_grid(steps: dict[str, Any]) -> None:
+    _flows_ok(steps, "drop")
     drop = steps["drop"]
     hint = drop["startOverlay"]
     check(hint == {"on": True, "visible": True, "text": HINT}, f"start: full-window hint while files hover: {hint}")
@@ -103,6 +110,7 @@ def test_mobile_desktop_drop_on_start_and_grid(steps: dict[str, Any]) -> None:
 
 
 def test_mobile_desktop_drop_overlay_leave_and_esc(steps: dict[str, Any]) -> None:
+    _flows_ok(steps, "drop")
     drop = steps["drop"]
     check(drop["leave"] == {"shownBeforeLeave": True, "afterLeave": False}, f"dragleave out of the window hides the hint: {drop['leave']}")
     check(drop["esc"] == {"shownBeforeEsc": True, "afterEsc": False}, f"Esc hides the hint: {drop['esc']}")
@@ -110,6 +118,7 @@ def test_mobile_desktop_drop_overlay_leave_and_esc(steps: dict[str, Any]) -> Non
 
 
 def test_mobile_desktop_drop_in_editor(steps: dict[str, Any]) -> None:
+    _flows_ok(steps, "drop")
     drop = steps["drop"]
     check(drop["editorOverlay"]["on"] is False, "editor: no import hint")
     check(_prevented(drop["editorDrags"], "drop") == [True], f"editor: the drop is cancelled: {drop['editorDrags']}")
@@ -119,6 +128,7 @@ def test_mobile_desktop_drop_in_editor(steps: dict[str, Any]) -> None:
 
 
 def test_mobile_desktop_text_drag_not_cancelled(steps: dict[str, Any]) -> None:
+    _flows_ok(steps, "drop")
     text = steps["drop"]["text"]
     check(text["synthOverText"] is False and text["synthDropText"] is False, "a text drag is not cancelled")
     check(text["synthOverLink"] is False, "a link drag is not cancelled")
@@ -127,6 +137,7 @@ def test_mobile_desktop_text_drag_not_cancelled(steps: dict[str, Any]) -> None:
 
 
 def test_mobile_desktop_unload_guard(steps: dict[str, Any]) -> None:
+    _flows_ok(steps, "unload")
     unload = steps["unload"]
     check(unload["emptyStart"] == [], f"no photos: reload does not ask: {unload['emptyStart']}")
     check(unload["loaded"] == ["beforeunload"], f"photos loaded: reload asks first: {unload['loaded']}")
@@ -143,12 +154,14 @@ def test_mobile_desktop_unload_guard(steps: dict[str, Any]) -> None:
 
 
 def test_mobile_desktop_unused_files_note(steps: dict[str, Any]) -> None:
+    _flows_ok(steps, "unusedPicks")
     picks = steps["picks"]
     check(picks["nothingToast"] == NOTHING and picks["nothingScreen"] == "start", f"one .txt: nothing-usable note: {picks['nothingToast']}")
     check(picks["someCells"] == 2 and picks["someToast"] == TWO_UNUSED, f"2 pairs + 2 renamed JPGs: '2 个文件…' note: {picks['someToast']}")
 
 
 def test_mobile_desktop_lone_camera_file(steps: dict[str, Any]) -> None:
+    _flows_ok(steps, "binOnlyStart", "datOnly", "binOnlyGrid")
     picks = steps["picks"]
     check(bool(picks["badDatError"]) and "无法读取相机配方文件" in picks["badDatError"], "a bad DAT shows its error first")
     check(picks["binOnlyStart"] == BIN_ONLY, f"start: only BIN says the DAT is missing and replaces the old error: {picks['binOnlyStart']}")
@@ -160,6 +173,7 @@ def test_mobile_desktop_lone_camera_file(steps: dict[str, Any]) -> None:
 
 
 def test_mobile_desktop_hidden_inputs_not_tab_stops(steps: dict[str, Any]) -> None:
+    _flows_ok(steps, "tabOrder")
     picks = steps["picks"]
     check(len(picks["inputs"]) == 3, "three hidden file inputs")
     check(all(i == {"tab": -1, "hidden": "true"} for i in picks["inputs"]), f"hidden inputs: tabindex -1 and aria-hidden: {picks['inputs']}")
