@@ -29,6 +29,7 @@ import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
 import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, type AppApi, type FullRead, type Photo } from './model';
 import { newPhoto } from './new_photo';
+import { guardUnload } from './unload_guard';
 import { dropReply, ThumbQueue } from './queue';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
@@ -530,6 +531,7 @@ class App implements AppApi {
 
   private syncDock(): void {
     this.editorMod?.syncExportDock(this.shell);
+    guardUnload(this.byId.size > 0 || this.exporter?.current()?.phase === 'running'); // 电脑上刷新、关页前先问一声
   }
 
   /**
