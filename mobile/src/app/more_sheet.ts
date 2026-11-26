@@ -2,6 +2,7 @@
 
 import { curveJson } from '../lib/export_request';
 import { FRAME_NAMES, stampSummary } from '../lib/frame_spec';
+import { ADJUST_NO_GPU_REASON } from './adjust_view';
 import { button, el, icon } from './dom';
 import type { Photo } from './model';
 import { registerSheet } from './sheet_lifecycle';
@@ -58,6 +59,8 @@ export function openMoreSheet(shell: HTMLElement, photo: Photo, hooks: MoreSheet
     { key: 'export', title: '导出选项', sub: '', run: hooks.onExport },
     { key: 'calib', title: '校准与配方文件', sub: '', run: hooks.onCalib },
   ];
+  // 没有显卡预览（壳上 data-gpu=0）：曲线和「调整」一样停用，说同一句话（desktop-layout L7）。
+  const curvesLocked = shell.dataset.gpu === '0';
 
   const list = el('div', 'more-list');
   for (const item of rows) {
@@ -66,7 +69,10 @@ export function openMoreSheet(shell: HTMLElement, photo: Photo, hooks: MoreSheet
     if (item.act) row.dataset.act = item.act;
     const tx = el('div', 'grow');
     tx.append(el('b', '', item.title));
-    if (item.sub) tx.append(el('small', '', item.sub));
+    const locked = curvesLocked && item.key === 'curves';
+    row.disabled = locked;
+    const sub = locked ? ADJUST_NO_GPU_REASON : item.sub;
+    if (sub) tx.append(el('small', '', sub));
     const chev = el('span', 'more-chev');
     chev.append(icon(CHEVRON));
     row.append(tx, chev);

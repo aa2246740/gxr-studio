@@ -398,3 +398,6 @@
   color: var(--accent-text);
   text-decoration: none;
 }
+
+/* 有边框装饰时，舞台下沿是边框的说明文字和水印：「这块屏幕显示不了 HDR」挪到上沿，不压字（P3-18）。 */
+.stage:has(.pv[data-decor="1"]) .tag.hdr-screen-note { top: 8px; bottom: auto; }

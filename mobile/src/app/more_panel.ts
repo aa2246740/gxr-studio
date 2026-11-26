@@ -2,6 +2,7 @@
 
 import { curveJson } from '../lib/export_request';
 import { FRAME_NAMES, stampSummary } from '../lib/frame_spec';
+import { ADJUST_NO_GPU_REASON } from './adjust_view';
 import { button, el, icon } from './dom';
 import type { Photo } from './model';
 import type { MoreSheetHooks } from './more_sheet';
@@ -41,12 +42,18 @@ export class MorePanel {
       { key: 'calib', title: '校准与配方文件', sub: '', run: this.hooks.onCalib },
     ];
 
+    // 没有显卡预览（壳上 data-gpu=0）：曲线和「调整」一样停用，说同一句话（desktop-layout L7）。
+    const shell = this.root.closest<HTMLElement>('.app') ?? document.querySelector<HTMLElement>('.app');
+    const curvesLocked = shell?.dataset.gpu === '0';
     for (const item of rows) {
       const row = button('lrow more-row', '');
       row.dataset.more = item.key;
+      const locked = curvesLocked && item.key === 'curves';
+      row.disabled = locked;
       const tx = el('div', 'grow');
       tx.append(el('b', '', item.title));
-      if (item.sub) tx.append(el('small', '', item.sub));
+      const sub = locked ? ADJUST_NO_GPU_REASON : item.sub;
+      if (sub) tx.append(el('small', '', sub));
       const chev = el('span', 'more-chev');
       chev.append(icon(CHEVRON));
       row.append(tx, chev);

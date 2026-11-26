@@ -13,11 +13,13 @@ import {
   nearestIndex,
 } from '../lib/recipes';
 import type { AdoptedSelection, CameraRecipeError, Control, Shelf, Shelves } from '../lib/recipes';
+import { ADJUST_NO_GPU_REASON } from './adjust_view';
 import type { Book, UnitState } from './book';
 import { markControlDragEnd } from './drag_guard';
 import { button, el, icon } from './dom';
 import { registerSheet } from './sheet_lifecycle';
 
+const KNOB_LOCK_ID = 'knob-lock-reason';
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
 const WARN = 'M12 4l9 16H3zM12 10v4M12 17h.01';
 const INFO = 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18M12 11v5M12 8h.01';
@@ -422,12 +424,20 @@ export function openAskDatSheet(shell: HTMLElement, book: Book, pickDat: () => v
   };
 }
 
+/** 没有显卡预览时微调滑块停用（和「调整」一样），这句说明放在滑块上面，滑块用 aria-describedby 指向它。 */
+export function knobLockNote(): HTMLElement {
+  const note = el('p', 'adj-disabled-note', ADJUST_NO_GPU_REASON);
+  note.id = KNOB_LOCK_ID;
+  return note;
+}
+
 export function buildKnobRow(
   control: Control,
   generation: number | null,
   savedLevels: Record<string, number> | undefined,
   onLevel: (level: number) => void,
   onScrub?: (text: string | null) => void,
+  locked = false,
 ): HTMLElement {
   const levels = choices(control, generation);
   const current = effective(control, savedLevels);
@@ -442,6 +452,8 @@ export function buildKnobRow(
   input.step = '1';
   input.value = String(nearestIndex(levels, current));
   input.setAttribute('aria-label', label);
+  input.disabled = locked;
+  if (locked) input.setAttribute('aria-describedby', KNOB_LOCK_ID);
   const paint = () => {
     const level = levels[Number(input.value)] ?? control.default;
     const text = levelText(control, level);

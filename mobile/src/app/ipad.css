@@ -1,3 +1,6 @@
+/* 电脑上的光标和悬停提示单独放在 pointer.css（ipad.css 由 boot.ts 和 editor.ts 引入，跟着一起进包）。 */
+@import './pointer.css';
+
 /* 响应式版式（iPad 方案 A + 手机横屏）：只在 .app[data-layout=...] 下生效，手机竖屏 0 影响。
    尺寸照 round-6/ipad-design-r2/mockups/alt-a-desktop.html（主屏幕打开：iPad 顶上 24 状态栏、底下 20 横条；
    手机横屏左右各让出 safe-area，底下 21 横条）。 */
@@ -11,7 +14,9 @@
 /* ---------- iPad 公共：右边面板（带子放大） ---------- */
 .app[data-layout^="ipad"] .screen.editor { background: var(--surface-app); }
 .app[data-layout^="ipad"] .screen.editor .stage { background: #000; }
-.app[data-layout^="ipad"] .screen.editor .pv { inset: 8px; }
+/* 显式 1fr 网格：没有 WebGPU 时相机 JPG 画布是 width/height 100% + contain，隐式 auto 行会按画布本身比例撑高
+   （WebKit 把照片推到配方条下，Chromium 画得比舞台高）。和手机横屏一样把行列钉在舞台大小上（desktop-layout L1）。 */
+.app[data-layout^="ipad"] .screen.editor .pv { inset: 8px; grid-template: minmax(0, 1fr) / minmax(0, 1fr); }
 .app[data-layout^="ipad"] .screen.editor .band { height: auto; min-height: 0; background: var(--surface-panel); box-shadow: none; }
 .app[data-layout^="ipad"] .screen.editor .band-top { height: 0; overflow: hidden; order: 99; }
 .app[data-layout^="ipad"] .screen.editor .band[data-export-slot="1"] .band-top { height: 44px; border-top: 1px solid var(--line-subtle); }
@@ -156,6 +161,22 @@
 .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-strip-host .rc .th { height: 72px; }
 .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip .cell { width: 96px; height: 64px; }
 .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip .cell.cv-auto { contain-intrinsic-size: 96px 64px; }
+
+/* ---------- 电脑上又矮又宽的窗口（高 590–699，只有电脑会在这个高度分到 iPad 横屏，见 layout.ts）：下面两条和直方图变矮，
+   面板和照片多留点高度（desktop-layout L2）。有触摸的设备短边不到 700 就是手机版式，碰不到这里。 ---------- */
+@media (max-height: 699px) {
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .screen.editor { grid-template-rows: 44px minmax(0, 1fr) 71px 180px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-recipe-strip { height: 104px; padding: 8px 14px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-strip-host .rc { width: 96px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-strip-host .rc .th { height: 56px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-strip-host .rc .nm { margin-top: 4px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip { padding-top: 8px; padding-bottom: 8px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip .cell { width: 72px; height: 48px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-filmstrip .cell.cv-auto { contain-intrinsic-size: 72px 48px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-hist-area { padding-bottom: 8px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .ipad-hist-slot .hist { height: 56px; }
+  .app[data-layout="ipad-landscape"][data-ipad-size="11"] .start { padding-top: 8px; padding-bottom: 12px; }
+}
 
 /* ---------- iPad 竖屏（13" 1024×1366）：照片铺满宽，下面配方卡、胶片条、工具带子（左右两半）、底栏 ---------- */
 .app[data-layout="ipad-portrait"] .screen.editor { display: flex; flex-direction: column; }
@@ -456,8 +477,9 @@
   padding: 24px 24px 28px;
 }
 
-/* 无 WebGPU 时禁用调整滑块：明确禁用态 + 单行原因（手机竖屏 84px 带内不裁切） */
-.app .panel.adjust .adj-disabled-note {
+/* 无 WebGPU 时禁用调整滑块：明确禁用态 + 单行原因（手机竖屏 84px 带内不裁切）。配方微调滑块同样停用、同样的样子（L7）。 */
+.app .panel.adjust .adj-disabled-note,
+.app .panel.recipe .knobs .adj-disabled-note {
   margin: 0;
   font: 500 11px/14px var(--font-ui);
   color: var(--text-3);
@@ -468,20 +490,33 @@
 .app .panel.adjust .adj-disabled-note[hidden] { display: none; }
 .app .panel.adjust[data-disabled="1"] .big { justify-content: center; gap: 2px; }
 .app .panel.adjust[data-disabled="1"] .slider { height: 22px; }
+.app .panel.adjust[data-disabled="1"] .slider input[type="range"]:disabled,
+.app .panel.recipe .knobs[data-disabled="1"] .slider input[type="range"]:disabled { opacity: 0.35; cursor: not-allowed; }
 .app .panel.adjust[data-disabled="1"] .slider input[type="range"]:disabled {
   height: 22px;
   opacity: 0.35;
   cursor: not-allowed;
 }
-.app .panel.adjust[data-disabled="1"] .slider input[type="range"]:disabled::-webkit-slider-runnable-track {
+.app .panel.adjust[data-disabled="1"] .slider input[type="range"]:disabled::-webkit-slider-runnable-track,
+.app .panel.recipe .knobs[data-disabled="1"] .slider input[type="range"]:disabled::-webkit-slider-runnable-track {
   background: var(--gray-700);
 }
-.app .panel.adjust[data-disabled="1"] .slider input[type="range"]:disabled::-webkit-slider-thumb {
+.app .panel.adjust[data-disabled="1"] .slider input[type="range"]:disabled::-webkit-slider-thumb,
+.app .panel.recipe .knobs[data-disabled="1"] .slider input[type="range"]:disabled::-webkit-slider-thumb {
   width: 18px;
   height: 18px;
   margin-top: -7px;
   background: var(--gray-400);
   box-shadow: none;
 }
-.app .panel.adjust[data-disabled="1"] .adj-l1 .val { color: var(--text-3); }
-.app .panel.adjust[data-disabled="1"] .hist-toggle:disabled { opacity: 0.42; color: var(--text-3); cursor: not-allowed; }
+.app .panel.adjust[data-disabled="1"] .adj-l1 .val,
+.app .panel.recipe .knobs[data-disabled="1"] .val { color: var(--text-3); }
+.app .more-row:disabled { opacity: 0.45; cursor: not-allowed; }
+/* 配方微调停用时说明在上、滑块在下；手机两种版式里带子只有 44 高：说明 14 + 滑块 30。 */
+.app .panel.recipe .knobs[data-disabled="1"] { flex-direction: column; align-items: stretch; }
+.app .panel.recipe .knobs[data-disabled="1"] .adj-disabled-note { grid-column: 1 / -1; flex: none; }
+.app:not([data-layout^="ipad"]) .panel.recipe .knobs[data-disabled="1"] .krow,
+.app:not([data-layout^="ipad"]) .panel.recipe .knobs[data-disabled="1"] .krow .slider { height: 30px; }
+.app:not([data-layout^="ipad"]) .panel.recipe .knobs[data-disabled="1"] .krow .slider input[type="range"] { height: 30px; }
+.app .panel.adjust[data-disabled="1"] .hist-toggle:disabled,
+.app .panel.adjust[data-disabled="1"] .curves-chip:disabled { opacity: 0.42; color: var(--text-3); cursor: not-allowed; }

@@ -1,5 +1,7 @@
 // 响应式版式判定与 iPad 直方图默认开关记忆：手机竖屏 / 手机横屏 / iPad 横屏 / iPad 竖屏共用一套代码。
 
+import { isComputer } from '../lib/save_mode';
+
 export type LayoutMode = 'phone-portrait' | 'phone-landscape' | 'ipad-landscape' | 'ipad-portrait';
 export type IpadSize = '13' | '11';
 
@@ -13,13 +15,22 @@ function store(): Storage | null {
   }
 }
 
-/** 按视口尺寸与朝向判定版式：短边 >= 700 pt 为 iPad（否则为手机，含 iPad 窄分屏/侧拉）。 */
-export function classifyLayout(width: number, height: number): LayoutMode {
+/** 电脑上又宽又矮的窗口（笔记本浏览器、放大到 125–150 %）仍用 iPad/电脑版式的最小宽高（desktop-layout L2）。实测：
+ * 高 590 时侧边面板还有 180 px、配方面板不滚动能看到 3 个控件、舞台 360 px；宽 900 时舞台还有 540 px 宽。再小就回到手机版式。 */
+export const COMPUTER_SHORT_MIN_WIDTH = 900;
+export const COMPUTER_SHORT_MIN_HEIGHT = 590;
+
+/**
+ * 按视口尺寸与朝向判定版式：短边 >= 700 pt 为 iPad（否则为手机，含 iPad 窄分屏/侧拉）。
+ * 电脑（没有触摸点、指针精确）上横向窗口宽 >= 900、高 >= 590 也用 iPad 横屏版式；有触摸的设备照旧。
+ */
+export function classifyLayout(width: number, height: number, computer: boolean = isComputer()): LayoutMode {
   const w = Number.isFinite(width) && width > 0 ? width : 390;
   const h = Number.isFinite(height) && height > 0 ? height : 844;
   if (Math.min(w, h) >= 700) {
     return w > h ? 'ipad-landscape' : 'ipad-portrait';
   }
+  if (computer && w > h && w >= COMPUTER_SHORT_MIN_WIDTH && h >= COMPUTER_SHORT_MIN_HEIGHT) return 'ipad-landscape';
   return w > h ? 'phone-landscape' : 'phone-portrait';
 }
 
@@ -82,6 +93,22 @@ export function viewportDims(shell: HTMLElement): { width: number; height: numbe
   return { width, height };
 }
 
+/** 横向滚动的配方条和胶片条：电脑上普通的竖向滚轮也让它们左右滚（P2-6）。 */
+const WHEEL_STRIPS = '.strip, .ipad-filmstrip';
+const wheelShells = new WeakSet<HTMLElement>();
+
+/** 只在条子真能往那个方向滚时才接管（preventDefault）；横向滚动、捏合缩放（ctrlKey）和触摸设备照旧。 */
+function stripWheel(event: WheelEvent): void {
+  if (event.ctrlKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX) || !isComputer()) return;
+  const strip = event.target instanceof Element ? event.target.closest<HTMLElement>(WHEEL_STRIPS) : null;
+  if (!strip) return;
+  const max = strip.scrollWidth - strip.clientWidth;
+  const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? strip.clientWidth : 1);
+  if (max <= 0 || (delta < 0 && strip.scrollLeft <= 0) || (delta > 0 && strip.scrollLeft >= max - 1)) return;
+  event.preventDefault();
+  strip.scrollLeft += delta;
+}
+
 export interface LayoutWatch {
   mode(): LayoutMode;
   ipadSize(): IpadSize;
@@ -112,6 +139,11 @@ export function watchViewportLayout(
   };
 
   window.addEventListener('resize', check);
+  // 每个壳只挂一次（开始页和编辑器都会调这里），壳一直在，不用拆。
+  if (!wheelShells.has(shell)) {
+    wheelShells.add(shell);
+    shell.addEventListener('wheel', stripWheel, { passive: false });
+  }
   let observer: ResizeObserver | null = null;
   if (typeof ResizeObserver === 'function') {
     observer = new ResizeObserver(() => check());
