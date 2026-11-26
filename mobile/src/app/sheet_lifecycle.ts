@@ -5,7 +5,11 @@ import { noteRegistered } from './keys';
 
 const registry = new WeakMap<HTMLElement, Set<() => void>>();
 
-export function registerSheet(host: HTMLElement, onCancel: () => void): () => void {
+/**
+ * `escCancels: false`：这个面板的 Esc 不是「取消」而是和点遮罩一样关上（时间戳、边框更多选项：遮罩和「完成」都会留下刚打的字）。
+ * 切照片、退出编辑器时的 `cancelHostSheets` 照样调 onCancel。
+ */
+export function registerSheet(host: HTMLElement, onCancel: () => void, opts: { escCancels?: boolean } = {}): () => void {
   let set = registry.get(host);
   if (!set) {
     set = new Set();
@@ -13,7 +17,7 @@ export function registerSheet(host: HTMLElement, onCancel: () => void): () => vo
   }
   set.add(onCancel);
   const live = set;
-  noteRegistered(onCancel, () => live.has(onCancel)); // Esc 关最上面的这一层就是「取消」（keys.ts）
+  if (opts.escCancels !== false) noteRegistered(onCancel, () => live.has(onCancel)); // Esc 关最上面的这一层就是「取消」（keys.ts）
   return () => {
     set?.delete(onCancel);
   };

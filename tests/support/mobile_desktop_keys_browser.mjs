@@ -228,6 +228,10 @@ async function computerGrid(browser) {
   await page.locator(`.cell[data-id="${ids[0]}"]`).click();
   await page.locator(`.cell[data-id="${ids[4]}"]`).click({ modifiers: ['Shift'] });
   step.shiftRange = await title(page);
+  // 再 Shift 点第 3 张：换成锚点到这张这一段（访达的做法），再点回第 5 张
+  await page.locator(`.cell[data-id="${ids[2]}"]`).click({ modifiers: ['Shift'] });
+  step.shiftShrink = await title(page);
+  await page.locator(`.cell[data-id="${ids[4]}"]`).click({ modifiers: ['Shift'] });
   await page.locator(`.cell[data-id="${ids[2]}"]`).click({ modifiers: [mod] });
   step.modOff = await title(page);
   await page.locator(`.cell[data-id="${ids[2]}"]`).click({ modifiers: [mod] });
@@ -466,6 +470,35 @@ async function computerPhoneLayout(browser) {
   await frames(page, 2);
   const curveDone = await edits(ids[1]);
   step.curvesState = { same: curveEsc !== null && curveEsc === curveDone, changed: curveEsc !== s0 };
+
+  // 时间戳：打了字、焦点在按钮上按 Esc 关，字要留下（和点遮罩、「完成」一样；评审 r1 P1）
+  const openStamp = async () => {
+    step.stampAt = 'more';
+    await page.locator('.editor .toolbar [data-tool="more"]').click();
+    step.stampAt = 'row';
+    await page.locator('.more-sheet [data-more="stamp"]').click();
+    step.stampAt = 'detail';
+    // 「时间戳」先换到时间戳条，再点条上的「更多选项」才是这张工作表
+    await page.waitForSelector('.stamp-band [data-act="stamp-sheet"]', { state: 'attached' });
+    await page.evaluate(() => document.querySelector('.stamp-band [data-act="stamp-sheet"]').click());
+    await page.waitForSelector('.stamp-sheet');
+    return page.locator('.stamp-sheet');
+  };
+  let stamp = await openStamp();
+  step.stampAt = 'content';
+  // 时间戳关着时内容按钮是灰的：先打开开关
+  if (!(await stamp.locator('input.switch').first().isChecked())) await stamp.locator('input.switch').first().click({ force: true });
+  await stamp.getByRole('button', { name: '文字', exact: true }).click();
+  step.stampAt = 'typed';
+  await stamp.locator('.txtbox').fill('ESC KEEP');
+  await page.waitForTimeout(400); // 过了 120 ms 的预览刷新
+  await stamp.getByRole('button', { name: '文字', exact: true }).focus();
+  await esc(page);
+  const stampClosed = (await count(page, '.stamp-sheet')) === 0;
+  stamp = await openStamp();
+  const kept = (await stamp.locator('.txtbox').inputValue().catch(() => '')) === 'ESC KEEP';
+  await esc(page);
+  step.stampEsc = { closed: stampClosed, kept };
 
   // 配方筛选、配方状态（需要相机配方文件）
   await page.locator('.editor .toolbar [data-tool="recipe"]').click();

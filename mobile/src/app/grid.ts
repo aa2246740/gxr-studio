@@ -409,7 +409,7 @@ export class GridView {
     if (!this.selecting && ev && modKey(ev)) this.toggleSelect(true);
     if (this.selecting) {
       const range = ev?.shiftKey && this.anchor ? rangeBetween(gridOrder(this.rows), this.anchor, id) : null;
-      if (range) for (const one of range) this.selected.add(one);
+      if (range) { this.selected.clear(); for (const one of range) this.selected.add(one); } // 和访达一样：Shift 点选换成锚点到这张这一段
       else if (this.selected.has(id)) this.selected.delete(id);
       else this.selected.add(id);
       if (!range) this.anchor = id;
