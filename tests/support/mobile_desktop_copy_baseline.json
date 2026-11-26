@@ -1,0 +1,198 @@
+{
+ "ipad": {
+  "adjust": {
+   "attrs": [],
+   "dom": "点两下圆点回到 0",
+   "text": "点两下圆点回到 0\n全部重置"
+  },
+  "askDat": {
+   "attrs": [],
+   "text": "还差相机配方文件\n\n配方要用存储卡最外层的相机配方文件（GXRCE.DAT 和 GXRFX.BIN）。\n\n选一次就会记住，以后只选照片就行。\n\n存储卡\n›\nGXRCE.DAT\n（在最外层，和 DCIM 并排）\nGXRFX.BIN（新卡才有）\n在「文件」里选 GXRCE.DAT 和 GXRFX.BIN\n先不用，继续看相机 JPG"
+  },
+  "calib": {
+   "attrs": [],
+   "text": "校准与配方文件\n完成\n相机配方文件\n未记住\n\n存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN。选一次就会留在这台 iPad，以后只选照片。\n\n选择相机配方文件…\n校准数据\n未校准\n\n默认校准没有下载下来，可能没联网。配方只显示中性转换，和相机里的颜色不同。\n\n也可以用自己的校准：在 Mac 的 GXR Studio 里导出，用隔空投送发到这台 iPad。\n\n选择校准数据文件"
+  },
+  "editor": {
+   "attrs": [],
+   "text": "未校准"
+  },
+  "editorMore": {
+   "attrs": [],
+   "text": "更多\n完成\n复制调整\n选要复制的项目，套用到别的照片\n导出选项\n尺寸、品质与 HDR 说明\n做成关机图\n生成 640×480 的 GXROFF.JPG\n照片信息\n文件名、拍摄时间与镜头"
+  },
+  "env": {
+   "fine": false,
+   "layout": "ipad-portrait",
+   "touch": 5
+  },
+  "exportOptions": {
+   "attrs": [
+    "aria-label=HDR"
+   ],
+   "glyphs": [
+    {
+     "share": true,
+     "text": "存到相册"
+    }
+   ],
+   "text": "导出选项\n好\n\n「存到相册」每次都按这里的设置做。\n\n尺寸\n4288 × 2848 像素\n原始尺寸\n大\n中\n小\n品质\n高\n中\n低\nHDR\n在 iPad 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。\n存到相册"
+  },
+  "gridMore": {
+   "attrs": [],
+   "text": "更多\n完成\n排序\n从早到晚\n从晚到早\n分组间隔\n\n相邻两张拍摄时间隔得比这个久，就分成新的一组。\n\n1 分钟\n3 分钟\n5 分钟\n10 分钟\n\n现在是 1 组；1 分钟 1 组 · 3 分钟 1 组 · 5 分钟 1 组 · 10 分钟 1 组\n\n添加照片\n再从存储卡里选几张\n校准数据\n未校准\n怎么把卡插到 iPad\n需要配方时再选 GXRCE.DAT 和 GXRFX.BIN\n清空照片，重新选\n只清掉这次的照片，不动存储卡"
+  },
+  "help": {
+   "attrs": [],
+   "text": "怎么把卡插到 iPad\n完成\n1\n把存储卡放进读卡器\n用带 USB-C 接口的读卡器。卡面朝向读卡器上标的方向。\n2\n把读卡器插到 iPad 底部\n插好后不用等，不会有任何弹窗。\n3\n首次使用，先选相机配方文件\n在「文件」里找到存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN（和 DCIM 并排）。选一次就会记住，和照片一起选也行。\n4\n再选照片\n打开 DCIM 文件夹选要用的照片；以后每次只需选照片。没选配方文件也能先看相机 JPG。\n\n拔卡前，先确认照片已经存到相册。除了在胶片柜里点「写入存储卡」，GXR Studio 不会改动存储卡上的文件。\n\n字体许可：Atkinson Hyperlegible (OFL) · Inter Regular (OFL) · Inter SemiBold (OFL) · Courier Prime (OFL) · Patrick Hand (OFL) · DSEG7 Classic (SIL OFL)"
+  },
+  "logo": {
+   "attrs": [
+    "aria-label=选择标志图片",
+    "aria-label=去掉白底",
+    "aria-label=容差",
+    "aria-label=名称",
+    "placeholder=例如：我的签名"
+   ],
+   "text": "标志\n完成\n不显示\n不在边框上画标志\nGXR\nGXR 标志\n内置文字徽标，默认样式\n我的标志\n0 / 12\n\n还没有自己的标志。上传一张 PNG（背景透明的效果最好）。\n\n添加标志\n===\n返回\n添加标志\n取消\n选择图片…\n支持 PNG、JPG、WebP（不超过 5 MB）\n你选的图片\n裁剪边缘后\n去掉白底\n容差\n30\n名称\n\n标志只保存在这台 iPad 上，不会上传。透明背景的 PNG 效果最好。\n\n保存并使用"
+  },
+  "lut": {
+   "attrs": [],
+   "dom": "LUT 只存在这台 iPad 上，直接套在照片上，不写入相机。",
+   "text": ""
+  },
+  "offImage": {
+   "attrs": [],
+   "text": "相机会把当天张数叠在关机画面上，下部别放重要内容。\n\n把 GXROFF.JPG 拷到存储卡最外层（和 GXRCE.DAT 放在一起）。\n\n存的时候选「保存到“文件”」（有的系统叫「存储到“文件”」），不要存进相册（相册会改动文件，相机就不认了）。"
+  },
+  "pulled": {
+   "attrs": [],
+   "text": "存储卡被拔出了\n\n已经读进来的 0 张照片不受影响，可以接着换配方、存到相册。\n\n还有 3 张没读完。把卡插回去，再点「重新选照片」，选同样的照片；做过的设置会保留。\n\n重新选照片\n先用读进来的"
+  },
+  "recipeStatus": {
+   "attrs": [
+    "aria-label=配方状态"
+   ],
+   "text": "配方状态\n关闭\n未校准：默认校准没有下载下来，可能没联网。现在所有配方都只显示中性转换，和相机里的颜色不同。导出也一样。\n导入校准数据\n\n在 Mac 的 GXR Studio 里导出校准数据，用隔空投送发到这台 iPad，再点上面的按钮。只需一次。"
+  },
+  "remembered": {
+   "attrs": [],
+   "text": "GXR\n选照片，换配方，存到相册\n\n用读卡器把存储卡插到 iPad，在「文件」里选照片。\n\n相机配方文件已记住 · 第 250 代\n\n照片只在这次使用中保留，不会上传，也不会离开这台 iPad。\n\n从存储卡选照片\n怎么把卡插到 iPad"
+  },
+  "rememberedCalib": {
+   "attrs": [],
+   "text": "更多\n完成\n排序\n从早到晚\n从晚到早\n分组间隔\n\n相邻两张拍摄时间隔得比这个久，就分成新的一组。\n\n1 分钟\n3 分钟\n5 分钟\n10 分钟\n\n现在是 1 组；1 分钟 1 组 · 3 分钟 1 组 · 5 分钟 1 组 · 10 分钟 1 组\n\n添加照片\n再从存储卡里选几张\n校准数据\n未校准\n怎么把卡插到 iPad\n相机配方文件已选上\n清空照片，重新选\n只清掉这次的照片，不动存储卡\n===\n校准与配方文件\n完成\n相机配方文件\n已记住 · 第 250 代\n\n只存在这台 iPad 的浏览器里，不会上传。换新固件（配方库变了）时再换一份。\n\n换一份…\n忘掉\n校准数据\n未校准\n\n默认校准没有下载下来，可能没联网。配方只显示中性转换，和相机里的颜色不同。\n\n也可以用自己的校准：在 Mac 的 GXR Studio 里导出，用隔空投送发到这台 iPad。\n\n选择校准数据文件"
+  },
+  "rememberedHelp": {
+   "attrs": [],
+   "text": "怎么把卡插到 iPad\n完成\n1\n把存储卡放进读卡器\n用带 USB-C 接口的读卡器。卡面朝向读卡器上标的方向。\n2\n把读卡器插到 iPad 底部\n插好后不用等，不会有任何弹窗。\n3\n首次使用，先选相机配方文件\n在「文件」里找到存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN（和 DCIM 并排）。选一次就会记住，和照片一起选也行。\n4\n再选照片\n打开 DCIM 文件夹选要用的照片；以后每次只需选照片。没选配方文件也能先看相机 JPG。\n\n拔卡前，先确认照片已经存到相册。除了在胶片柜里点「写入存储卡」，GXR Studio 不会改动存储卡上的文件。\n\n字体许可：Atkinson Hyperlegible (OFL) · Inter Regular (OFL) · Inter SemiBold (OFL) · Courier Prime (OFL) · Patrick Hand (OFL) · DSEG7 Classic (SIL OFL)"
+  },
+  "start": {
+   "attrs": [],
+   "hero": {
+    "device": null,
+    "phone": true
+   },
+   "text": "GXR\n选照片，换配方，存到相册\n\n先选一次相机配方文件（存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN），以后每次只选照片。\n\n照片和相机配方文件只留在这台 iPad，不会上传。\n\n选相机配方文件\n选照片\n怎么把卡插到 iPad"
+  }
+ },
+ "phone": {
+  "adjust": {
+   "attrs": [],
+   "dom": "点两下圆点回到 0",
+   "text": ""
+  },
+  "askDat": {
+   "attrs": [],
+   "text": "还差相机配方文件\n\n配方要用存储卡最外层的相机配方文件（GXRCE.DAT 和 GXRFX.BIN）。\n\n选一次就会记住，以后只选照片就行。\n\n存储卡\n›\nGXRCE.DAT\n（在最外层，和 DCIM 并排）\nGXRFX.BIN（新卡才有）\n在「文件」里选 GXRCE.DAT 和 GXRFX.BIN\n先不用，继续看相机 JPG"
+  },
+  "calib": {
+   "attrs": [],
+   "text": "校准与配方文件\n完成\n相机配方文件\n未记住\n\n存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN。选一次就会留在这台 iPhone，以后只选照片。\n\n选择相机配方文件…\n校准数据\n未校准\n\n默认校准没有下载下来，可能没联网。配方只显示中性转换，和相机里的颜色不同。\n\n也可以用自己的校准：在 Mac 的 GXR Studio 里导出，用隔空投送发到这台 iPhone。\n\n选择校准数据文件"
+  },
+  "editor": {
+   "attrs": [
+    "aria-label=配方状态：未校准"
+   ],
+   "text": "未校准"
+  },
+  "editorMore": {
+   "attrs": [],
+   "text": "更多\n完成\n复制调整\n选要复制的项目，套用到别的照片\n导出选项\n尺寸、品质与 HDR 说明\n做成关机图\n生成 640×480 的 GXROFF.JPG\n照片信息\n文件名、拍摄时间与镜头"
+  },
+  "env": {
+   "fine": false,
+   "layout": "phone-portrait",
+   "touch": 1
+  },
+  "exportOptions": {
+   "attrs": [
+    "aria-label=HDR"
+   ],
+   "glyphs": [
+    {
+     "share": true,
+     "text": "存到相册"
+    }
+   ],
+   "text": "导出选项\n取消\n\n# · JPG\n\n尺寸\n4288 × 2848 像素\n原始尺寸\n大\n中\n小\n品质\n高\n中\n低\nHDR\n在 iPhone 上看，亮处会更亮，更接近你当时看到的；别的设备照常显示。\n存到相册\n\n「存到相册」每次都按这里的设置做。做好后点「存进相册」，在系统面板里点「存储图像」。"
+  },
+  "gridMore": {
+   "attrs": [],
+   "text": "更多\n完成\n排序\n从早到晚\n从晚到早\n分组间隔\n\n相邻两张拍摄时间隔得比这个久，就分成新的一组。\n\n1 分钟\n3 分钟\n5 分钟\n10 分钟\n\n现在是 1 组；1 分钟 1 组 · 3 分钟 1 组 · 5 分钟 1 组 · 10 分钟 1 组\n\n添加照片\n再从存储卡里选几张\n校准数据\n未校准\n怎么把卡插到 iPhone\n需要配方时再选 GXRCE.DAT 和 GXRFX.BIN\n清空照片，重新选\n只清掉这次的照片，不动存储卡"
+  },
+  "help": {
+   "attrs": [],
+   "text": "怎么把卡插到 iPhone\n完成\n1\n把存储卡放进读卡器\n用带 USB-C 接口的读卡器。卡面朝向读卡器上标的方向。\n2\n把读卡器插到 iPhone 底部\n插好后不用等，不会有任何弹窗。\n3\n首次使用，先选相机配方文件\n在「文件」里找到存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN（和 DCIM 并排）。选一次就会记住，和照片一起选也行。\n4\n再选照片\n打开 DCIM 文件夹选要用的照片；以后每次只需选照片。没选配方文件也能先看相机 JPG。\n\n拔卡前，先确认照片已经存到相册。除了在胶片柜里点「写入存储卡」，GXR Studio 不会改动存储卡上的文件。\n\n字体许可：Atkinson Hyperlegible (OFL) · Inter Regular (OFL) · Inter SemiBold (OFL) · Courier Prime (OFL) · Patrick Hand (OFL) · DSEG7 Classic (SIL OFL)"
+  },
+  "logo": {
+   "attrs": [
+    "aria-label=选择标志图片",
+    "aria-label=去掉白底",
+    "aria-label=容差",
+    "aria-label=名称",
+    "placeholder=例如：我的签名"
+   ],
+   "text": "标志\n完成\n不显示\n不在边框上画标志\nGXR\nGXR 标志\n内置文字徽标，默认样式\n我的标志\n0 / 12\n\n还没有自己的标志。上传一张 PNG（背景透明的效果最好）。\n\n添加标志\n===\n返回\n添加标志\n取消\n选择图片…\n支持 PNG、JPG、WebP（不超过 5 MB）\n你选的图片\n裁剪边缘后\n去掉白底\n容差\n30\n名称\n\n标志只保存在这台 iPhone 上，不会上传。透明背景的 PNG 效果最好。\n\n保存并使用"
+  },
+  "lut": {
+   "attrs": [],
+   "dom": "LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。",
+   "text": "LUT 只存在这台 iPhone 上，直接套在照片上，不写入相机。"
+  },
+  "offImage": {
+   "attrs": [],
+   "text": "相机会把当天张数叠在关机画面上，下部别放重要内容。\n\n把 GXROFF.JPG 拷到存储卡最外层（和 GXRCE.DAT 放在一起）。\n\n存的时候选「保存到“文件”」（有的系统叫「存储到“文件”」），不要存进相册（相册会改动文件，相机就不认了）。"
+  },
+  "pulled": {
+   "attrs": [],
+   "text": "存储卡被拔出了\n\n已经读进来的 0 张照片不受影响，可以接着换配方、存到相册。\n\n还有 3 张没读完。把卡插回去，再点「重新选照片」，选同样的照片；做过的设置会保留。\n\n重新选照片\n先用读进来的"
+  },
+  "recipeStatus": {
+   "attrs": [
+    "aria-label=配方状态"
+   ],
+   "text": "配方状态\n关闭\n未校准：默认校准没有下载下来，可能没联网。现在所有配方都只显示中性转换，和相机里的颜色不同。导出也一样。\n导入校准数据\n\n在 Mac 的 GXR Studio 里导出校准数据，用隔空投送发到这台 iPhone，再点上面的按钮。只需一次。"
+  },
+  "remembered": {
+   "attrs": [],
+   "text": "GXR\n选照片，换配方，存到相册\n\n用读卡器把存储卡插到 iPhone，在「文件」里选照片。\n\n相机配方文件已记住 · 第 250 代\n\n照片只在这次使用中保留，不会上传，也不会离开这台 iPhone。\n\n从存储卡选照片\n怎么把卡插到 iPhone"
+  },
+  "rememberedCalib": {
+   "attrs": [],
+   "text": "更多\n完成\n排序\n从早到晚\n从晚到早\n分组间隔\n\n相邻两张拍摄时间隔得比这个久，就分成新的一组。\n\n1 分钟\n3 分钟\n5 分钟\n10 分钟\n\n现在是 1 组；1 分钟 1 组 · 3 分钟 1 组 · 5 分钟 1 组 · 10 分钟 1 组\n\n添加照片\n再从存储卡里选几张\n校准数据\n未校准\n怎么把卡插到 iPhone\n相机配方文件已选上\n清空照片，重新选\n只清掉这次的照片，不动存储卡\n===\n校准与配方文件\n完成\n相机配方文件\n已记住 · 第 250 代\n\n只存在这台 iPhone 的浏览器里，不会上传。换新固件（配方库变了）时再换一份。\n\n换一份…\n忘掉\n校准数据\n未校准\n\n默认校准没有下载下来，可能没联网。配方只显示中性转换，和相机里的颜色不同。\n\n也可以用自己的校准：在 Mac 的 GXR Studio 里导出，用隔空投送发到这台 iPhone。\n\n选择校准数据文件"
+  },
+  "rememberedHelp": {
+   "attrs": [],
+   "text": "怎么把卡插到 iPhone\n完成\n1\n把存储卡放进读卡器\n用带 USB-C 接口的读卡器。卡面朝向读卡器上标的方向。\n2\n把读卡器插到 iPhone 底部\n插好后不用等，不会有任何弹窗。\n3\n首次使用，先选相机配方文件\n在「文件」里找到存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN（和 DCIM 并排）。选一次就会记住，和照片一起选也行。\n4\n再选照片\n打开 DCIM 文件夹选要用的照片；以后每次只需选照片。没选配方文件也能先看相机 JPG。\n\n拔卡前，先确认照片已经存到相册。除了在胶片柜里点「写入存储卡」，GXR Studio 不会改动存储卡上的文件。\n\n字体许可：Atkinson Hyperlegible (OFL) · Inter Regular (OFL) · Inter SemiBold (OFL) · Courier Prime (OFL) · Patrick Hand (OFL) · DSEG7 Classic (SIL OFL)"
+  },
+  "start": {
+   "attrs": [],
+   "hero": {
+    "device": null,
+    "phone": true
+   },
+   "text": "GXR\n选照片，换配方，存到相册\n\n先选一次相机配方文件（存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN），以后每次只选照片。\n\n照片和相机配方文件只留在这台 iPhone，不会上传。\n\n选相机配方文件\n选照片\n怎么把卡插到 iPhone"
+  }
+ }
+}

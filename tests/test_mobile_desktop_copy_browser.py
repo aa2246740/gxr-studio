@@ -84,6 +84,7 @@ def _run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, only: list[str]) -> di
         "shareGlyph": SHARE_GLYPH,
         "reportPath": str(report_path),
         "debugDir": os.environ.get("GXR_DESKTOP_COPY_DEBUG"),
+        "shotDir": os.environ.get("GXR_DESKTOP_COPY_SHOTS"),
     }
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")

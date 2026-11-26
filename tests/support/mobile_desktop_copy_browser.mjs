@@ -100,6 +100,11 @@ async function editorMore(page) {
   await page.waitForSelector('[data-act="more-export-options"]', { state: 'visible', timeout: 15_000 });
 }
 
+/** 手动截图（GXR_DESKTOP_COPY_SHOTS 给了文件夹时才截，不进仓库）。 */
+async function shot(page, label, name) {
+  if (manifest.shotDir) await page.screenshot({ path: path.join(manifest.shotDir, `${label}-${name}.png`) }).catch(() => undefined);
+}
+
 /** 一个浏览器上下文从头走一遍。`label` 是 computer / phone / ipad。 */
 async function walk(browser, label, options, inits) {
   const screens = {};
@@ -137,6 +142,7 @@ async function walk(browser, label, options, inits) {
     layout: document.querySelector('.app')?.dataset.layout ?? '',
   }));
   await page.waitForFunction(() => window.__gxrBook && !window.__gxrBook.loadingDefault, null, { timeout: 60_000 }).catch(() => undefined);
+  await shot(page, label, 'start');
   await step('start', async () => ({
     ...(await grab(page, '.start')),
     hero: await page.evaluate(() => {
@@ -147,6 +153,8 @@ async function walk(browser, label, options, inits) {
   await step('help', async () => {
     await visibleClick(page, '.start .help button');
     await page.waitForSelector('.ms', { timeout: 5_000 });
+    await page.waitForTimeout(400);
+    await shot(page, label, 'help');
     const seen = await grab(page, '.ms');
     await closeTop(page);
     return seen;
@@ -167,6 +175,8 @@ async function walk(browser, label, options, inits) {
     await page.getByRole('button', { name: '更多', exact: true }).first().click();
     await page.locator('.ms .lrow', { hasText: '校准数据' }).click();
     await page.waitForSelector('.calib-sheet .calib[data-calib]', { timeout: 10_000 });
+    await page.waitForTimeout(400);
+    await shot(page, label, 'calib');
     const seen = await grab(page, '.calib-sheet');
     await closeTop(page);
     return seen;
@@ -196,14 +206,20 @@ async function walk(browser, label, options, inits) {
   await step('recipeStatus', async () => {
     await visibleClick(page, '.editor [data-state="no-calibration"]');
     await page.waitForSelector('.recipe-info-sheet', { timeout: 10_000 });
+    await page.waitForTimeout(400);
+    await shot(page, label, 'recipe-status');
     const seen = await grab(page, '.recipe-info-sheet');
     await closeTop(page);
     return seen;
   });
   await step('adjust', async () => {
     await visibleClick(page, '.editor .toolbar [data-tool="adjust"]');
-    await page.waitForSelector('.editor .adj-hint', { state: 'visible', timeout: 10_000 });
-    return grab(page, '.editor .adj-hint');
+    // 「点两下圆点回到 0」只在 iPad 版式（电脑 1440×900 也是）显示；手机上读 DOM 里那一句。
+    await page.waitForSelector('.editor .adj-hint', { state: 'attached', timeout: 10_000 });
+    await page.waitForTimeout(300);
+    const seen = (await grab(page, '.editor .adj-hint')) ?? { text: '', attrs: [] };
+    seen.dom = await page.evaluate(() => document.querySelector('.editor .adj-hint span')?.textContent ?? null);
+    return seen;
   });
   await step('lut', async () => {
     await visibleClick(page, '.editor .toolbar [data-tool="recipe"]');
@@ -278,6 +294,7 @@ async function walk(browser, label, options, inits) {
     await b.page.reload();
     await settle(b.page);
     await b.page.waitForSelector('[data-camfiles="remembered"]', { timeout: 30_000 });
+    await shot(b.page, label, 'start-remembered');
     return grab(b.page, '.start');
   });
   await step('rememberedHelp', async () => {
