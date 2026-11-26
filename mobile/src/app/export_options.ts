@@ -235,7 +235,7 @@ export function mountExportSheet(
   }
 
   const go = button('btn primary lg block go', '');
-  go.append(exportIco(EXPORT_ICON.export, 'md'), document.createTextNode(saveWord()));
+  go.append(exportIco(isComputer() ? EXPORT_ICON.download : EXPORT_ICON.export, 'md'), document.createTextNode(saveWord()));
   go.addEventListener('click', () => {
     host.onClose();
     opts.onStart?.();

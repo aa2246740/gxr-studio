@@ -103,7 +103,8 @@ def test_mobile_r5_dat_sheet_listing_and_resolve(tmp_path: Path) -> None:
     assert "缺少 GXRFX.BIN" in sheet
     assert "缺少 GXRFX.BIN" in report["sheet"]["panel"]
     assert "GXRFX.BIN（新卡才有）" in sheet
-    assert "在「文件」里选 GXRCE.DAT 和 GXRFX.BIN" in sheet
+    # 驱动是无头 Chromium，没有触摸点、指针精确：算电脑（desktop-copy），按钮不提「文件」App。
+    assert "选择 GXRCE.DAT 和 GXRFX.BIN" in sheet
     assert report["sheet"]["hidden"] is False
     _same_read(report["second"], cam, len(library))
     _same_read(report["loaded"], cam, len(library))

@@ -214,7 +214,7 @@ export class HdrPreviewController {
     const note = document.createElement('span');
     note.dataset.hdrScreenNote = '';
     note.className = 'tag hdr-preview hdr-screen-note';
-    note.textContent = HDR_SCREEN_NOTE;
+    note.textContent = this.deps.engine() ? HDR_SCREEN_NOTE : '这个浏览器显示不了 HDR 预览，导出的照片仍带 HDR'; // 没有显卡预览时怪浏览器，不怪屏幕
     host.append(note);
   }
 

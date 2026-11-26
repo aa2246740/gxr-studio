@@ -1,6 +1,7 @@
 // 导出「详情」底部工作表：压在 56pt 底栏上方（最高 240pt，0px 不改照片矩形），模态对话框 + 遮罩点关 + 焦点围栏 + 直达「存进相册」。
 
 import { HDR_PROGRESS } from '../lib/hdr_text';
+import { isComputer } from '../lib/save_mode';
 import { button, el } from './dom';
 import type { Failure, Phase } from './export_batch';
 import {
@@ -239,7 +240,7 @@ export class ExportDetailsSheet {
       const cta = button('btn primary block es-sheet-cta', '');
       cta.dataset.act = running ? 'share-ready' : 'share';
       cta.setAttribute('aria-label', readyShareAriaLabel(positions, data.chunk, data.totalChunks));
-      cta.append(exportIco(EXPORT_ICON.export, 'md'), document.createTextNode(label));
+      cta.append(exportIco(isComputer() ? EXPORT_ICON.download : EXPORT_ICON.export, 'md'), document.createTextNode(label));
       cta.addEventListener('click', data.onShare);
       this.foot.hidden = false;
       this.foot.append(cta);
