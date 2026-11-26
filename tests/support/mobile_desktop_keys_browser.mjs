@@ -312,14 +312,19 @@ async function computerGrid(browser) {
   step.editorArrow = { before: posBefore, after: await pos(page) };
   await dismissAsk(page, step);
   await page.waitForSelector('.editor .toolbar [data-act="export"]', { timeout: 60_000 });
-  // 舞台上点一下收起面板（全图）：Esc 先展开，不回网格
-  const stageBox = await page.locator('.editor .stage').boundingBox();
-  await page.mouse.click(stageBox.x + stageBox.width / 2, stageBox.y + stageBox.height / 2);
+  // 电脑上单击照片不再收起面板（desktop-stage）；在「调整」里按 F 进全图：Esc 先展开、还是「调整」，不回网格
+  await page.locator('.editor .toolbar [data-tool="adjust"]').click();
+  await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+  await page.keyboard.press('f');
   await page.waitForFunction(() => document.querySelector('.screen.editor')?.dataset.collapsed === '1', null, { timeout: 5_000 }).catch(() => {});
   step.collapsed = await page.evaluate(() => document.querySelector('.screen.editor')?.dataset.collapsed ?? '');
   await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
   await esc(page);
-  step.collapsedEsc = { collapsed: await page.evaluate(() => document.querySelector('.screen.editor')?.dataset.collapsed ?? ''), screen: await screen(page) };
+  step.collapsedEsc = {
+    collapsed: await page.evaluate(() => document.querySelector('.screen.editor')?.dataset.collapsed ?? ''),
+    screen: await screen(page),
+    tool: await page.evaluate(() => document.querySelector('.editor .toolbar .tbtn.on')?.dataset.tool ?? ''),
+  };
   // 滑块拿着方向键
   await dismissAsk(page, step, 10_000);
   await page.locator('.editor .toolbar [data-tool="adjust"]').click();

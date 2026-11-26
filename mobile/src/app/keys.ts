@@ -2,6 +2,7 @@
 // 开机时装一次（boot.ts）。所有面板都是「.scrim + 面板」一起挂上去的，这里看着 DOM 记下打开的先后；
 // 在 sheet_lifecycle.ts 登记过的编辑器面板，Esc 就是「取消」，调它登记的 onCancel；其余的等于点一下遮罩。
 // 自己处理 Esc 的面板（导出、关机图、下载兜底）先拿到按键并 preventDefault，这里就不再动别的。
+import { leaveStageFullView } from './stage_zoom';
 
 export interface KeyHooks {
   screen(): string;
@@ -146,13 +147,11 @@ function flush(records: MutationRecord[], shell: HTMLElement, hooks: KeyHooks): 
 }
 
 /**
- * 全图（面板收起来）时先展开，下一次 Esc 才回网格。收起时点任一工具按钮就是展开。
- * studio/desktop-stage 合进来以后，整个函数体换成一行：`return leaveStageFullView();`（stage_zoom.ts）。
+ * 全图（面板收起来）时先展开，下一次 Esc 才回网格。和单击照片 / `F` 是同一个切换（stage_zoom.ts），
+ * 所以展开后还是收起前那个工具（调整、裁剪不会被换成配方）。
  */
-function leaveFullView(shell: HTMLElement): boolean {
-  const full = shell.querySelector<HTMLElement>('.screen.editor[data-collapsed="1"] .toolbar .tbtn[data-tool="recipe"]');
-  full?.click();
-  return !!full;
+function leaveFullView(_shell: HTMLElement): boolean {
+  return leaveStageFullView();
 }
 
 function escape(ev: KeyboardEvent, shell: HTMLElement, hooks: KeyHooks): void {

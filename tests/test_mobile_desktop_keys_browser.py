@@ -163,8 +163,9 @@ def _verify(report: dict[str, Any]) -> None:
     check(position["focus"]["id"] == position["want"], "back from the editor focuses the photo it showed")
     arrow = pc["editorArrow"]
     check(arrow["before"].startswith("1 /") and arrow["after"].startswith("2 /"), f"ArrowRight in the editor: next photo ({arrow})")
-    check(pc["collapsed"] == "1", "a click on the photo collapses the panels (full view)")
-    check(pc["collapsedEsc"] == {"collapsed": "0", "screen": "editor"}, f"Esc leaves full view first ({pc['collapsedEsc']})")
+    check(pc["collapsed"] == "1", "F collapses the panels (full view)")
+    folded = pc["collapsedEsc"]
+    check(folded == {"collapsed": "0", "screen": "editor", "tool": "adjust"}, f"Esc leaves full view first, back on 调整 ({folded})")
     for ask in pc.get("askEsc", []):
         check(ask == {"closed": True, "screen": "editor"}, f"「还差相机配方文件」: one Esc closes only it ({ask})")
     slider = pc["sliderArrow"]
