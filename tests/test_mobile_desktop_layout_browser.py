@@ -264,3 +264,19 @@ def test_mobile_desktop_no_gpu_locks_fine_tune_and_curves(tmp_path: Path) -> Non
     for name in ("nogpu", "webkit"):
         if not groups[name].get("skipped"):
             check(groups[name]["cardSwitched"] is True, f"{name}: recipe cards stay selectable")
+
+
+def test_mobile_desktop_adjust_slider_names(tmp_path: Path) -> None:
+    """L11：调整的每根滑块都叫看得见的名字，aria-valuetext 是看得见的数值（曝光加 EV）。电脑和手机版式都查。"""
+    groups = _run(tmp_path, ["names"])["names"]
+    for kind in ("computer", "phone"):
+        res = groups[kind]
+        check(res["errors"] == [], f"{kind}: no page errors: {res['errors']}")
+        check(len(res["rows"]) == 10, f"{kind}: all ten adjust sliders checked ({len(res['rows'])})")
+        for row in res["rows"]:
+            key = row["key"]
+            check(bool(row["label"]) and row["ariaLabel"] == row["label"], f"{kind} {key}: name equals the visible label: {row}")
+            check(row["roleCount"] == 1, f"{kind} {key}: one slider found by its visible label: {row}")
+            want = f"{row['value']} EV" if key == "exposure_ev" else row["value"]
+            check(row["valueText"] == want, f"{kind} {key}: aria-valuetext is the shown value: {row}")
+            check(row["value"] not in ("0", "0.0"), f"{kind} {key}: ArrowRight moved the value: {row}")

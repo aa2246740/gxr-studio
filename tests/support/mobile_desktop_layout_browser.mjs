@@ -487,6 +487,44 @@ async function lockGroup(browser, url, engine, kind, vp) {
   return { ...out, errors };
 }
 
+/** L11：调整里每一项的滑块，无障碍名称等于看得见的名字，aria-valuetext 是看得见的数值（曝光带 EV）。 */
+async function namesGroup(browser, url, kind, vp) {
+  const { ctx, page, errors } = await newPage(browser, 'metal', kind, vp);
+  const rows = [];
+  try {
+    await start(page, url);
+    await open(page, 'metal');
+    await tool(page, 'adjust');
+    const chips = page.locator('.editor .panel.adjust .adjust-row .chip[data-key]');
+    const n = await chips.count();
+    for (let i = 0; i < n; i += 1) {
+      await chips.nth(i).click();
+      await settle(page, 100);
+      const slider = page.locator('.editor .panel.adjust .big input[type="range"]');
+      await slider.focus();
+      await page.keyboard.press('ArrowRight');
+      await settle(page, 100);
+      const row = await page.evaluate(() => {
+        const vis = (q) => [...document.querySelectorAll(q)].find((x) => x.getClientRects().length > 0)?.textContent?.trim() ?? null;
+        const input = document.querySelector('.editor .panel.adjust .big input[type="range"]');
+        return {
+          key: input?.dataset.key ?? '',
+          label: vis('.editor .adj-l1 b, .editor .band-adjust-hd .adj-lab'),
+          value: vis('.editor .adj-l1 .val, .editor .band-adjust-hd .val'),
+          ariaLabel: input?.getAttribute('aria-label') ?? null,
+          valueText: input?.getAttribute('aria-valuetext') ?? null,
+        };
+      });
+      row.roleCount = await page.getByRole('slider', { name: row.label ?? '', exact: true }).count();
+      rows.push(row);
+      await page.keyboard.press('ArrowLeft');
+    }
+  } finally {
+    await ctx.close();
+  }
+  return { rows, errors };
+}
+
 async function withBrowser(engine, run) {
   if (engine === 'webkit') {
     const exe = resolveWebKitExecutable();
@@ -538,6 +576,12 @@ const GROUPS = {
     out.webkit = await withBrowser('webkit', (b) => lockGroup(b, url, 'webkit', 'computer', { width: 1440, height: 900 }));
     out.webkitPhone = await withBrowser('webkit', (b) => lockGroup(b, url, 'webkit', 'phone', { width: 390, height: 844 }));
     return out;
+  },
+  async names(url) {
+    return withBrowser('metal', async (browser) => ({
+      computer: await namesGroup(browser, url, 'computer', { width: 1440, height: 900 }),
+      phone: await namesGroup(browser, url, 'phone', { width: 390, height: 844 }),
+    }));
   },
   async fitTouch(url) {
     return withBrowser('webkit', async (browser) => ({

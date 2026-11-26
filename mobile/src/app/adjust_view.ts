@@ -297,6 +297,7 @@ export class AdjustView {
     this.input.value = String(photo.knobs[this.key]);
     this.committed = photo.knobs[this.key];
     this.input.dataset.key = spec.key;
+    this.input.setAttribute('aria-label', spec.label);
     this.paintSlider();
     this.paintChipDots();
   }
@@ -309,6 +310,8 @@ export class AdjustView {
     const text = formatKnob(this.key, value);
     this.valueEl.textContent = text;
     if (this.ipadValEl) this.ipadValEl.textContent = text;
+    // 读屏念看得见的数值和单位（曝光是 EV），不念滑块的原始数（desktop-layout L11）。
+    this.input.setAttribute('aria-valuetext', this.key === 'exposure_ev' ? `${text} EV` : text);
     const span = spec.max - spec.min || 1;
     const pct = ((value - spec.min) / span) * 100;
     const zero = ((0 - spec.min) / span) * 100;
