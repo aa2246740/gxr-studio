@@ -30,7 +30,7 @@ from pathlib import Path
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
-from run_tests_plan import shard_plan  # noqa: E402
+from run_tests_plan import STOP_ENV, browser_plan, final_status, halted, shard_plan, stop_on_failure  # noqa: E402
 from run_tests_quiet import BUDGET_ENV, exclusive_plugin, load_gate, make_gate, run_exclusive  # noqa: E402
 from run_tests_report import combine_coverage, merge_junit  # noqa: E402
 
@@ -598,7 +598,7 @@ def _spawn(prefix: str, cmd: list[str], env: dict[str, str], log_path: Path) -> 
     return running
 
 
-def _wait_all(jobs: list[Running]) -> list[int]:
+def _wait_all(jobs: list[Running], stop: bool = False) -> list[int]:
     started = time.monotonic()
     last_note = started
     codes: dict[int, int] = {}
@@ -613,6 +613,10 @@ def _wait_all(jobs: list[Running]) -> list[int]:
             if code is not None:
                 codes[job.proc.pid] = code
                 print(f"[{job.prefix}] exit {code}", flush=True)
+                if stop and code != 0 and len(codes) < len(jobs):
+                    print(f"[{job.prefix}] 失败已成定局（{STOP_ENV}=1），停掉其他分片。", flush=True)
+                    _reap()
+                    stop = False
         if len(codes) == len(jobs):
             break
         now = time.monotonic()
@@ -709,33 +713,36 @@ def _run(parsed: Addopts) -> int:
     junit_parts: list[Path] = []
     coverage_files: list[Path] = []
     codes: list[int] = []
+    stop = stop_on_failure(os.environ)
+    halt = ("-x",) if stop else ()  # 只给计算分片和浏览器阶段，不走 PYTEST_ADDOPTS，exclusive 拿不到
     if normal:
         jobs = [
-            _start_stage(f"shard-{index}", work, ids, child_env, junit_parts, coverage_files)
+            _start_stage(f"shard-{index}", work, ids, child_env, junit_parts, coverage_files, extra=halt)
             for index, ids in enumerate(shard_plan(normal, workers, ROOT, os.environ))
         ]
-        codes.extend(_wait_all(jobs))
+        codes.extend(_wait_all(jobs, stop))
     else:
         print("没有普通测试。", flush=True)
     if (stopped := _stopped()) is not None:
         return stopped
-    if browser:
-        print(f"浏览器阶段：串行，不拿锁，{len(browser)} 个用例。", flush=True)
-        codes.append(_launch_ids("browser", work, browser, child_env, junit_parts, coverage_files))
-    else:
+    if not browser:
         print("没有浏览器阶段。", flush=True)
+    elif not halted(stop, codes, "浏览器阶段"):
+        print(f"浏览器阶段：串行，不拿锁，{len(browser)} 个用例。", flush=True)
+        ordered = browser_plan(browser, ROOT, os.environ)
+        codes.append(_launch_ids("browser", work, ordered, child_env, junit_parts, coverage_files, extra=halt))
     if (stopped := _stopped()) is not None:
         return stopped
-    if exclusive:
+    if not exclusive:
+        print("没有 exclusive 测试。", flush=True)
+    elif not halted(stop, codes, "exclusive 阶段"):
         assert lock is not None
         codes.append(_exclusive(work, exclusive, child_env, junit_parts, coverage_files, lock))
-    else:
-        print("没有 exclusive 测试。", flush=True)
     if (stopped := _stopped()) is not None:
         return stopped
     if parsed.junit:
         merge_junit(junit_parts, Path(parsed.junit))
-    status = next((code for code in codes if code != 0), 0)
+    status = final_status(codes, stop)
     # --cov-config 原样转交：字面量 .coveragerc 是 coverage 的默认查找，*.toml 靠文件名认格式，
     # 解析成绝对路径或链接目标都会改掉这两条。父子进程的 cwd 都是 ROOT，相对路径指向同一个文件。
     coverage_status = combine_coverage(coverage_files, parsed.cov_reports, parsed.cov_config)

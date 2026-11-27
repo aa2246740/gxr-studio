@@ -308,7 +308,7 @@ def test_a_failing_browser_stage_stops_before_exclusive(tmp_path: Path, scratch:
 
 def test_changed_test_files_run_first_in_their_shard_and_in_the_browser_stage(tmp_path: Path, scratch: Path) -> None:
     tree = scratch / "tree"
-    _hits_module(tree)
+    _write_tree(tree, exclusive=False)  # alpha、beta 给覆盖率门槛用，它们的记录不带空格，_marks 不看
     for name in ("a", "b", "c"):
         _test_file(tree, f"test_{name}", _simple(name))
     for name in ("w1", "w2", "w3"):
