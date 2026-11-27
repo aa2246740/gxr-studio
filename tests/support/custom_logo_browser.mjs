@@ -1,5 +1,6 @@
 // 真实浏览器（固定 Playwright 运行时，禁 WebGPU、开 reducedMotion）验证自定义标志完整交互流与预览导出一致。
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -44,14 +45,40 @@ function canvasHash(locator) {
   });
 }
 
+// 换照片：等到顶栏换成新照片的（粘贴按钮是新的元素），而且新照片的编辑记录读完了（复制 / 粘贴去掉 aria-busy）。
+// 只看地址和「有画面」不够：上一张的画面和顶栏还在，点击会落在旧顶栏上，或落在记录还没读完的新顶栏上。
 async function goPhoto(page, id) {
+  const oldPaste = await page.evaluateHandle(() => document.querySelector('#tb-edit [data-paste="1"]'));
   await page.evaluate((pid) => {
     location.hash = `#/photo/${encodeURIComponent(pid)}`;
   }, id);
   await page.waitForFunction(
-    (pid) => decodeURIComponent(location.hash.split('/photo/')[1] || '') === pid && Boolean(document.querySelector('.pv img, .pv canvas')),
-    id,
+    ([pid, old]) => {
+      if (decodeURIComponent(location.hash.split('/photo/')[1] || '') !== pid) return false;
+      const paste = document.querySelector('#tb-edit [data-paste="1"]');
+      return Boolean(document.querySelector('.pv img, .pv canvas')) && !!paste && paste !== old && !paste.hasAttribute('aria-busy');
+    },
+    [id, oldPaste],
   );
+  await oldPaste.dispose();
+}
+
+// 第 7 步超时时留下顶栏按钮状态和当前照片标记（不截图：桌面页面会显示照片名）
+async function toolbarEvidence(page, dir, step, ids) {
+  const state = await page.evaluate((known) => {
+    const pid = decodeURIComponent(location.hash.split('/photo/')[1] || '');
+    return {
+      photo: known.indexOf(pid) + 1,
+      buttons: [...document.querySelectorAll('#tb-edit button')].map((b) => ({
+        title: (b.getAttribute('title') || '').slice(0, 12),
+        ariaDisabled: b.getAttribute('aria-disabled'),
+        ariaBusy: b.getAttribute('aria-busy'),
+        data: { ...b.dataset },
+      })),
+      dialogOpen: !!document.querySelector('#modal-root .dialog'),
+    };
+  }, ids).catch((e) => ({ unavailable: String(e.message).split('\n')[0] }));
+  writeFileSync(path.join(dir, `toolbar-${step}.json`), JSON.stringify(state, null, 1));
 }
 
 async function sampleStageSlotInkLuma(page) {
@@ -372,11 +399,15 @@ try {
     await flushPhotos([id]);
   }, photo2);
 
+  const ids = [photo1, photo2, photo3];
   await goPhoto(page, photo1);
   await page.getByRole('tab', { name: '边框' }).or(page.locator('button', { hasText: '边框' }).first()).first().click();
-  await page.locator('button[title="选择复制哪些内容"]').click();
+  await page.locator('#tb-edit button[title="选择复制哪些内容"]').click();
   const copyDlg = page.locator('#modal-root .dialog');
-  await copyDlg.waitFor({ state: 'visible' });
+  await copyDlg.waitFor({ state: 'visible' }).catch(async (error) => {
+    await toolbarEvidence(page, filesDir, 'copy-options', ids);
+    throw error;
+  });
   const frameGroupBox = copyDlg.locator('input[type="checkbox"][data-group="frame"]');
   await frameGroupBox.waitFor({ state: 'visible' });
   if (!(await frameGroupBox.isChecked())) await frameGroupBox.check();
@@ -386,8 +417,12 @@ try {
   await goPhoto(page, photo2);
   await page.getByRole('tab', { name: '边框' }).or(page.locator('button', { hasText: '边框' }).first()).first().click();
   const pasteResp = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/edits/paste');
-  await page.locator('button[data-paste="1"]').click();
-  assert.equal((await pasteResp).status(), 200);
+  await page.locator('#tb-edit button[data-paste="1"]:not([aria-disabled="true"])').click();
+  const pasted = await pasteResp.catch(async (error) => {
+    await toolbarEvidence(page, filesDir, 'paste', ids);
+    throw error;
+  });
+  assert.equal(pasted.status(), 200);
   await page.locator(`.logo-tile[data-logo="${logoId}"][aria-pressed="true"]`).waitFor();
   out.pastedStyleOnPhoto2 = await page.locator('.fcard[aria-pressed="true"]').getAttribute('data-style');
   assert.equal(out.pastedStyleOnPhoto2, 'leica');
