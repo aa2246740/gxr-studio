@@ -467,6 +467,8 @@ try {
   const delDone = page.waitForResponse((r) => r.url().includes(`/api/logos/${logoId}`) && r.request().method() === 'DELETE');
   await manageDlg.locator('.logo-manage-row .btn.danger').click();
   assert.equal((await delDone).status(), 200);
+  // 删除的回应先到，对话框里的计数随后才重画：等它变成 0 / 12，不是回应一到就读一次
+  await manageDlg.locator('.logo-count-badge', { hasText: /^0 \/ 12$/ }).waitFor();
   assert.equal(await manageDlg.locator('.logo-count-badge').innerText(), '0 / 12');
   await manageDlg.getByRole('button', { name: '完成', exact: true }).click();
 
