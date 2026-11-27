@@ -8,6 +8,7 @@
 exclusive 仍串行，并且用 lockf 拿 /tmp/gxr-heavy.lock。开始前和每个用例之前先等机器安静；
 只有墙钟预算（SpeedBudgetExceeded）没过的用例，安静后再跑一次，以第二次为准（run_tests_quiet.py）。
 JUnit 和覆盖率报告由父进程按合并后的数据写出。门槛 85。
+分片计划（按上次 JUnit 的用时分片、改过的文件先跑、失败就停）在 run_tests_plan.py，都是可选的。
 收到 SIGINT 退出 130，收到 SIGTERM 退出 143，并清掉子进程组。
 """
 
@@ -29,6 +30,7 @@ from pathlib import Path
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
+from run_tests_plan import shard_plan  # noqa: E402
 from run_tests_quiet import BUDGET_ENV, exclusive_plugin, load_gate, make_gate, run_exclusive  # noqa: E402
 from run_tests_report import combine_coverage, merge_junit  # noqa: E402
 
@@ -539,23 +541,6 @@ def _partition(planned: list[Planned]) -> tuple[list[str], list[str], list[str]]
     return normal, browser, exclusive
 
 
-def _shards(node_ids: list[str], workers: int) -> list[list[str]]:
-    grouped: dict[str, list[str]] = {}
-    for node_id in node_ids:
-        grouped.setdefault(node_id.split("::", 1)[0], []).append(node_id)
-    commands: list[list[str]] = [[] for _ in range(workers)]
-    sizes = [0 for _ in range(workers)]
-    for path in sorted(grouped):
-        slot = sizes.index(min(sizes))
-        items = sorted(grouped[path])
-        sizes[slot] += len(items)
-        commands[slot].extend(items)
-    planned = [(cmd, size) for cmd, size in zip(commands, sizes, strict=True) if cmd]
-    counts = ", ".join(str(size) for _cmd, size in planned)
-    print(f"非 exclusive 测试 {sum(sizes)} 个，分到 {len(planned)} 个进程：{counts}。", flush=True)
-    return [cmd for cmd, _size in planned]
-
-
 def _child_env(base: dict[str, str], directory: Path, coverage_file: Path) -> dict[str, str]:
     env = dict(base)
     directory.mkdir(parents=True, exist_ok=True)
@@ -727,7 +712,7 @@ def _run(parsed: Addopts) -> int:
     if normal:
         jobs = [
             _start_stage(f"shard-{index}", work, ids, child_env, junit_parts, coverage_files)
-            for index, ids in enumerate(_shards(normal, workers))
+            for index, ids in enumerate(shard_plan(normal, workers, ROOT, os.environ))
         ]
         codes.extend(_wait_all(jobs))
     else:
