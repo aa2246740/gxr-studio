@@ -34,7 +34,15 @@ const out = {
 };
 const line = (e) => (e instanceof Error ? e.message : String(e)).split('\n')[0].slice(0, 300);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// P2 的出图时间线（请求、回应、中止的时刻和 X-GXR-Cache），只在等出图超时时写进 out.renderTimeline
+const T0 = Date.now();
+const renderTimeline = [];
+const mark = (e) => {
+  renderTimeline.push({ t: Date.now() - T0, ...e });
+  if (renderTimeline.length > 300) renderTimeline.shift();
+};
 const waitFor = async (pred, timeoutMs = 45000, label = 'condition') => {
+  mark({ ev: 'wait', label, timeoutMs });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await pred()) return;
@@ -46,6 +54,11 @@ const waitFor = async (pred, timeoutMs = 45000, label = 'condition') => {
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   page.on('pageerror', (e) => out.pageErrors.push(line(e)));
+  const isP2Render = (rq) => new URL(rq.url()).pathname === `/api/photos/${m.p2}/render`;
+  const renderQ = (rq) => new URL(rq.url()).search.replace(/token=[^&]+/, '');
+  page.on('request', (rq) => { if (isP2Render(rq)) mark({ ev: 'request', method: rq.method(), q: renderQ(rq) }); });
+  page.on('requestfailed', (rq) => { if (isP2Render(rq)) mark({ ev: 'abort', q: renderQ(rq), why: rq.failure()?.errorText || null }); });
+  page.on('framenavigated', (f) => { if (f === page.mainFrame()) mark({ ev: 'navigate' }); });
   page.on('request', (rq) => {
     const u = new URL(rq.url());
     if (u.pathname === `/api/photos/${m.p2}/camera-jpg`) {
@@ -66,6 +79,7 @@ try {
       });
     }
     if (p === `/api/photos/${m.p2}/render`) {
+      mark({ ev: 'response', status: res.status(), q: renderQ(req), cache: res.headers()['x-gxr-cache'] || null });
       out.renders.push({
         method: req.method(),
         status: res.status(),
@@ -614,6 +628,7 @@ try {
   await page.close();
 } catch (e) {
   out.error = line(e);
+  if (/^timeout waiting for .*(stage|render)/.test(out.error)) out.renderTimeline = renderTimeline;
 } finally {
   writeFileSync(m.out, JSON.stringify(out, null, 1));
   await browser.close();

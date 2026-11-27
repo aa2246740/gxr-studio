@@ -21,12 +21,57 @@ const UNSAVED_TEXT = '这张照片有修改没有保存。先点「重试」或�
 
 const buttons = new Set(); // 顶栏上的粘贴按钮（可能不止一个视图留下过，断开的在刷新时清掉）
 
-function currentIsShowing(view) {
+// 编辑记录读不出来时的说明（和面板里的一样，viewer.js 的 panelFor）
+const EDIT_LOAD_TEXT = '无法读取编辑记录。请重试。';
+
+function showingPhoto(view) {
   const m = /^#\/photo\/([^/?]+)/.exec(location.hash);
-  return !!m && decodeURIComponent(m[1]) === view.photo.id && !view.disposed && !!view.ed;
+  return !!m && decodeURIComponent(m[1]) === view.photo.id && !view.disposed;
+}
+
+function currentIsShowing(view) {
+  return showingPhoto(view) && !!view.ed;
+}
+
+// 刚换到这张、编辑记录还在读：这一下点击不丢。等大图这一次的读取（view.ready，不另发请求）结束再做一次；
+// 同一种操作在等的时候连点只算一次。等的时候换走了就不做；读取失败就说出来。
+// 返回 true：这次点击由这里接手（在等，或已经说明了读不出来）
+function afterRecord(view, kind, run) {
+  if (!view || view.ed || !showingPhoto(view)) return false;
+  if (view.edError) {
+    toastError(view.edError, EDIT_LOAD_TEXT);
+    return true;
+  }
+  if (!view.ready) return false;
+  view.waitingCopyPaste ??= new Set();
+  if (view.waitingCopyPaste.has(kind)) return true;
+  view.waitingCopyPaste.add(kind);
+  view.ready.then(() => {
+    view.waitingCopyPaste.delete(kind);
+    if (!showingPhoto(view)) return;
+    if (!view.ed) toastError(view.edError, EDIT_LOAD_TEXT);
+    else run();
+  }).catch((e) => reportError(e));
+  return true;
+}
+
+// 顶栏的复制、复制选项、粘贴按钮：编辑记录在读时带 aria-busy（读到或读失败后去掉）。
+// data-wait-record 同进同出：app.css 据此不锁按钮、不换外观（点了照常收下，见 afterRecord）
+export function syncCopyPasteBusy(view) {
+  const busy = !view.ed && !view.edError;
+  for (const b of view.copyPasteBtns || []) {
+    if (busy) {
+      b.dataset.waitRecord = '1';
+      b.setAttribute('aria-busy', 'true');
+    } else {
+      b.removeAttribute('aria-busy');
+      delete b.dataset.waitRecord;
+    }
+  }
 }
 
 export function copyEdits(view) {
+  if (afterRecord(view, 'copy', () => copyEdits(view))) return true;
   if (!view || !currentIsShowing(view)) return false;
   const result = copyFromView(view);
   toast(copyMessage(result), result.copied.length ? 'ok' : 'info', result.copied.length ? { action: { label: '更改选项', run: () => openCopyOptions(view) } } : {});
@@ -35,6 +80,7 @@ export function copyEdits(view) {
 
 // 复制选项：勾选要复制哪几组（记在本机，下次还是这样）。这张照片里没有设置的组标出来
 export function openCopyOptions(view) {
+  if (afterRecord(view, 'options', () => openCopyOptions(view))) return;
   if (!view || !view.ed) return;
   const present = new Set(groupsPresent(view));
   const chosen = new Set(chosenGroups());
@@ -58,6 +104,7 @@ export function openCopyOptions(view) {
 
 // 粘贴到当前这张：排进保存队列，成功后一次性装进界面，撤销一步还原
 export async function pasteEdits(view) {
+  if (afterRecord(view, 'paste', () => pasteEdits(view).catch((e) => toastError(e, '无法粘贴。请重试。')))) return true;
   if (!view || !currentIsShowing(view) || isSinglePairView(view)) return false;
   const clip = clipboard();
   if (!clip) {
@@ -134,6 +181,8 @@ export function editorCopyPaste(view) {
   paste.dataset.paste = '1';
   buttons.add(paste);
   syncPasteButtons();
+  view.copyPasteBtns = [copy, options, paste];
+  syncCopyPasteBusy(view);
   return [copy, options, paste];
 }
 

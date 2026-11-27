@@ -176,7 +176,9 @@ def test_desktop_editor_halfframe_pair(
         assert proc.returncode == 0, f"driver failed (rc={proc.returncode}): {proc.stderr[-2000:]}"
         assert out_path.is_file(), proc.stderr[-2000:]
         ui = json.loads(out_path.read_text(encoding="utf-8"))
-        assert "error" not in ui, f"{ui.get('error')}\n{str(ui)[:800]}"
+        # 等出图超时时驱动脚本附上出图时间线（renderTimeline）：放在最前面，免得被截断
+        timeline = json.dumps(ui.get("renderTimeline", [])[-60:], ensure_ascii=False)
+        assert "error" not in ui, f"{ui.get('error')}\nrenderTimeline={timeline}\n{str(ui)[:800]}"
         race = ui["steps"]["startupRace"]
         assert race["cards"] > 0 and race["earlyDisabled"] > 0, f"startup race not reproduced: {race}"
         assert race["enabledAfterStatus"] is True, f"recipe cards stayed disabled after the camera-data status arrived: {race}"
