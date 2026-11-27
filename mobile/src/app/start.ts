@@ -1,16 +1,25 @@
 import type { AppApi } from './model';
 import { camFilesRememberedLabel } from '../lib/camfiles';
-import { deviceName } from '../lib/device';
+import { cardHelpTitle, deviceName, isComputerDevice, saveWord, thisDevice } from '../lib/device';
 import { FONT_LICENCE_LABELS, FONT_LICENCES } from '../lib/font_assets';
 import { button, el, icon, ICON } from './dom';
+
+// 电脑上不画手机：同样的线条画一台笔记本（屏幕加底座），卡和箭头不变。
+const PHONE_SHAPE =
+  '<rect x="250" y="16" width="110" height="148" rx="22" fill="#202020" stroke="#6e6e6e" stroke-width="3"/>' +
+  '<rect x="258" y="24" width="94" height="132" rx="16" fill="#161616"/>';
+const LAPTOP_SHAPE =
+  '<rect x="244" y="34" width="152" height="100" rx="10" fill="#202020" stroke="#6e6e6e" stroke-width="3"/>' +
+  '<rect x="253" y="43" width="134" height="82" rx="4" fill="#161616"/>' +
+  '<path d="M228 140h184l-8 12a6 6 0 0 1-5 3H241a6 6 0 0 1-5-3z" fill="#202020" stroke="#6e6e6e" stroke-width="3" stroke-linejoin="round"/>';
 
 function hero(): SVGSVGElement {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 440 180');
   svg.setAttribute('aria-hidden', 'true');
+  if (isComputerDevice()) svg.dataset.device = 'computer';
   svg.innerHTML =
-    '<rect x="250" y="16" width="110" height="148" rx="22" fill="#202020" stroke="#6e6e6e" stroke-width="3"/>' +
-    '<rect x="258" y="24" width="94" height="132" rx="16" fill="#161616"/>' +
+    (isComputerDevice() ? LAPTOP_SHAPE : PHONE_SHAPE) +
     '<path d="M70 28h52l18 18v78a6 6 0 0 1-6 6H70a6 6 0 0 1-6-6V34a6 6 0 0 1 6-6z" fill="#2b2b2b" stroke="#b3b3b3" stroke-width="3"/>' +
     '<path d="M168 90h48M202 78l14 12-14 12" fill="none" stroke="#6aa6ff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>' +
     '<text x="96" y="92" text-anchor="middle" fill="#ececec" font-size="16" font-family="-apple-system,sans-serif" font-weight="700">GXR</text>';
@@ -19,6 +28,7 @@ function hero(): SVGSVGElement {
 
 function paintStartBody(screen: HTMLElement, body: HTMLElement, api: AppApi): void {
   const dev = deviceName();
+  const computer = isComputerDevice();
   const book = api.book();
   const dat = book.dat;
   screen.dataset.camfiles = dat ? 'remembered' : 'none';
@@ -26,20 +36,22 @@ function paintStartBody(screen: HTMLElement, body: HTMLElement, api: AppApi): vo
   body.replaceChildren();
   const picture = el('div', 'hero');
   picture.append(hero());
-  const heading = el('h1', '', '选照片，换配方，存到相册');
+  const heading = el('h1', '', `选照片，换配方，${saveWord()}`);
   const lead = el(
     'p',
     'lead',
     dat
-      ? `用读卡器把存储卡插到 ${dev}，在「文件」里选照片。`
+      ? computer
+        ? '把存储卡接到这台电脑，在弹出的窗口里选照片。'
+        : `用读卡器把存储卡插到 ${dev}，在「文件」里选照片。`
       : '先选一次相机配方文件（存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN），以后每次只选照片。',
   );
   const priv = el(
     'p',
     'priv',
     dat
-      ? `照片只在这次使用中保留，不会上传，也不会离开这台 ${dev}。`
-      : `照片和相机配方文件只留在这台 ${dev}，不会上传。`,
+      ? `照片只在这次使用中保留，不会上传，也不会离开${thisDevice('。')}`
+      : `照片和相机配方文件只留在${thisDevice('，不会上传。')}`,
   );
   priv.prepend(icon(ICON.lock));
 
@@ -72,7 +84,7 @@ function paintStartBody(screen: HTMLElement, body: HTMLElement, api: AppApi): vo
   }
 
   const help = el('div', 'help');
-  const helpBtn = button('lnk', `怎么把卡插到 ${dev}`);
+  const helpBtn = button('lnk', cardHelpTitle());
   helpBtn.prepend(icon(ICON.help));
   helpBtn.addEventListener('click', () => api.showHelp());
   help.append(helpBtn);
@@ -104,7 +116,15 @@ export function renderStart(host: HTMLElement, api: AppApi): void {
   });
 }
 
+// 电脑上的三步：插卡、在弹出的窗口里选照片、第一次再选配方文件。没有第二行小字。
+const COMPUTER_STEPS: Array<[string, string]> = [
+  ['把存储卡插进电脑的 SD 卡槽，或用读卡器接上', ''],
+  ['点选照片的按钮（「选照片」或「从存储卡选照片」），在弹出的窗口里打开存储卡的 DCIM 文件夹，选好 RAW 和 JPG（可以 ⌘A / Ctrl+A 全选）', ''],
+  ['第一次用时，再选存储卡最外层的 GXRCE.DAT 和 GXRFX.BIN', ''],
+];
+
 function helpSteps(dev: string): Array<[string, string]> {
+  if (isComputerDevice()) return COMPUTER_STEPS;
   return [
     ['把存储卡放进读卡器', '用带 USB-C 接口的读卡器。卡面朝向读卡器上标的方向。'],
     [`把读卡器插到 ${dev} 底部`, '插好后不用等，不会有任何弹窗。'],
@@ -118,7 +138,7 @@ export function renderHelp(host: HTMLElement): HTMLElement {
   const scrim = el('div', 'scrim');
   const sheet = el('div', 'ms');
   const row = el('div', 'hd');
-  row.append(el('h2', '', `怎么把卡插到 ${dev}`));
+  row.append(el('h2', '', cardHelpTitle()));
   const done = button('nb', '完成');
   const close = () => {
     scrim.remove();
@@ -132,7 +152,8 @@ export function renderHelp(host: HTMLElement): HTMLElement {
     const line = el('div', 'lrow');
     line.append(el('span', 'step', String(index + 1)));
     const text = el('div');
-    text.append(el('b', '', title), el('small', '', detail));
+    text.append(el('b', '', title));
+    if (detail) text.append(el('small', '', detail));
     line.append(text);
     sheet.append(line);
   });
@@ -140,7 +161,7 @@ export function renderHelp(host: HTMLElement): HTMLElement {
     el(
       'p',
       'faint',
-      '拔卡前，先确认照片已经存到相册。除了在胶片柜里点「写入存储卡」，GXR Studio 不会改动存储卡上的文件。',
+      `拔卡前，先确认照片已经${isComputerDevice() ? '下载好' : '存到相册'}。除了在胶片柜里点「写入存储卡」，GXR Studio 不会改动存储卡上的文件。`,
     ),
   );
   const licences = el('p', 'faint licence-links');

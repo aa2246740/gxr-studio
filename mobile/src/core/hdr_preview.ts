@@ -10,6 +10,7 @@ import type { HdrFitJob } from './hdr_fit_host';
 export const HDR_REFIT_MS = 300;
 /** 设计稿上的小灰字。评审要拿掉时改成 false。 */
 export const SHOW_HDR_PREVIEW_LABEL = true;
+export const HDR_SCREEN_NOTE = '这块屏幕显示不了 HDR，导出的照片仍带 HDR';
 
 export interface HdrTicket {
   session: number;
@@ -93,6 +94,8 @@ export class HdrPreviewController {
     readDng: (photo: HdrPhotoSnap) => Promise<ArrayBuffer | null>;
     fit: (req: HdrFitRequest) => Promise<HdrFitResult>;
     watchExport?: (fn: () => void) => () => void;
+    /** 屏幕能不能显示 HDR 变了（窗口挪到另一块屏）。 */
+    watchDisplay?: (fn: () => void) => () => void;
     clock?: Clock;
     onShowing?: () => void;
     stopFit?: () => void;
@@ -103,13 +106,38 @@ export class HdrPreviewController {
   };
 
   private offExport: (() => void) | null = null;
+  private offDisplay: (() => void) | null = null;
+  /** 上次告诉编辑器时「这块屏幕显示不了 HDR」那行字在不在。 */
+  private noteShown = false;
 
   constructor(deps: HdrPreviewController['deps']) {
     this.deps = deps;
     this.offExport = deps.watchExport?.(() => this.sync()) ?? null;
+    this.offDisplay = deps.watchDisplay?.(() => this.sync()) ?? null;
   }
 
   sync(): void {
+    this.syncPreview();
+    this.refreshNote();
+  }
+
+  /**
+   * 开着 HDR 导出、照片有 RAW、屏幕却显示不了 HDR：导出的文件仍带 HDR，但预览看不出来，要说一句。
+   * 预览已经在显示 HDR 时不说。
+   */
+  screenNote(): boolean {
+    const photo = this.deps.photo();
+    return Boolean(photo && photo.dng !== null && !this.showing && this.deps.exportOn() && !this.deps.display());
+  }
+
+  private refreshNote(): void {
+    const on = this.screenNote();
+    if (on === this.noteShown) return;
+    this.noteShown = on;
+    this.deps.onShowing?.();
+  }
+
+  private syncPreview(): void {
     const photo = this.deps.photo();
     if (!photo) {
       this.close();
@@ -158,11 +186,16 @@ export class HdrPreviewController {
     this.deps.stopFit?.();
     this.release();
     this.ticket = null;
+    this.noteShown = false;
     this.offExport?.();
     this.offExport = null;
+    this.offDisplay?.();
+    this.offDisplay = null;
   }
 
-  paintLabel(host: HTMLElement | null): void {
+  /** `stage` 给了就顺带画「这块屏幕显示不了 HDR」那行字。 */
+  paintLabel(host: HTMLElement | null, stage: HTMLElement | null = null): void {
+    this.paintScreenNote(stage);
     if (!host || !SHOW_HDR_PREVIEW_LABEL) return;
     host.querySelector('[data-hdr-preview]')?.remove();
     if (!this.showing) return;
@@ -171,6 +204,18 @@ export class HdrPreviewController {
     label.className = 'tag hdr-preview';
     label.textContent = 'HDR 预览';
     host.append(label);
+  }
+
+  /** 「这块屏幕显示不了 HDR」那行小灰字，放在舞台下沿。 */
+  paintScreenNote(host: HTMLElement | null): void {
+    if (!host) return;
+    host.querySelector('[data-hdr-screen-note]')?.remove();
+    if (!this.screenNote()) return;
+    const note = document.createElement('span');
+    note.dataset.hdrScreenNote = '';
+    note.className = 'tag hdr-preview hdr-screen-note';
+    note.textContent = this.deps.engine() ? HDR_SCREEN_NOTE : '这个浏览器显示不了 HDR 预览，导出的照片仍带 HDR'; // 没有显卡预览时怪浏览器，不怪屏幕
+    host.append(note);
   }
 
   private wanted(photo: HdrPhotoSnap): boolean {

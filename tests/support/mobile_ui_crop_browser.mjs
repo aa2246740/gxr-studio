@@ -5,6 +5,7 @@
 import { pathToFileURL } from 'node:url';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { exportFromGrid, pickAll, shareAll, sharedFiles, waitPhase, cellOf } from './mobile_ui_export_parity.mjs';
+import { phoneTouch } from './phone_touch.mjs';
 
 const [runtime, url, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -48,6 +49,7 @@ async function settle(page) {
 
 async function newPage() {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.addInitScript(phoneTouch);
   page.on('pageerror', (error) => out.pageErrors.push(error.message));
   await page.addInitScript(fakeShare);
   await page.goto(url);
@@ -348,6 +350,8 @@ async function runParity(page) {
   const afterRepick = await page.evaluate((s) => window.__gxrEdits?.().find((r) => r.stem === s) ?? null, manifest.plans[0].stem);
   await page.locator('.nav .nb[aria-label="更多"]').click();
   await page.locator('.ms .lrow', { hasText: '清空照片，重新选' }).click();
+  // 电脑（没有触摸点）上清空前先问一句（desktop-keys）：点「清空」；手机上没有这一步。
+  await page.locator('.dlg[data-state="confirm-clear"] [data-act="clear-confirm"]').click({ timeout: 3_000 }).catch(() => {});
   await page.waitForSelector('[data-screen="start"]', { timeout: 10_000 });
   out.steps.repickCrop = afterRepick?.crop ?? null;
   out.steps.repickGeom = afterRepick?.geometry ?? null;

@@ -3,6 +3,7 @@
 
 import { pathToFileURL } from 'node:url';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { phoneTouch } from './phone_touch.mjs';
 
 const [runtime, url, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -108,6 +109,7 @@ async function waitEditorReady(page) {
 
 async function runTapCountViewport(width, height) {
   const ctx = await browser.newContext({ viewport: { width, height } });
+  await ctx.addInitScript(phoneTouch);
   const page = await ctx.newPage();
   page.on('pageerror', (err) => out.pageErrors.push(`${width}x${height}: ${err.message}`));
   await installShareMock(page);
@@ -242,6 +244,7 @@ async function runTapCountViewport(width, height) {
 
 async function runDetailedAcceptances() {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await ctx.addInitScript(phoneTouch);
   const page = await ctx.newPage();
   page.on('pageerror', (err) => out.pageErrors.push(`detail: ${err.message}`));
   await installShareMock(page);

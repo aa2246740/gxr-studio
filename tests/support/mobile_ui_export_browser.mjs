@@ -4,6 +4,7 @@
 
 import { pathToFileURL } from 'node:url';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { phoneTouch } from './phone_touch.mjs';
 
 const [runtime, url, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -53,6 +54,7 @@ function fakeShare(mode) {
 
 async function newPage(shareMode = 'record') {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await page.addInitScript(phoneTouch);
   page.on('pageerror', (error) => out.pageErrors.push(error.message));
   await page.addInitScript(fakeShare, shareMode);
   await page.goto(url);

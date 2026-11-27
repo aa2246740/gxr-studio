@@ -4,6 +4,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { batchFacts, cellOf, exportFromGrid, pickAll, shareAll, sharedFiles, waitPhase } from './mobile_ui_export_parity.mjs';
+import { phoneTouch } from './phone_touch.mjs';
 
 const [runtime, url, manifestPath] = process.argv.slice(2);
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -589,6 +590,7 @@ async function runRawOnlyOpenBeforeDat(page) {
 
 async function withFreshPage(fn) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  await context.addInitScript(phoneTouch);
   const page = await context.newPage();
   page.on('pageerror', (error) => out.pageErrors.push(error.message));
   try {

@@ -26,6 +26,8 @@ export interface Classified {
   /** 这次一共选了几个 GXRFX.BIN。 */
   binCount: number;
   ignored: number;
+  /** 忽略的里面不是校准数据 zip、也不是 .cube 的那些：界面要说一句「没有用上」的文件数。 */
+  unusable: number;
 }
 
 export interface Timed {
@@ -53,6 +55,8 @@ export interface VRow {
 const PHOTO = /^R.+\.(dng|jpg)$/i;
 const DAT = /^GXRCE\.DAT$/i;
 const BIN = /^GXRFX\.BIN$/i;
+/** 校准数据 zip 和 .cube LUT 各有自己的入口，混进照片里也不算「没有用上的文件」。 */
+const OTHER_INPUT = /\.(zip|cube)$/i;
 
 function stemOf(name: string): string {
   const dot = name.lastIndexOf('.');
@@ -68,6 +72,7 @@ export function classify(files: readonly Incoming[]): Classified {
   let binIndex: number | null = null;
   let binCount = 0;
   let ignored = 0;
+  let unusable = 0;
   files.forEach((file, index) => {
     if (DAT.test(file.name)) {
       datCount += 1;
@@ -82,6 +87,7 @@ export function classify(files: readonly Incoming[]): Classified {
     const match = PHOTO.exec(file.name);
     if (!match) {
       ignored += 1;
+      if (!OTHER_INPUT.test(file.name)) unusable += 1;
       return;
     }
     const stem = stemOf(file.name);
@@ -99,7 +105,7 @@ export function classify(files: readonly Incoming[]): Classified {
     } else photo.jpgIndex = index;
     photo.lastModified = Math.max(photo.lastModified, file.lastModified);
   });
-  return { photos: order.map((key) => buckets.get(key)!), datIndex, datCount, binIndex, binCount, ignored };
+  return { photos: order.map((key) => buckets.get(key)!), datIndex, datCount, binIndex, binCount, ignored, unusable };
 }
 
 export function isGap(value: number): value is GapMinutes {

@@ -152,7 +152,7 @@ export class EditorView {
       startLuts: (key) => this.luts?.start(key),
       onMediaReady: () => {
         this.fitStageCanvas(true);
-        this.decor?.onMediaReady();
+        this.decor?.onMediaReady(); this.ipad?.syncNoGpu(); // 说明条和舞台同时定下说什么
       },
       syncFloatHistPos: () => this.syncFloatHistPos(),
     });
@@ -331,10 +331,10 @@ export class EditorView {
     this.stageZoom = new StageZoom(stage, pv, {
       isCropActive: () => this.activeTool === 'crop',
       onTap: () => this.toggleBandCollapsed(),
-      onSwipe: (dir) => {
-        if (this.photo) this.api.swipe(this.photo.id, dir);
-      },
+      onSwipe: (dir) => { if (this.photo) this.api.swipe(this.photo.id, dir); },
       onHold: (on) => this.setHolding(on),
+      imageSize: () => (this.photo ? photoExportSize(this.photo, this.engine) : null),
+      // 电脑上：Ctrl/⌘ + 滚轮、捏合、双击和 + / - / 0 缩放，F 收起面板，按住 \ 看原图（stage_zoom.ts）。
     });
     this.cropStage.bindGesture(stage);
 
@@ -699,7 +699,7 @@ export class EditorView {
     const text = this.holding ? '原图' : rawOnly ? NO_PREVIEW_TEXT : noGpu ? this.caption : this.lutLabel ? `LUT · ${this.lutLabel}${this.caption ? ` · ${this.caption}` : ''}` : this.caption;
     if (text) this.stageLabel.append(el('span', 'tag neutral', text));
     if (noGpu) this.stageLabel.append(el('span', 'nogpu-note', rawOnly ? NO_GPU_RAW_DETAIL : NO_GPU_DETAIL));
-    this.hdr.paintLabel(this.stageLabel);
+    this.hdr.paintLabel(this.stageLabel, this.stage);
   }
 
   private enterDrag(layout = true): void {

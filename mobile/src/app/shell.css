@@ -144,6 +144,10 @@ h1, h2, p { margin: 0; }
 .tag { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; font: 500 12px/1 var(--font-ui); color: var(--warn-text); background: var(--warn-bg); }
 .tag.neutral { height: 26px; padding: 0 12px; font-size: 13px; background: rgba(20, 20, 20, 0.78); color: var(--text-1); }
 .tag.hdr-preview { height: 18px; padding: 0 6px; font-size: 11px; color: var(--text-3); background: transparent; }
+/* 屏幕显示不了 HDR 时舞台下沿的一行小灰字（2026-11-26）：不挡手势，压在照片上也看得清。 */
+/* 裁剪时不显示：.pv 自成层叠上下文（will-change），舞台里 z-index ≥ 0 的都会盖住裁剪框下沿的手柄。 */
+.stage:has(.crop-overlay:not([hidden])) .tag.hdr-screen-note { display: none; }
+.stage .tag.hdr-screen-note { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); z-index: 3; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); background: rgba(0, 0, 0, 0.55); pointer-events: none; }
 .bdg { display: inline-flex; align-items: center; height: 17px; padding: 0 5px; border-radius: 4px; font: 600 10px/1 var(--font-num); color: #fff; background: rgba(0, 0, 0, 0.72); }
 
 .seg { display: flex; padding: 2px; border-radius: 12px; background: var(--surface-control); box-shadow: inset 0 0 0 1px var(--line-subtle); }
@@ -788,3 +792,6 @@ svg.curve .curve-point { stroke: #111; stroke-width: 1.5; }
   user-select: text;
   -webkit-user-select: text;
 }
+/* 文件拖进开始页或网格时铺满窗口的提示（file_drop.ts）。data-drag 是编辑器滑块拖动用的，这里另用 data-filedrop。 */
+.filedrop { position: absolute; inset: 0; z-index: 60; display: none; align-items: center; justify-content: center; padding: 24px; background: rgba(12, 12, 14, 0.82); box-shadow: inset 0 0 0 3px var(--accent-text); color: var(--text-1); font-size: 20px; line-height: 28px; font-weight: 600; text-align: center; pointer-events: none; }
+.app[data-filedrop="1"] .filedrop { display: flex; }

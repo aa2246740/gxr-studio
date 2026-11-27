@@ -1,13 +1,13 @@
 // LUT 纯函数：12 个色彩空间、命名与声明识别、文件头署名读取、输入色彩空间选择建议、出图规格与令牌（照桌面 lut/*.py 实现，不碰 DOM/IDB/WASM）。
 
-import { deviceName, type DeviceEnv } from './device.ts';
+import { thisDevice, type DeviceEnv } from './device.ts';
 
 export const MAX_CUBE_BYTES = 64 << 20;
 /** 浏览器本地 LUT 库总大小上限（IndexedDB 与读取前的唯一常量）。 */
 export const MAX_LUT_LIBRARY_BYTES = 256 << 20;
 
 export function lutFootnote(env?: DeviceEnv): string {
-  return `LUT 只存在这台 ${deviceName(env)} 上，直接套在照片上，不写入相机。`;
+  return `LUT 只存在${thisDevice('上', env)}，直接套在照片上，不写入相机。`;
 }
 
 export const LUT_ERRORS = {
@@ -20,6 +20,35 @@ export const LUT_ERRORS = {
   duplicate: '已经导入过',
   bad_name: '无法保存。名称无效。',
 } as const;
+
+// .cube 解析器（core/crates/gxr-lut/src/cube.rs）的英文报错换成用户看得懂的中文，保留行号。已经是中文的原样用。
+const CUBE_LINE_ERRORS: ReadonlyArray<[RegExp, string]> = [
+  [/^unsupported directive\b/, '读不懂，不是有效的 LUT'],
+  [/^duplicate or late header\b/, '的文件头重复或位置不对，不是有效的 LUT'],
+  [/^TITLE needs one quoted string$/, '的标题要用引号括起来'],
+  [/^(invalid LUT size|LUT size out of range)$/, '的 LUT 尺寸不对'],
+  [/^(invalid \w+|non-finite header)$/, '的范围数值不对'],
+  [/^expected three finite numbers$/, '应该是三个数字'],
+  [/^unexpected data row$/, '多出了一行数据'],
+];
+const CUBE_ERRORS: ReadonlyArray<[RegExp, string]> = [
+  [/^No (closing quotation|escaped character)$/, '引号没有配对，不是有效的 LUT'],
+  [/^utf-8 decode error\b/, '不是文本文件，不是有效的 LUT'],
+  [/^(invalid literal for int\(|could not convert string to float\b)/, '有读不懂的数字，不是有效的 LUT'],
+];
+
+/** 导入 .cube 失败时那句话：「第 4 行读不懂，不是有效的 LUT」。认不出的英文退回 LUT_ERRORS.cube_unreadable。 */
+export function cubeErrorText(raw: string): string {
+  const text = raw.trim();
+  const line = /^line (\d+): (.*)$/.exec(text);
+  if (line) {
+    const hit = CUBE_LINE_ERRORS.find(([re]) => re.test(line[2]));
+    return `第 ${line[1]} 行${hit ? hit[1] : '读不懂，不是有效的 LUT'}`;
+  }
+  const hit = CUBE_ERRORS.find(([re]) => re.test(text));
+  if (hit) return hit[1];
+  return /^([A-Z0-9_.]+ ?)?[一-鿿]/.test(text) ? text : LUT_ERRORS.cube_unreadable; // 中文开头（或「LUT 」这类大写缩写后接中文）才算已经是中文
+}
 
 export function ignoredFilesMessage(count: number): string {
   return `${count} 个文件不是 .cube，没有导入。`;

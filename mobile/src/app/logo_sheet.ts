@@ -2,7 +2,7 @@
 // 内置标志标为「GXR 标志」（spec.logo 仍存 "ricoh"）；自定义标志存在本地 IndexedDB，最多 12 个。
 
 import { previewLogo } from '../core/api';
-import { deviceName } from '../lib/device';
+import { thisDevice } from '../lib/device';
 import {
   cleanLogoName,
   drawCheckerPreview,
@@ -705,7 +705,7 @@ export function openLogoSheet(
       msgEl,
       el('div', 'fsrow'),
       nameRow,
-      el('p', 'ffine', `标志只保存在这台 ${deviceName()} 上，不会上传。透明背景的 PNG 效果最好。`),
+      el('p', 'ffine', `标志只保存在${thisDevice('上')}，不会上传。透明背景的 PNG 效果最好。`),
       saveRow,
     );
     const keyTolWrap = body.children[4] as HTMLElement;

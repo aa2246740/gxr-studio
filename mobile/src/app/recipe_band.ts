@@ -2,7 +2,7 @@
 
 import { crossed, uncalibratedReason, type Unit } from '../lib/calib';
 import { DEFAULT_LABEL, DEFAULT_NOTE } from '../lib/default_calib';
-import { deviceName } from '../lib/device';
+import { isComputerDevice, thisDevice } from '../lib/device';
 import {
   CAMERA_RECIPE_LEVELS_UNKNOWN,
   choices,
@@ -13,11 +13,13 @@ import {
   nearestIndex,
 } from '../lib/recipes';
 import type { AdoptedSelection, CameraRecipeError, Control, Shelf, Shelves } from '../lib/recipes';
+import { ADJUST_NO_GPU_REASON } from './adjust_view';
 import type { Book, UnitState } from './book';
 import { markControlDragEnd } from './drag_guard';
 import { button, el, icon } from './dom';
 import { registerSheet } from './sheet_lifecycle';
 
+const KNOB_LOCK_ID = 'knob-lock-reason';
 const CHECK = 'M5 12.5l4.5 4.5L19 7.5';
 const WARN = 'M12 4l9 16H3zM12 10v4M12 17h.01';
 const INFO = 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18M12 11v5M12 8h.01';
@@ -275,7 +277,7 @@ export function openJpgInfoSheet(shell: HTMLElement, diptych: boolean): void {
 export function datFileBox(message: string, pickDat: () => void): HTMLElement {
   const box = el('div');
   box.append(el('p', 'dim', message));
-  const pick = button('btn primary block', '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
+  const pick = button('btn primary block', isComputerDevice() ? '选择 GXRCE.DAT 和 GXRFX.BIN' : '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
   pick.prepend(icon(FILE));
   pick.addEventListener('click', pickDat);
   box.append(pick);
@@ -327,7 +329,7 @@ export function buildStatusBlock(scene: RecipeStatusScene, pickCalib: () => void
   const bring = button('btn primary block', '导入校准数据');
   bring.prepend(icon(PLUS));
   bring.addEventListener('click', pickCalib);
-  box.append(banner, bring, el('p', 'faint small', `在 Mac 的 GXR Studio 里导出校准数据，用隔空投送发到这台 ${deviceName()}，再点上面的按钮。只需一次。`));
+  box.append(banner, bring, el('p', 'faint small', isComputerDevice() ? '在 GXR Studio 里导出校准数据，再点上面的按钮选这个文件。只需一次。' : `在 Mac 的 GXR Studio 里导出校准数据，用隔空投送发到${thisDevice()}，再点上面的按钮。只需一次。`));
   return box;
 }
 
@@ -394,7 +396,7 @@ export function openAskDatSheet(shell: HTMLElement, book: Book, pickDat: () => v
     scrim.remove();
     sheet.remove();
   };
-  const pick = button('btn primary lg block', '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
+  const pick = button('btn primary lg block', isComputerDevice() ? '选择 GXRCE.DAT 和 GXRFX.BIN' : '在「文件」里选 GXRCE.DAT 和 GXRFX.BIN');
   pick.prepend(icon(FILE));
   pick.addEventListener('click', () => {
     close();
@@ -422,12 +424,20 @@ export function openAskDatSheet(shell: HTMLElement, book: Book, pickDat: () => v
   };
 }
 
+/** 没有显卡预览时微调滑块停用（和「调整」一样），这句说明放在滑块上面，滑块用 aria-describedby 指向它。 */
+export function knobLockNote(): HTMLElement {
+  const note = el('p', 'adj-disabled-note', ADJUST_NO_GPU_REASON);
+  note.id = KNOB_LOCK_ID;
+  return note;
+}
+
 export function buildKnobRow(
   control: Control,
   generation: number | null,
   savedLevels: Record<string, number> | undefined,
   onLevel: (level: number) => void,
   onScrub?: (text: string | null) => void,
+  locked = false,
 ): HTMLElement {
   const levels = choices(control, generation);
   const current = effective(control, savedLevels);
@@ -442,6 +452,8 @@ export function buildKnobRow(
   input.step = '1';
   input.value = String(nearestIndex(levels, current));
   input.setAttribute('aria-label', label);
+  input.disabled = locked;
+  if (locked) input.setAttribute('aria-describedby', KNOB_LOCK_ID);
   const paint = () => {
     const level = levels[Number(input.value)] ?? control.default;
     const text = levelText(control, level);

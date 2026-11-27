@@ -1,0 +1,55 @@
+/* 电脑（有悬停、指针精确）专用的样式：手形光标和轻微悬停提示（desktop-layout L5），大屏首屏不留大空档（L14）。有触摸的设备匹配不到这个媒体查询，
+   shell.css 里的 button { cursor: default } 对它们照旧。图库网格的格子由 desktop-keys 负责，这里不碰。 */
+@media (hover: hover) and (pointer: fine) {
+  .app button:not(:disabled):not(.gscroll .cell),
+  .app [role="button"]:not([aria-disabled="true"]),
+  .app input[type="range"]:not(:disabled) { cursor: pointer; }
+
+  /* 没有底色的按钮：顶栏、底栏工具、⋯、列表行，悬停时垫一层很淡的底色。 */
+  .app .tbtn:hover:not(:disabled),
+  .app .nb:hover:not(:disabled),
+  .app .histbtn:hover:not(:disabled),
+  .app .ipad-sub-back:hover,
+  .app .ipad-sub-act:hover,
+  .app .lrow:hover:not(:disabled),
+  .app .more-row:hover:not(:disabled) { background-color: rgba(255, 255, 255, 0.07); }
+
+  /* 有底色的按钮和胶囊：亮一点。 */
+  .app .btn:hover:not(:disabled),
+  .app .fbtn:hover:not(:disabled),
+  .app .chip:hover:not(:disabled),
+  .app .vseg-btn:hover:not(:disabled),
+  .app .ipad-status-btn:hover:not(:disabled),
+  .app .ipad-lut-row:hover:not(:disabled),
+  .app .hdr-toggle:hover:not(:disabled) { filter: brightness(1.18); }
+
+  /* 配方卡、LUT 卡和胶片条：缩略图亮一点，名字变白。 */
+  .app .rc:hover:not(:disabled) .th { filter: brightness(1.15); }
+  .app .rc:hover:not(:disabled) .nm { color: var(--text-1); }
+  .app .rc.filter-tile:hover:not(:disabled) { filter: brightness(1.18); }
+  .app .ipad-filmstrip .cell:hover { filter: brightness(1.15); }
+
+  /* 裁剪：手柄按方向给缩放光标，拉直尺左右拖。 */
+  .app .ch.corner.tl, .app .ch.corner.br { cursor: nwse-resize; }
+  .app .ch.corner.tr, .app .ch.corner.bl { cursor: nesw-resize; }
+  .app .ch.edge.t, .app .ch.edge.b { cursor: ns-resize; }
+  .app .ch.edge.l, .app .ch.edge.r { cursor: ew-resize; }
+  .app .ruler { cursor: ew-resize; }
+
+  /* 首屏：iPad 版式里按钮靠 margin-top: auto 贴底，电脑大屏上会和内容隔开几百像素。电脑上整组内容竖直居中、按钮紧跟内容。 */
+  .app[data-layout^="ipad"] .start > .hero { margin-top: auto; }
+  .app[data-layout^="ipad"] .start .cta { margin-top: 12px; }
+  .app[data-layout^="ipad"] .start > .help { margin-bottom: auto; }
+
+  /* 配方条、胶片条和 iPad/电脑版式的侧边面板：电脑上露一根常驻的细滚动条，看得出后面还有（P2-6、P3-13）。
+     Chromium 和 Safari 用 ::-webkit-scrollbar 画（常驻，不是悬浮的）；scrollbar-width 只要不是 auto，Chromium 就不认它，
+     所以这里先改回 auto。胶片条要压过 ipad.css 里藏滚动条的那条（本文件排在它前面）。 */
+  .app .strip, .app[data-layout] .ipad-filmstrip.film, .app[data-layout^="ipad"] .screen.editor .band .band-body { scrollbar-width: auto; }
+  .app .strip::-webkit-scrollbar, .app[data-layout] .ipad-filmstrip.film::-webkit-scrollbar,
+  .app[data-layout^="ipad"] .screen.editor .band .band-body::-webkit-scrollbar { display: block; width: 6px; height: 6px; background: transparent; }
+  .app .strip::-webkit-scrollbar-thumb, .app[data-layout] .ipad-filmstrip.film::-webkit-scrollbar-thumb,
+  .app[data-layout^="ipad"] .screen.editor .band .band-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.28); border-radius: 3px; }
+  @supports not selector(::-webkit-scrollbar) {
+    .app .strip, .app[data-layout] .ipad-filmstrip.film, .app[data-layout^="ipad"] .screen.editor .band .band-body { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.28) transparent; }
+  }
+}

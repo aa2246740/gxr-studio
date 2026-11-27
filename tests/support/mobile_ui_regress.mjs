@@ -219,8 +219,8 @@ const CASES = {
       const queued = await page.evaluate(() => window.__uploads.length);
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
-      // 卡拔了：b 的整份读取回 gone。
-      await page.evaluate((name) => window.__rewrite('full', { ok: false, gone: true, bytes: undefined }, name, true), bName);
+      // 卡拔了：之后每个文件的整份读取都回 gone（只有一个文件读不了算那一张没了，不算拔卡，见 card_probe.ts）。
+      await page.evaluate(() => window.__rewrite('full', { ok: false, gone: true, bytes: undefined }, undefined, true));
       await page.locator(`.cell[data-id="${b}"]`).click();
       await page.waitForSelector('[data-state="card-removed"]', { timeout: 60_000 });
       const before = { dialog: await page.locator('[data-state="card-removed"]').innerText(), subtitle: await page.locator('.nav small').innerText() };
@@ -284,6 +284,8 @@ const CASES = {
       await page.waitForSelector('[data-screen="grid"]');
       await page.getByRole('button', { name: '更多', exact: true }).click();
       await page.getByRole('button', { name: /清空照片，重新选/ }).click();
+      // 电脑（没有触摸点）上清空前先问一句（desktop-keys）：点「清空」；手机上没有这一步。
+      await page.locator('.dlg[data-state="confirm-clear"] [data-act="clear-confirm"]').click({ timeout: 3_000 }).catch(() => {});
       await page.waitForSelector('[data-screen="start"]');
       const mark = await page.evaluate(() => window.__made.length);
       await page.evaluate(() => window.__thumbHeld.splice(0).forEach((run) => run()));
@@ -390,7 +392,8 @@ const CASES = {
 
   /** 曲线页能调，不再是「这项下一步做」。 */
   async 'later-tabs'() {
-    const { page, context, errors } = await makePage({ gpu: false });
+    // 曲线没有显卡预览时和「调整」一起停用（desktop-layout L7 / P2-9），所以这一项要在有显卡（SwiftShader）的页面里开。
+    const { page, context, errors } = await makePage({ gpu: true });
     try {
       await pick(page, [manifest.jpgs[0]]);
       await page.locator('.cell').first().click();
@@ -642,8 +645,9 @@ const CASES = {
       const before = await page.evaluate(() => window.__gxrEngine.stats());
       await page.getByRole('button', { name: '照片', exact: true }).click();
       await page.waitForSelector('[data-screen="grid"]');
-      // 卡拔了：之后对这个文件的整份读取都报 NotReadableError 那一类（Worker 回 gone）。
-      await page.evaluate((name) => window.__rewrite('full', { ok: false, gone: true, bytes: undefined }, name, true), bName);
+      // 卡拔了：之后每个文件的整份读取都报 NotReadableError 那一类（Worker 回 gone）。只有一个文件读不了算那一张没了，
+      // 不算拔卡（card_probe.ts 先试读别的照片）。
+      await page.evaluate(() => window.__rewrite('full', { ok: false, gone: true, bytes: undefined }, undefined, true));
       await page.evaluate(() => { window.__fullReads = []; });
       await page.locator(`.cell[data-id="${b}"]`).click();
       await page.waitForSelector('[data-state="card-removed"]', { timeout: 60_000 });
@@ -812,7 +816,8 @@ const CASES = {
 
   /** 网格「已编辑」角标覆盖全部编辑组（曲线、裁剪、拉直、边框、印记、显示 LUT），撤回/重置后消失。 */
   async 'grid-edited-badges'() {
-    const { page, context, errors } = await makePage({ gpu: false });
+    // 曲线没有显卡预览时和「调整」一起停用（desktop-layout L7 / P2-9），所以这一项要在有显卡（SwiftShader）的页面里开。
+    const { page, context, errors } = await makePage({ gpu: true });
     try {
       await pick(page, [manifest.jpg]);
       const badgeInGrid = async () => {

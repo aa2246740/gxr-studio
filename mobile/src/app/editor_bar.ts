@@ -1,5 +1,6 @@
 // 编辑器底栏（56pt + 安全区）：四个带图标的工具键（配方 · 调整 · 裁剪 · 更多）+ 右侧主按钮「存到相册」。
 
+import { saveAria, saveWord } from '../lib/save_mode';
 import { button, el, icon } from './dom';
 
 export type BarTool = 'recipe' | 'adjust' | 'crop' | 'more';
@@ -62,9 +63,9 @@ export class EditorBar {
       toolsWrap.append(btn);
     }
 
-    this.saveBtn = button('btn primary save-btn', '存到相册');
+    this.saveBtn = button('btn primary save-btn', saveWord());
     this.saveBtn.dataset.act = 'export';
-    this.saveBtn.setAttribute('aria-label', '导出当前照片并存到相册');
+    this.saveBtn.setAttribute('aria-label', saveAria());
     this.saveBtn.addEventListener('click', () => hooks.onExport());
 
     this.root.append(toolsWrap, this.saveBtn);

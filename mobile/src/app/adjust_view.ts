@@ -2,12 +2,14 @@
 
 import type { Adjust } from '../../../frontend/src/index';
 import { curveJson } from '../lib/export_request';
+import { isComputer } from '../lib/save_mode';
 import { button, el, icon } from './dom';
 import { markControlDragEnd } from './drag_guard';
 import { zeroKnobs, type Knobs, type Photo } from './model';
 
 const HIST_ICON = 'M4 19V11M9 19V6M14 19V13M19 19V8M3 19h18';
-const ADJUST_NO_GPU_REASON = '无显卡预览，暂不能调整';
+/** 没有显卡预览时，调整滑块、曲线和配方微调一起停用，都说这一句（desktop-layout L7）。 */
+export const ADJUST_NO_GPU_REASON = '无显卡预览，暂不能调整';
 const ADJUST_REASON_ID = 'adj-disabled-reason';
 
 export const SLIDERS: Array<{ key: keyof Knobs; label: string; min: number; max: number; step: number }> = [
@@ -66,6 +68,7 @@ export class AdjustView {
   private ipadValEl: HTMLElement | null = null;
   private histBtn: HTMLButtonElement | null = null;
   private disabledNoteEl: HTMLElement | null = null;
+  private curvesChip: HTMLButtonElement | null = null;
   private readonly chipByKey = new Map<keyof Knobs, HTMLButtonElement>();
   private committed = 0;
   private readonly host: AdjustHost;
@@ -102,10 +105,11 @@ export class AdjustView {
       if (disabled) this.input.setAttribute('aria-describedby', ADJUST_REASON_ID);
       else this.input.removeAttribute('aria-describedby');
     }
-    if (this.histBtn) {
-      this.histBtn.disabled = disabled;
-      if (disabled) this.histBtn.setAttribute('aria-describedby', ADJUST_REASON_ID);
-      else this.histBtn.removeAttribute('aria-describedby');
+    for (const btn of [this.histBtn, this.curvesChip]) {
+      if (!btn) continue;
+      btn.disabled = disabled;
+      if (disabled) btn.setAttribute('aria-describedby', ADJUST_REASON_ID);
+      else btn.removeAttribute('aria-describedby');
     }
     if (this.disabledNoteEl) this.disabledNoteEl.hidden = !disabled;
   }
@@ -124,6 +128,7 @@ export class AdjustView {
     this.ipadLabEl = null;
     this.ipadValEl = null;
     this.histBtn = null;
+    this.curvesChip = null;
     this.disabledNoteEl = null;
     this.chipByKey.clear();
   }
@@ -171,6 +176,7 @@ export class AdjustView {
     const curves = button('chip curves-chip deeper', '曲线 ›');
     curves.dataset.act = 'open-curves';
     curves.addEventListener('click', () => this.host.openCurves?.());
+    this.curvesChip = curves;
     chips.append(curves);
 
     this.histBtn = button('hist-toggle', '');
@@ -206,7 +212,7 @@ export class AdjustView {
     const hintReset = button('fbtn', '全部重置');
     hintReset.dataset.act = 'adjust-reset-all';
     hintReset.addEventListener('click', () => this.resetAll());
-    hintRow.append(el('span', 'faint', '点两下圆点回到 0'), hintReset);
+    hintRow.append(el('span', 'faint', isComputer() ? '双击圆点回到 0' : '点两下圆点回到 0'), hintReset);
 
     panel.append(row, big, hintRow);
     this.showKnob();
@@ -292,6 +298,7 @@ export class AdjustView {
     this.input.value = String(photo.knobs[this.key]);
     this.committed = photo.knobs[this.key];
     this.input.dataset.key = spec.key;
+    this.input.setAttribute('aria-label', spec.label);
     this.paintSlider();
     this.paintChipDots();
   }
@@ -304,6 +311,8 @@ export class AdjustView {
     const text = formatKnob(this.key, value);
     this.valueEl.textContent = text;
     if (this.ipadValEl) this.ipadValEl.textContent = text;
+    // 读屏念看得见的数值和单位（曝光是 EV），不念滑块的原始数（desktop-layout L11）。
+    this.input.setAttribute('aria-valuetext', this.key === 'exposure_ev' ? `${text} EV` : text);
     const span = spec.max - spec.min || 1;
     const pct = ((value - spec.min) / span) * 100;
     const zero = ((0 - spec.min) / span) * 100;

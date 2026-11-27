@@ -4,6 +4,7 @@
 
 import { Engine } from '../../../frontend/src/index';
 import { neutralBake, NEUTRAL_BAKE_KEY } from '../lib/neutral';
+import { bindFileDrop } from './file_drop';
 
 export type ChunkKey = 'grid' | 'editor';
 
@@ -128,6 +129,9 @@ function filePicker(className: string, multiple: boolean): HTMLInputElement {
   input.type = 'file';
   input.multiple = multiple;
   input.className = className;
+  // 看不见的选择框不进 Tab 顺序，读屏也跳过；可见的按钮照旧调 click() 打开选择窗口。
+  input.tabIndex = -1;
+  input.setAttribute('aria-hidden', 'true');
   return input;
 }
 
@@ -169,6 +173,8 @@ export function bindPickers(dom: BootDom, app: { take(files: File[]): void; take
     dom.lutPicker.value = '';
     if (files.length) app.takeLuts(files);
   });
+  // 拖进窗口的文件和文件夹：和「选照片」走同一个 take。
+  bindFileDrop(dom.shell, (files) => app.take(files));
 }
 
 /** 显卡引擎（WebGPU）。建不起来就是 null，编辑器只显示相机 JPG；出错交给 `report`。 */

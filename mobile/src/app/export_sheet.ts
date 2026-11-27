@@ -1,6 +1,7 @@
 // 导出「详情」底部工作表：压在 56pt 底栏上方（最高 240pt，0px 不改照片矩形），模态对话框 + 遮罩点关 + 焦点围栏 + 直达「存进相册」。
 
 import { HDR_PROGRESS } from '../lib/hdr_text';
+import { isComputer } from '../lib/save_mode';
 import { button, el } from './dom';
 import type { Failure, Phase } from './export_batch';
 import {
@@ -29,6 +30,8 @@ export interface ExportSheetData {
   failures: readonly Failure[];
   savedCount: number;
   failurePosition: (id: string) => number | null;
+  /** 失败以后这张照片已经重新选过（重试会用新的 File）。 */
+  replaced?: (id: string) => boolean;
   chunk: number;
   totalChunks: number;
   noShare: boolean;
@@ -53,6 +56,7 @@ export class ExportDetailsSheet {
   private onKey: ((ev: KeyboardEvent) => void) | null = null;
   private onCloseCb: ((restoreFocus: boolean) => void) | null = null;
   private returnFocus: HTMLElement | null = null;
+  private repickOff: (() => void) | null = null;
 
   constructor(private readonly shell: HTMLElement) {}
 
@@ -181,13 +185,26 @@ export class ExportDetailsSheet {
         list.append(el('li', '', `${prefix}：${f.message}`));
       }
       const acts = el('div', 'es-fail-acts');
-      const retry = button('fbtn fill-ctl', failures.length === 1 ? '重试这张' : `重试这 ${failures.length} 张`);
-      retry.dataset.act = 'retry';
-      retry.addEventListener('click', data.onRetry);
+      // 文件读不了：旧的 File 句柄已经失效，重试只会再失败一次。按钮改成「重新选这张」，打开选照片，选好以后接着重试（F11）。
+      // 已经重新选过的那张照常「重试」。
+      const reads = failures.filter((f) => f.kind === 'read' && !data.replaced?.(f.id)).length;
+      const others = failures.length - reads;
+      if (reads) {
+        const repick = button('fbtn fill-ctl', reads === 1 ? '重新选这张' : `重新选这 ${reads} 张`);
+        repick.dataset.act = 'repick';
+        repick.addEventListener('click', () => this.repick(data.onRetry));
+        acts.append(repick);
+      }
+      if (others) {
+        const retry = button('fbtn fill-ctl', others === 1 ? '重试这张' : `重试这 ${others} 张`);
+        retry.dataset.act = 'retry';
+        retry.addEventListener('click', data.onRetry);
+        acts.append(retry);
+      }
       const clear = button('fbtn fill-ctl es-clear-btn', '清除');
       clear.dataset.act = 'dismiss';
       clear.addEventListener('click', data.onClearFailures);
-      acts.append(retry, clear);
+      acts.append(clear);
       sec.append(list, acts);
       this.body.append(sec);
     } else if (data.phase === 'stopped') {
@@ -223,7 +240,7 @@ export class ExportDetailsSheet {
       const cta = button('btn primary block es-sheet-cta', '');
       cta.dataset.act = running ? 'share-ready' : 'share';
       cta.setAttribute('aria-label', readyShareAriaLabel(positions, data.chunk, data.totalChunks));
-      cta.append(exportIco(EXPORT_ICON.export, 'md'), document.createTextNode(label));
+      cta.append(exportIco(isComputer() ? EXPORT_ICON.download : EXPORT_ICON.export, 'md'), document.createTextNode(label));
       cta.addEventListener('click', data.onShare);
       this.foot.hidden = false;
       this.foot.append(cta);
@@ -269,6 +286,29 @@ export class ExportDetailsSheet {
       this.returnFocus.focus({ preventScroll: true });
     }
     this.returnFocus = null;
+  }
+
+  /**
+   * 打开选照片（同一个选择框，在这次点击里同步打开）。选好了：启动器先按新文件换掉旧句柄（同步，监听器先注册），
+   * 下一轮再重试，用的就是新的 File。取消了就什么都不做。不跟着这张表收起：选完照片网格会重画，表可能已经关了。
+   */
+  private repick(onRetry: () => void): void {
+    const picker = this.shell.querySelector<HTMLInputElement>('input.filepick:not(.calibpick)');
+    if (!picker) return;
+    this.repickOff?.();
+    const off = (): void => {
+      picker.removeEventListener('change', onChange);
+      picker.removeEventListener('cancel', off);
+      if (this.repickOff === off) this.repickOff = null;
+    };
+    const onChange = (): void => {
+      off();
+      setTimeout(onRetry, 0);
+    };
+    picker.addEventListener('change', onChange);
+    picker.addEventListener('cancel', off);
+    this.repickOff = off;
+    picker.click();
   }
 
   private requestClose(restoreFocus = true): void {

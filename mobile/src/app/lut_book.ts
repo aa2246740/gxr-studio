@@ -7,6 +7,7 @@ import {
   LUT_ERRORS,
   MAX_CUBE_BYTES,
   classifyLutImports,
+  cubeErrorText,
   cleanLutLabel,
   deletedLutToken,
   ignoredFilesMessage,
@@ -165,11 +166,11 @@ export class LutBook {
       try {
         res = await this.io.importLut(item.file, item.name, this.nextVersion());
       } catch (err) {
-        errors.push(`${item.name}：${errorText(err, LUT_ERRORS.cube_unreadable)}`);
+        errors.push(`${item.name}：${cubeErrorText(errorText(err, LUT_ERRORS.cube_unreadable))}`);
         continue;
       }
       if (!res.ok) {
-        if (res.message) errors.push(`${item.name}：${res.message}`);
+        if (res.message) errors.push(`${item.name}：${cubeErrorText(res.message)}`);
         continue;
       }
       this.totalBytes = res.totalBytes;

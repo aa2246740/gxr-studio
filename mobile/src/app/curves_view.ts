@@ -1,6 +1,8 @@
 // 曲线页。点的模型和手势跟桌面 curve_editor.js 一样：端点只能上下动，中间点夹在相邻点之间，
 // 最多 16 个点，横坐标不能重复，双击删中间点。拖动中的草稿写在照片上，预览按帧走；松手才加 rev。
 // 触控热区按大约 22px 算，比桌面的 14（曲线坐标）大；点的取舍、上限和端点规则不变。
+// 鼠标（2026-11-26）：按下会抓住指针、重画圆点，浏览器不发 dblclick，所以 350 ms 内在同一个点上按两下就删掉它；
+// 把中间点拖到曲线框外 24px 以上再松手也删掉。端点删不掉，触屏不变。
 
 import { button, el } from './dom';
 import {
@@ -19,6 +21,8 @@ export const IDENTITY_CURVE: readonly CurvePoint[] = [
   [255, 255],
 ];
 const FINGER_PX = 22;
+const MOUSE_DOUBLE_MS = 350;
+const OFF_GRAPH_PX = 24;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const COLORS: Record<CurveChannel, string> = {
   master: '#ececec',
@@ -115,6 +119,20 @@ interface Drag {
   dy: number;
   added: boolean;
   moved: boolean;
+  /** 鼠标拖到了曲线框外 OFF_GRAPH_PX 以上：此时松手删掉这个点。 */
+  off: boolean;
+}
+
+interface LastDown {
+  at: number;
+  photo: Photo;
+  channel: CurveChannel;
+  point: CurvePoint;
+}
+
+/** 指针离矩形边缘有多远（在框里是 0）。 */
+function outside(x: number, y: number, rect: DOMRect): number {
+  return Math.max(rect.left - x, x - rect.right, rect.top - y, y - rect.bottom, 0);
 }
 
 export class CurvesView {
@@ -133,6 +151,7 @@ export class CurvesView {
   private preview: CurveMap | null = null;
   private frame = 0;
   private closed = false;
+  private lastDown: LastDown | null = null;
 
   constructor(host: CurvesHost) {
     this.host = host;
@@ -225,6 +244,12 @@ export class CurvesView {
     const committed = curveJson(photo.curve);
     const working = channelPoints(committed, this.channel);
     let i = nearestIndex(working, p, touchHit(rect.width));
+    if (i >= 0 && this.mouseDouble(e, photo, working[i])) {
+      this.lastDown = null;
+      e.preventDefault();
+      this.removePoint(photo, working, i);
+      return;
+    }
     let added = false;
     let dx = 0;
     let dy = 0;
@@ -241,7 +266,8 @@ export class CurvesView {
     this.preview = committed;
     this.working = working;
     this.dragPhoto = photo;
-    this.drag = { pointerId: e.pointerId, i, dx, dy, added, moved: false };
+    this.drag = { pointerId: e.pointerId, i, dx, dy, added, moved: false, off: false };
+    this.lastDown = e.pointerType === 'mouse' ? { at: performance.now(), photo, channel: this.channel, point: [working[i][0], working[i][1]] } : null;
     this.host.enterDrag();
     if (added) this.write(setChannel(committed, this.channel, working));
     else this.draw();
@@ -260,11 +286,18 @@ export class CurvesView {
     const fx = ((e.clientX - rect.left) / rect.width) * 255;
     const fy = 255 - ((e.clientY - rect.top) / rect.height) * 255;
     if (!Number.isFinite(fx) || !Number.isFinite(fy)) return;
+    const off = e.pointerType === 'mouse' && this.drag.i > 0 && this.drag.i < this.working.length - 1 && outside(e.clientX, e.clientY, rect) > OFF_GRAPH_PX;
+    if (off !== this.drag.off) {
+      this.drag.off = off;
+      this.lastDown = null;
+      this.draw();
+    }
     const i = this.drag.i;
     const next = clampMoved(this.working, i, Math.round(fx + this.drag.dx), Math.round(fy + this.drag.dy));
     const cur = this.working[i];
     if (next[0] === cur[0] && next[1] === cur[1]) return;
     this.drag.moved = true;
+    this.lastDown = null;
     this.working[i] = next;
     this.write(setChannel(this.dragPhoto.curve, this.channel, this.working));
   };
@@ -290,11 +323,28 @@ export class CurvesView {
     const p = toCurvePoint(e.clientX, e.clientY, this.svg.getBoundingClientRect());
     if (!photo || !p) return;
     const list = channelPoints(photo.curve, this.channel);
-    const i = nearestIndex(list, p, touchHit(this.svg.getBoundingClientRect().width));
+    this.removePoint(photo, list, nearestIndex(list, p, touchHit(this.svg.getBoundingClientRect().width)));
+  };
+
+  /** 删掉 `list[i]`（中间点才删）并提交。 */
+  private removePoint(photo: Photo, list: CurvePoint[], i: number): void {
     if (i <= 0 || i >= list.length - 1 || list.length <= 2) return;
     list.splice(i, 1);
     this.commit(setChannel(photo.curve, this.channel, list));
-  };
+  }
+
+  /** 鼠标在 MOUSE_DOUBLE_MS 内第二次按在同一张照片、同一通道的同一个点上。 */
+  private mouseDouble(e: PointerEvent, photo: Photo, point: CurvePoint): boolean {
+    const last = this.lastDown;
+    if (e.pointerType !== 'mouse' || !last) return false;
+    return (
+      performance.now() - last.at < MOUSE_DOUBLE_MS &&
+      last.photo === photo &&
+      last.channel === this.channel &&
+      last.point[0] === point[0] &&
+      last.point[1] === point[1]
+    );
+  }
 
   private reset(all: boolean): void {
     if (this.drag || this.closed) return;
@@ -327,7 +377,16 @@ export class CurvesView {
     if (!this.drag || !this.dragPhoto) return;
     const photo = this.dragPhoto;
     const pointerId = this.drag.pointerId;
-    const changed = this.drag.added || this.drag.moved;
+    let changed = this.drag.added || this.drag.moved;
+    if (!cancel && this.drag.off && this.working && this.owns(photo)) {
+      // 拖出曲线框松手：删掉这个点，曲线回到没有它的样子。
+      const list = this.working.slice();
+      list.splice(this.drag.i, 1);
+      photo.curve = setChannel(photo.curve, this.channel, list);
+      this.preview = photo.curve;
+      changed = !sameCurve(this.committed, photo.curve);
+      if (!changed) photo.curve = this.committed;
+    }
     this.drag = null;
     this.working = null;
     this.dragPhoto = null;
@@ -396,7 +455,9 @@ export class CurvesView {
     }
     nodes.push(this.line(list, this.channel, false));
     list.forEach(([x, y], i) => {
-      nodes.push(svgEl('circle', { cx: x, cy: 255 - y, r: 8, class: 'curve-point', fill: COLORS[this.channel], 'data-i': i }));
+      const attrs = { cx: x, cy: 255 - y, r: 8, class: 'curve-point', fill: COLORS[this.channel], 'data-i': i };
+      // 拖出框外、松手就删的点画成半透明。
+      nodes.push(svgEl('circle', this.drag?.off && this.drag.i === i ? { ...attrs, opacity: 0.35, 'data-off': 1 } : attrs));
     });
     this.svg.replaceChildren(...nodes);
     this.count.textContent = `${list.length} / ${CURVE_MAX}`;

@@ -375,7 +375,7 @@ export function openStampSheet(
     scrim.remove();
     sheet.remove();
   };
-  unregister = registerSheet(host, cancel);
+  unregister = registerSheet(host, cancel, { escCancels: false }); // Esc 同遮罩/「完成」：留下刚打的字
   done.addEventListener('click', close);
   scrim.addEventListener('click', close);
 

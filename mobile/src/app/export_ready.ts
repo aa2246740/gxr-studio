@@ -1,14 +1,22 @@
 // 44pt 顶槽导出条（与收起态 / 网格态 40pt 贴底条共用）：全部 5 种单行态渲染、VoiceOver 文案、250ms 拖动防误触。
 
 import { hdrResultText, type HdrRow } from '../lib/hdr_text';
+import { isComputer, readyWord, saveAria } from '../lib/save_mode';
 import { isDragTapGuarded } from './drag_guard';
 import { button, el } from './dom';
 import type { Failure, Phase } from './export_batch';
 
 export const NO_SHARE = '这个浏览器打不开系统的共享面板。';
+/** 电脑上一次下载几个文件时，链接留着兜底（浏览器可能拦下后面几个）。 */
+export const DOWNLOAD_BACKUP = '已经开始下载。哪个文件没下下来，点下面的文件名再下一次。';
+/** 电脑上一批打成一个 ZIP 下载以后那张表的头一句。 */
+export function zipStarted(n: number): string {
+  return `已经开始下载 1 个 ZIP，里面有 ${n} 张`;
+}
 
 export const EXPORT_ICON = {
   export: 'M12 15V3M7.5 7.5 12 3l4.5 4.5M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7',
+  download: 'M12 3v12M7.5 10.5 12 15l4.5-4.5M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4', // 电脑上「下载」：箭头朝下进托盘
   check: 'M5 12.5l4.5 4.5L19 7',
   info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5M12 8h.01',
   x: 'M6 6l12 12M18 6 6 18',
@@ -38,11 +46,18 @@ export interface ReadyEntry {
   cameraRecipeNote?: string;
 }
 
-/** 主按钮文案：单张「第 N 张做好了 · 存进相册」，多张「K 张做好了 · 存进相册」，多批时追加批号。 */
+/**
+ * 主按钮文案：单张「第 N 张做好了 · 存进相册」，多张「K 张做好了 · 存进相册」，多批时追加批号。电脑上是「下载」；
+ * 电脑上 2 个以上的文件打成一个 ZIP：「下载（K 张，ZIP）」，拆成几包时「下载第 1/2 包（共 K 张，ZIP）」。
+ */
 export function readyShareLabel(positions: ReadonlyArray<number | null>, chunk: number, totalChunks: number): string {
   const n = positions.length;
   const only = n === 1 ? positions[0] : null;
-  const base = n === 1 && typeof only === 'number' && only > 0 ? `第 ${only} 张做好了 · 存进相册` : `${n} 张做好了 · 存进相册`;
+  const word = readyWord();
+  if (n > 1 && isComputer()) {
+    return totalChunks > 1 ? `下载第 ${chunk + 1}/${totalChunks} 包（共 ${n} 张，ZIP）` : `下载（${n} 张，ZIP）`;
+  }
+  const base = n === 1 && typeof only === 'number' && only > 0 ? `第 ${only} 张做好了 · ${word}` : `${n} 张做好了 · ${word}`;
   if (totalChunks <= 1) return base;
   return `${base}（第 ${chunk + 1} 批，共 ${totalChunks} 批）`;
 }
@@ -51,12 +66,22 @@ export function readyShareLabel(positions: ReadonlyArray<number | null>, chunk: 
 export function readyShareAriaLabel(positions: ReadonlyArray<number | null>, chunk: number, totalChunks: number): string {
   const n = positions.length;
   const only = n === 1 ? positions[0] : null;
-  const base =
-    n === 1 && typeof only === 'number' && only > 0
-      ? `第 ${only} 张做好了，存进相册，打开系统分享`
-      : `${n} 张做好了，存进相册，打开系统分享`;
+  if (n > 1 && isComputer()) return `${readyShareLabel(positions, chunk, totalChunks)}，${n} 张做好了`;
+  const act = isComputer() ? '下载' : '存进相册，打开系统分享';
+  const base = n === 1 && typeof only === 'number' && only > 0 ? `第 ${only} 张做好了，${act}` : `${n} 张做好了，${act}`;
   if (totalChunks <= 1) return base;
   return `${base}，第 ${chunk + 1} 批，共 ${totalChunks} 批`;
+}
+
+/**
+ * 停在内存上限（held）时的主按钮：「先下载这 123 张，剩下 14 张接着做」（手机「先把这 123 张存进相册，…」）。
+ * 分几批交时追加批号。`rest` 是交出去以后接着做的张数。
+ */
+export function heldShareLabel(ok: number, rest: number, chunk: number, totalChunks: number): string {
+  const first = isComputer() ? `先${readyWord()}这 ${ok} 张` : `先把这 ${ok} 张${readyWord()}`;
+  const base = rest > 0 ? `${first}，剩下 ${rest} 张接着做` : first;
+  if (totalChunks <= 1) return base;
+  return isComputer() ? `${base}（第 ${chunk + 1}/${totalChunks} 包）` : `${base}（第 ${chunk + 1} 批，共 ${totalChunks} 批）`;
 }
 
 /** 运行中（0 张已做好）主胶囊文案。 */
@@ -112,7 +137,7 @@ export function collectReadyNotes(entries: readonly ReadyEntry[]): {
 export function readyBarSummary(phase: Phase, ok: number, failureCount: number, savedCount: number, queuedCount = 0): string {
   const made = ok > 0 || savedCount > 0;
   let main: string;
-  if (phase === 'stopped') main = ok ? `已停止。做好的 ${ok} 张还没存，点「存进相册」。` : '已停止。';
+  if (phase === 'stopped') main = ok ? `已停止。做好的 ${ok} 张还没存，点「${readyWord()}」。` : '已停止。';
   else if (!made) main = `${failureCount} 张都没做成`;
   else if (!ok) main = `${failureCount} 张没做成`;
   else main = `做好 ${ok} 张，${failureCount} 张没做成`;
@@ -138,8 +163,8 @@ export function stateAnnouncement(
     const only = ok === 1 ? entries[0].position : null;
     const text =
       ok === 1 && typeof only === 'number' && only > 0
-        ? `第 ${only} 张做好了，可存进相册`
-        : `${ok} 张做好了，可存进相册`;
+        ? `第 ${only} 张做好了，可${readyWord()}`
+        : `${ok} 张做好了，可${readyWord()}`;
     return { key: `ready:${entries.map((e) => e.id).join(',')}`, text };
   }
   if (ok > 0 && failures.length > 0) {
@@ -181,6 +206,8 @@ export interface ReadyBarRender {
   failurePosition: (id: string) => number | null;
   chunk: number;
   totalChunks: number;
+  /** 停在 held 时，交出去以后接着做的张数。 */
+  rest?: number;
   detailsOpen: boolean;
   onShare: () => void;
   onRetry: () => void;
@@ -217,7 +244,7 @@ export function paintRunningSlot(opts: RunningBarRender): void {
     const label = readyShareLabel(positions, opts.carryChunk, opts.carryTotalChunks);
     const main = pillButton('es-main', 'es-blue', 'share-ready', opts.onShareCarryover);
     main.btn.setAttribute('aria-label', readyShareAriaLabel(positions, opts.carryChunk, opts.carryTotalChunks));
-    main.pill.append(exportIco(EXPORT_ICON.export, 'es-ico'), el('span', 'es-txt', label));
+    main.pill.append(exportIco(isComputer() ? EXPORT_ICON.download : EXPORT_ICON.export, 'es-ico'), el('span', 'es-txt', label));
 
     const side = pillButton('es-side es-run-pill', 'es-dark', 'toggle-details', opts.onToggleDetails);
     side.btn.setAttribute('aria-expanded', detailsOpen ? 'true' : 'false');
@@ -246,10 +273,12 @@ export function paintReadyBar(opts: ReadyBarRender): void {
 
   // 有已做好成片（纯就绪 / 部分失败 / 已停止且有成片）：左侧蓝色直达「存进相册」，右侧「详情」或红框「M 张失败」。
   if (ok > 0) {
-    const label = readyShareLabel(positions, chunk, totalChunks);
+    const held = phase === 'held';
+    const label = held ? heldShareLabel(ok, opts.rest ?? 0, chunk, totalChunks) : readyShareLabel(positions, chunk, totalChunks);
+    const aria = readyShareAriaLabel(positions, chunk, totalChunks);
     const main = pillButton('es-main', 'es-blue', 'share', opts.onShare);
-    main.btn.setAttribute('aria-label', readyShareAriaLabel(positions, chunk, totalChunks));
-    main.pill.append(exportIco(EXPORT_ICON.export, 'es-ico'), el('span', 'es-txt', label));
+    main.btn.setAttribute('aria-label', held ? `${label}，${aria}` : aria);
+    main.pill.append(exportIco(isComputer() ? EXPORT_ICON.download : EXPORT_ICON.export, 'es-ico'), el('span', 'es-txt', label));
 
     if (failures.length > 0) {
       dock.dataset.visualState = 'partial-fail';
@@ -330,9 +359,6 @@ export function mountExportDock(
 export type PhotoExportState = 'idle' | 'busy' | 'ready';
 
 const READY_BLUE_STATES = new Set(['ready', 'stopped-ready', 'partial-fail', 'running-ready']);
-const DEFAULT_SAVE_ARIA = '导出当前照片并存到相册';
-const READY_CURRENT_SAVE_ARIA = '存到相册：当前照片已做好，请点上方存进相册';
-const BUSY_CURRENT_SAVE_ARIA = '存到相册：当前照片正在导出';
 
 /** 就绪条显示蓝色「存进相册」时把底栏「存到相册」降为次级非蓝按钮，避免同屏两个相近蓝按钮。 */
 export function syncExportSaveButton(
@@ -346,7 +372,7 @@ export function syncExportSaveButton(
   if (!readyVisible) {
     btn.classList.add('primary');
     btn.classList.remove('export-demoted', 'export-done');
-    btn.setAttribute('aria-label', DEFAULT_SAVE_ARIA);
+    btn.setAttribute('aria-label', saveAria());
     btn.removeAttribute('data-export-state');
     return;
   }
@@ -356,13 +382,13 @@ export function syncExportSaveButton(
   btn.classList.add('export-demoted');
   btn.classList.toggle('export-done', state === 'ready');
   if (state === 'ready') {
-    btn.setAttribute('aria-label', READY_CURRENT_SAVE_ARIA);
+    btn.setAttribute('aria-label', saveAria('ready'));
     btn.dataset.exportState = 'ready-current';
   } else if (state === 'busy') {
-    btn.setAttribute('aria-label', BUSY_CURRENT_SAVE_ARIA);
+    btn.setAttribute('aria-label', saveAria('busy'));
     btn.dataset.exportState = 'running-current';
   } else {
-    btn.setAttribute('aria-label', DEFAULT_SAVE_ARIA);
+    btn.setAttribute('aria-label', saveAria());
     btn.dataset.exportState = 'ready-other';
   }
 }

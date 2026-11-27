@@ -80,6 +80,8 @@ export class CropPanel {
   private destroyed = false;
   private lastTap = { at: 0, x: 0, y: 0 };
   private unregGuide: (() => void) | null = null;
+  private readonly tapeLabels: Array<{ node: HTMLElement; deg: number }> = [];
+  private rulerWatch: ResizeObserver | null = null;
 
   constructor(shell: HTMLElement, hooks: CropPanelHooks) {
     this.shell = shell;
@@ -178,11 +180,17 @@ export class CropPanel {
         label.style.left = `${mid + deg * PX_PER_DEG}px`;
         label.textContent = deg < 0 ? `−${Math.abs(deg)}°` : `${deg}°`;
         this.tape.append(label);
+        this.tapeLabels.push({ node: label, deg });
       }
     }
   }
 
   private bindRuler(): void {
+    // 尺子宽度跟着版式变（面板宽、转屏、窗口缩放），变了就重新决定两头的度数露不露。
+    if (typeof ResizeObserver === 'function') {
+      this.rulerWatch = new ResizeObserver(() => this.fitTapeLabels(this.hooks.liveStraighten()));
+      this.rulerWatch.observe(this.ruler);
+    }
     let activeId = -1;
     let startX = 0;
     let startAngle = 0;
@@ -276,6 +284,19 @@ export class CropPanel {
     this.ruler.setAttribute('aria-valuenow', String(angle));
     const mid = MAX_ANGLE * PX_PER_DEG;
     this.tape.style.transform = `translate3d(${-mid - angle * PX_PER_DEG}px, 0, 0)`;
+    this.fitTapeLabels(angle);
+  }
+
+  /** 尺子两头的度数要么整个看得见、要么藏起来，不被尺子边裁成半个（−10° 只剩「0°」，desktop-layout L12）。 */
+  private fitTapeLabels(angle: number): void {
+    const width = this.ruler.clientWidth;
+    if (width <= 0) return;
+    const pad = 4;
+    for (const { node, deg } of this.tapeLabels) {
+      const x = width / 2 + (deg - angle) * PX_PER_DEG;
+      const half = (node.offsetWidth || 24) / 2;
+      node.style.visibility = x - half >= pad && x + half <= width - pad ? '' : 'hidden';
+    }
   }
 
   private setSizeText(text: string): void {
@@ -406,6 +427,8 @@ export class CropPanel {
   destroy(): void {
     this.destroyed = true;
     this.sizeSeq += 1;
+    this.rulerWatch?.disconnect();
+    this.rulerWatch = null;
     this.closeGuideSheet();
   }
 }
