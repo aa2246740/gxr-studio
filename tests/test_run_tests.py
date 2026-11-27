@@ -116,6 +116,8 @@ def _runner_env(tmp: Path, addopts: list[str], *, workers: int) -> dict[str, str
     _gate(gate, workers)
     env = os.environ.copy()
     env.pop("PYTEST_ADDOPTS", None)
+    for name in ("GXR_TEST_TIMES_JUNIT", "GXR_STOP_ON_FAILURE", "GXR_CHANGED_TESTS"):  # 外层检查的设置不漏进内层 runner
+        env.pop(name, None)
     env["GXR_LOADGATE"] = str(gate)
     env["GXR_RUN_TESTS_INNER"] = "1"
     env["HITS"] = str(tmp / "hits.log")
