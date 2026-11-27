@@ -24,6 +24,7 @@ import { delayed, busyButton, SHOW_AFTER_MS } from './busy.js';
 import { DEFAULT_GEOMETRY, normalizeFrame, normalizeStamp } from './finish.js';
 import { createHistogram } from './histogram.js';
 import { isPairSecond, isSinglePairView, partnerOf } from './halfframe.js';
+import { syncCopyPasteBusy } from './paste_edits.js';
 import {
   applyPairReadonly, clearTitlebar, paintLabels, paintTabMods, renderFilmstrip, renderTitlebar,
   renderViewbar, syncViewbar, viewerPhotoList,
@@ -316,12 +317,14 @@ function panelFor(tab) {
 async function retryEdit(v) {
   v.edError = null;
   v.edPromise = null;
-  refreshPanes();
-  try {
-    await ensureEdit(v);
-  } catch (e) {
+  // 顶栏的复制 / 粘贴在读取期间被点：等这一次读完（paste_edits.js 的 afterRecord）
+  v.ready = ensureEdit(v).then(() => {}, (e) => {
     v.edError = e;
-  }
+  });
+  syncCopyPasteBusy(v);
+  refreshPanes();
+  await v.ready;
+  syncCopyPasteBusy(v);
   if (view !== v) return;
   refreshPanes();
   schedulePreview(v, { full: true });
@@ -613,13 +616,16 @@ export async function renderViewer(root, id, isCurrent = () => true) {
   ensurePartner(v);
 
   // 两个请求都等完再画（Promise.all 会在第一个失败时就返回，另一个回来后界面不会重画，留下骨架）
-  const [cropRes, edRes] = await Promise.allSettled([loadCrop(v), ensureEdit(v)]);
+  // v.ready：顶栏的复制 / 粘贴在读取期间被点时，等的就是这一次（paste_edits.js 的 afterRecord，不另发请求）
+  v.ready = Promise.allSettled([loadCrop(v), ensureEdit(v)]);
+  const [cropRes, edRes] = await v.ready;
   if (view !== v) return;
   if (cropRes.status === 'rejected') {
     toastError(cropRes.reason, '无法读取裁剪。请重试。');
     v.crop = { preset: 'original', rect: { x: 0, y: 0, w: 1, h: 1 }, angle_deg: 0, active: false, frame: { width: photo.width || 1, height: photo.height || 1 }, rev: 0 };
   }
   if (edRes.status === 'rejected') v.edError = edRes.reason;
+  syncCopyPasteBusy(v);
   // 编辑记录坏了：按原图显示，并说明（COPY 3.9）
   if ((v.crop && v.crop.warning) || (v.ed && v.ed.warning)) toast('无法读取编辑记录，已按原图显示', 'info');
 
