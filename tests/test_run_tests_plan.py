@@ -10,7 +10,6 @@ import importlib.util
 import os
 import subprocess
 import sys
-import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -275,15 +274,14 @@ def test_a_failing_shard_stops_the_other_shards_and_later_stages(tmp_path: Path,
     )
     _test_file(tree, "test_web", _simple("web"), mark="browser_serial")
     _test_file(tree, "test_excl", _simple("excl"), mark="exclusive")
-    started = time.monotonic()
     proc = _go(tmp_path, tree, {"GXR_STOP_ON_FAILURE": "1"})
-    elapsed = time.monotonic() - started
     out = proc.stdout + proc.stderr
     pid = int(Path(str(tmp_path / "hits.log") + ".pid").read_text(encoding="utf-8"))
     try:
         assert proc.returncode == 1, out
-        assert elapsed < 30, (elapsed, out)
+        # 没有 slow-end：慢用例（睡 45 秒）在跑的时候就被停掉了；没有 after：-x；没有 web、excl：后面的阶段没开始。
         assert {name for name, _where, _x in _marks(tmp_path)} == {"fails", "slow-start"}, out
+        assert "[shard-0] 失败已成定局（GXR_STOP_ON_FAILURE=1），停掉其他分片。" in out, out
         assert "不再开始浏览器阶段" in out and "不再开始exclusive 阶段" in out, out
         assert not _alive(pid)
         cases = {case.attrib["name"]: case for case in ET.parse(tmp_path / "junit.xml").getroot().iter("testcase")}
