@@ -70,16 +70,27 @@ try {
   const unit = () => page.getByLabel('配方适用的镜头组件', { exact: true });
   const space = () => page.getByLabel('输入色彩空间', { exact: true });
   const choice = async () => ({ space: await space().inputValue(), source: await page.locator('[data-role="lut-space"] .tag').innerText() });
+  // 页面每次状态变化都整块重画（lut.js redraw），按钮会被换成新的同名元素。先等它可见；
+  // 量框和点检在同一次页面内求值里做，量到的若是刚被换下来的旧元素（已断开）就重新找，只为这一种情况重试。
+  const measure = async (locator) => {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const m = await locator.evaluate((el) => {
+        if (!el.isConnected) return null;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) return { rect: null };
+        const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { rect: { x: r.x, y: r.y, width: r.width, height: r.height }, visible: el === top || el.contains(top) };
+      });
+      if (m || Date.now() > deadline) return m || { rect: null };
+    }
+  };
   const visibleInViewport = async (locator, state) => {
     for (const [width, height] of [[1280, 800], [1440, 900]]) {
       await page.setViewportSize({ width, height });
-      const rect = await locator.boundingBox();
+      await locator.waitFor({ state: 'visible' });
+      const { rect, visible } = await measure(locator);
       assert(rect, `${state} 的元素不可见`);
-      const visible = await locator.evaluate((el) => {
-        const r = el.getBoundingClientRect();
-        const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-        return el === top || el.contains(top);
-      });
       out.viewports.push({ state, width, height, bottom: rect.y + rect.height, visible });
       assert(rect.y >= 0 && rect.y + rect.height <= height && visible, `${state} 不在首屏：${JSON.stringify(rect)}`);
       assert.equal(await page.locator('.lut-scroll').evaluate((el) => el.scrollTop), 0);
