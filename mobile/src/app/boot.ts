@@ -100,7 +100,7 @@ class App implements AppApi {
   private readonly lutGpuQueue = new LutGpu(() => this.engine);
   /** 网格上空闲时先烘焙默认卡和第一屏的几张配方表（prebake.ts），编辑器第一次换卡不用等。 */
   private readonly prebake = new Prebaker({ book: () => this.recipeBook, photos: () => this.ordered(), report: (state) => { this.shell.dataset.prebake = state; },
-    ready: () => this.screen === 'grid' && this.engine !== null && this.loading().done === this.byId.size,
+    ready: () => this.screen === 'grid' && this.engine !== null && this.loading().done === this.byId.size, readHead: (file) => this.readHead(file),
     firstRow: () => (isIpadLayout(this.shell.dataset.layout as LayoutMode) ? 6 : 3) });
 
   /** 导出进相册（UI-M3）：导出面板、贴底的进度和结果、共享面板。在编辑器分包里，第一次加载时建一个。 */
@@ -119,11 +119,11 @@ class App implements AppApi {
     watchViewportLayout(shell, () => {}); // data-layout 跟着窗口走，图库和开始页上也一样（不只编辑器里）
   }
 
+  /** DNG 开头 256 KiB（拍摄配方标签、预烘焙要的镜头名）：交给读整份 DNG 的那个 Worker。 */
+  private readonly readHead = (file: File): Promise<ArrayBuffer | null> => this.reader.read(new File([file.slice(0, 262144)], file.name)).then((reply) => (reply.ok ? reply.bytes : null));
+
   start(): void {
-    registerCameraRecipeReader(async (file) => {
-      const reply = await this.reader.read(new File([file.slice(0, 262144)], file.name));
-      return reply.ok ? reply.bytes : null;
-    });
+    registerCameraRecipeReader(this.readHead);
     this.lutGpuQueue.attach(() => this.engine);
     // 相机配方文件、校准数据变了：网格的那一行跟着变。编辑器和校准卡自己订阅。
     let generation = this.recipeBook.generationId();

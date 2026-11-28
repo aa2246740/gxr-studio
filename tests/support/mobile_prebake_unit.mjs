@@ -380,3 +380,51 @@ test('4. the cap: at most PREBAKE_MAX tables, at most workers - 2 at once, none 
     pre.stop();
   }
 });
+
+/** 最小的小端 TIFF：IFD0 里只有 ISO（0x8827）和 UniqueCameraModel（0xC614）。 */
+function tiffHead(unique, iso) {
+  const text = new TextEncoder().encode(`${unique}\0`);
+  const buf = new Uint8Array(38 + text.length);
+  const dv = new DataView(buf.buffer);
+  buf[0] = 0x49;
+  buf[1] = 0x49;
+  dv.setUint16(2, 42, true);
+  dv.setUint32(4, 8, true);
+  dv.setUint16(8, 2, true);
+  dv.setUint16(10, 0x8827, true);
+  dv.setUint16(12, 3, true);
+  dv.setUint32(14, 1, true);
+  dv.setUint16(18, iso, true);
+  dv.setUint16(22, 0xc614, true);
+  dv.setUint16(24, 2, true);
+  dv.setUint32(26, text.length, true);
+  dv.setUint32(30, 38, true);
+  dv.setUint32(34, 0, true);
+  buf.set(text, 38);
+  return buf.buffer;
+}
+
+test('5. a MOUNT photo whose JPG has no lens name: the DNG head names the unit, once, without touching the photo', async () => {
+  const { Prebaker } = await prebakeModule();
+  const io = makeIo();
+  const book = await readyBook(io);
+  // 相机 JPG 里没有镜头名和 ISO（MOUNT 单元）：编辑器读了 DNG 才知道是 l08firm、ISO 1600。
+  const mount = { ...photo('m', 'l08firm', null), jpgMeta: { lens: null, iso: null, copyright: null } };
+  const heads = [];
+  const h = host(book, [mount], {
+    readHead: async (file) => {
+      heads.push(file.name);
+      return tiffHead('RICOH GXR MOUNT A12', 1600);
+    },
+  });
+  const pre = new Prebaker(h, 4, () => 0);
+  pre.start(null);
+  await until(() => done(h), 'pre-bake done');
+  assert.deepEqual(io.bakes.map((b) => b.tag), ['bake-l08firm-4-1600', 'bake-l08firm-1-1600', 'bake-l08firm-2-1600', 'bake-l08firm-3-1600']);
+  assert.deepEqual(heads, ['m.DNG'], 'the DNG head is read once');
+  assert.equal(mount.dngMeta, null, 'the head is only used for planning; the photo is not changed');
+  pre.wake();
+  await sleep(20);
+  assert.deepEqual(heads, ['m.DNG'], 'not read again');
+  pre.stop();
+});

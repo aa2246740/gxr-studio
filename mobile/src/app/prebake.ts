@@ -9,11 +9,13 @@
 // - 每份（校准、相机配方文件）最多 PREBAKE_MAX 张，表放在 Book 的缓存里（KEEP_BAKES 张，最久没用的先丢），不另占内存。
 // - 走后台 Lane（core/pool.ts）：编辑器点了同一张卡就升成前台，同一个 Promise，不重复烘焙。
 // - 换了校准或相机配方文件（Book 的版本变了）就按新版本重新排、重新数；清空照片时没开始的全部作废。
-// - 照片里记着相机配方（GXR1 标签）时，编辑器打开就采用它、把横条滚到它那里。所以先替前几张照片解析标签（ensureCameraRecipe，
-//   和编辑器打开时同一个调用、同一个结果），一次一张，而且只在标签已经在内存里时（不为它读文件）。
+// - 编辑器按镜头名认单元。MOUNT 单元的相机 JPG 里没有镜头名，要等打开时读 DNG 才知道；网格上不知道镜头名的照片，先读一次
+//   DNG 开头 256 KiB（和读拍摄配方标签同一个 Worker、同样大小），只拿来排预烘焙，不写回照片。
+// - 照片里记着相机配方（GXR1 标签）时，编辑器打开就采用它、把横条滚到它那里，所以也先替它解析标签（ensureCameraRecipe，
+//   和编辑器打开时同一个调用、同一个结果）。这两件事只给网格上前 PREBAKE_MAX 张 RAW 做，一次一件。
 
 import { modelIso, unitOfLens, type Unit } from '../lib/calib';
-import { mergeMeta } from '../lib/exif';
+import { mergeMeta, photoMetaFromTiff, type PhotoMeta } from '../lib/exif';
 import { adoptedSelectionOf, DEFAULT_CARD, recipeUnitOf, selection, selectionKey, shelf } from '../lib/recipes';
 import type { AdoptedSelection, Card, Shelves } from '../lib/recipes';
 import { poolLoad } from '../core/pool';
@@ -42,6 +44,8 @@ export interface PrebakeHost {
   ready(): boolean;
   /** 编辑器配方横条第一屏大约看得见几张卡（按版式）。 */
   firstRow(): number;
+  /** DNG 开头 256 KiB（拿镜头名）。不给就不读，不知道镜头名的照片按编辑器的默认单元排。 */
+  readHead?(file: File): Promise<ArrayBuffer | null>;
   /** 状态变了（写到 `.app[data-prebake]`，给测试和测速看；界面上不显示）。 */
   report?(state: PrebakeState): void;
 }
@@ -53,6 +57,10 @@ interface Want {
   levels: Record<string, number> | undefined;
   /** （单元、ISO 模型、选择）：和 Book.bakeKey 的缓存键同一个口径。 */
   id: string;
+}
+
+function photoKey(photo: Photo): string {
+  return `${photo.id}\u0000${photo.version}`;
 }
 
 /** 编辑器里这张卡用的档位：照 RecipeView.levelsOf（选中的、相机里采用的、默认卡、切走时记下的）。 */
@@ -97,6 +105,8 @@ export class Prebaker {
   private readonly tried = new Set<string>();
   /** 这一版本、这一轮里替它解析过相机配方的照片（id 和版本；每张最多一次，解析失败就按默认卡排）。 */
   private readonly recipesAsked = new Set<string>();
+  /** 这一轮里读过 DNG 开头的照片（id 和版本）→ 读出的镜头名和 ISO（读不了是 null）。 */
+  private readonly heads = new Map<string, PhotoMeta | null>();
   private reading = false;
   /** 这一版本、这一轮里预烘焙成功的张数（算进 PREBAKE_MAX）。 */
   private made = 0;
@@ -159,6 +169,7 @@ export class Prebaker {
     this.planned = false;
     this.tried.clear();
     this.recipesAsked.clear();
+    this.heads.clear();
     this.made = 0;
     this.reading = false;
     if (this.timer) clearTimeout(this.timer);
@@ -260,8 +271,9 @@ export class Prebaker {
       const dat = book.usableDatFor(photo);
       if (!dat) continue;
       raws += 1;
-      if (raws <= PREBAKE_MAX && this.readRecipe(photo, book)) return null;
-      const meta = mergeMeta(photo.jpgMeta, photo.dngMeta);
+      if (raws <= PREBAKE_MAX && (this.readHead(photo) || this.readRecipe(photo, book))) return null;
+      // 和编辑器一样先用相机 JPG 的，没有再用 DNG 的（网格上还没读 DNG 时用刚读的开头）。
+      const meta = mergeMeta(photo.jpgMeta, photo.dngMeta ?? this.heads.get(photoKey(photo)) ?? null);
       const adopted = adoptedSelectionOf(photo, dat);
       const unit = recipeUnitOf(photo.choice, adopted, unitOfLens(meta.lens));
       const state = book.unitStateFor(photo, unit).state;
@@ -291,16 +303,33 @@ export class Prebaker {
     return out;
   }
 
-  /**
-   * 前几张照片打开时会采用相机里记的配方：标签已经在内存里（JPG 或 DNG 的元数据读过）就现在替它解析，开始了返回 true。
-   * 要读文件头才知道标签的不做（那就按默认卡排）。
-   */
+  /** 前几张照片打开时会采用相机里记的配方：现在替它解析（要读 DNG 开头时 ensureCameraRecipe 自己读），开始了返回 true。 */
   private readRecipe(photo: Photo, book: Book): boolean {
-    const asked = `${photo.id}\u0000${photo.version}`;
+    const asked = photoKey(photo);
     if (this.recipesAsked.has(asked) || !needsCameraRecipe(photo, book.dat)) return false;
-    const known = photo.jpgMeta?.copyright != null || photo.dngMeta !== null || photo.dngCopyrightRead === photo.version;
-    if (!known) return false;
     this.recipesAsked.add(asked);
+    this.begin(ensureCameraRecipe(photo, book));
+    return true;
+  }
+
+  /** 网格上不知道这张的镜头名（相机 JPG 里没有、DNG 还没读）：读 DNG 开头，开始了返回 true。 */
+  private readHead(photo: Photo): boolean {
+    const read = this.host.readHead;
+    const file = photo.dng;
+    const key = photoKey(photo);
+    if (!read || !file || photo.dngMeta !== null || photo.jpgMeta?.lens || this.heads.has(key)) return false;
+    this.heads.set(key, null);
+    const round = this.round;
+    this.begin(
+      read(file).then((bytes) => {
+        if (round === this.round && bytes && photo.dng === file) this.heads.set(key, photoMetaFromTiff(new Uint8Array(bytes)));
+      }),
+    );
+    return true;
+  }
+
+  /** 一次只做一件（解析标签、读开头）：做完（成功失败都一样）再排。 */
+  private begin(job: Promise<unknown>): void {
     this.reading = true;
     const round = this.round;
     const done = (): void => {
@@ -308,7 +337,6 @@ export class Prebaker {
       this.reading = false;
       this.wake();
     };
-    ensureCameraRecipe(photo, book).then(done, done);
-    return true;
+    job.then(done, done);
   }
 }
