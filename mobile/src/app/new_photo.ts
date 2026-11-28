@@ -302,6 +302,14 @@ function relation(a: Side, b: Side): 'same' | 'differs' | 'disjoint' {
   return shared ? 'same' : 'disjoint';
 }
 
+/**
+ * 刚另外留下、缩略图还没读完的那一份（有编号、第一个版本、还在读、卡没拔）。它不是「原来那张还在读」：
+ * 接着又选进来一张不是同一份的同名照片时不能拿它来替换，否则刚留下的那张就丢了。同一份（指纹一样）照旧替换，读坏了、卡拔了也照旧替换。
+ */
+function fresh(photo: Photo): boolean {
+  return Boolean(photo.copy) && photo.version === 1 && photo.status === 'pending' && !photo.gone;
+}
+
 /** 同名的照片里先挑同一个文件夹的，再挑编号小的（第一份最先）。 */
 function best(list: readonly Photo[], item: Arrival): Photo | null {
   const near = (photo: Photo) => ((photo.folder ?? '') === item.folder ? 0 : 1);
@@ -355,7 +363,7 @@ export class Intake {
       const key = item.stem.toLowerCase();
       const named = this.stems.has(key) ? null : this.named(key);
       if (named && !named.length) this.place(this.create(key, item, null), item, touched, session);
-      else if (named && named.length === 1 && !touched.has(named[0]) && !this.healthy(named[0])) this.place(named[0], item, touched, session);
+      else if (named && named.length === 1 && !touched.has(named[0]) && !fresh(named[0]) && !this.healthy(named[0])) this.place(named[0], item, touched, session);
       else {
         later.push(item);
         keys.push(key);
@@ -503,7 +511,8 @@ export class Intake {
       if (!live()) return false;
       target = best(halves.filter((photo) => this.still(photo)), item);
     }
-    target ??= best(rows.filter((row) => !touched.has(row.photo) && this.still(row.photo) && (!this.healthy(row.photo) || !(theirs.get(row.photo) as Side).readable)).map((row) => row.photo), item);
+    const sick = rows.filter((row) => !touched.has(row.photo) && !fresh(row.photo) && this.still(row.photo) && (!this.healthy(row.photo) || !(theirs.get(row.photo) as Side).readable));
+    target ??= best(sick.map((row) => row.photo), item);
     if (target && this.still(target)) {
       this.place(target, item, touched, session);
       return false;

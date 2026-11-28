@@ -206,6 +206,67 @@ test('pending, bad, gone, uploading or unreadable originals are replaced as befo
   assert.deepEqual(t.settled(), [0]);
 });
 
+test('a third different file while the kept copy is still reading keeps all three (review r1 P1)', async () => {
+  const t = host();
+  t.intake.take([file('R0001.JPG', jpeg(T1, 10, 1))]);
+  const first = t.photos.get('r0001');
+  ready(first);
+  const middle = file('R0001.JPG', jpeg(T2, 10, 2));
+  t.intake.take([middle]);
+  await t.idle();
+  const second = [...t.photos.values()].find((p) => p !== first);
+  assert.equal(second.status, 'pending', 'the kept copy is still reading its thumbnail');
+  const third = file('R0001.JPG', jpeg('2026:11:20 10:09:00', 10, 3));
+  t.intake.take([third]);
+  await t.idle();
+  assert.equal(t.photos.size, 3, 'the middle file is not overwritten');
+  assert.equal(second.jpg, middle);
+  assert.equal(second.version, 1);
+  assert.deepEqual([...t.photos.values()].map((p) => p.copy ?? 1).sort(), [1, 2, 3]);
+  assert.deepEqual(t.settled(), [1, 1]);
+});
+
+test('a just-kept copy is still replaced by the same file, or when it went bad or gone; a pending original still is', async () => {
+  const setup = async () => {
+    const t = host();
+    t.intake.take([file('R0001.JPG', jpeg(T1, 10, 1))]);
+    const first = t.photos.get('r0001');
+    ready(first);
+    const bytes = jpeg(T2, 10, 2);
+    t.intake.take([file('R0001.JPG', bytes)]);
+    await t.idle();
+    const second = [...t.photos.values()].find((p) => p !== first);
+    return { t, first, second, bytes };
+  };
+  // 同一份（重新拷过）：替换刚留下的那份，不再多一张。
+  let { t, second, bytes } = await setup();
+  const same = file('R0001.JPG', bytes, { mtime: 42 });
+  t.intake.take([same]);
+  await t.idle();
+  assert.equal(t.photos.size, 2);
+  assert.equal(second.jpg, same);
+  assert.equal(second.version, 2);
+  // 读坏了、卡拔了：照旧替换（不新增）。
+  for (const spoil of [(p) => { p.status = 'bad'; }, (p) => { p.gone = true; }]) {
+    ({ t, second } = await setup());
+    spoil(second);
+    const next = file('R0001.JPG', jpeg('2026:11:20 10:09:00', 10, 3));
+    t.intake.take([next]);
+    await t.idle();
+    assert.equal(t.photos.size, 2);
+    assert.equal(second.jpg, next);
+  }
+  // 原来那张（没有编号）还在读：照旧当场替换。
+  t = host();
+  t.intake.take([file('R0001.JPG', jpeg(T1, 10, 1))]);
+  const pending = t.photos.get('r0001');
+  const next = file('R0001.JPG', jpeg(T2, 10, 2));
+  t.intake.take([next]);
+  assert.equal(t.intake.waiting(), 0);
+  assert.equal(t.photos.size, 1);
+  assert.equal(pending.jpg, next);
+});
+
 test('two folders in one pick: both stay, each RAW pairs with the JPG in its own folder', async () => {
   const t = host();
   const a = { dng: file('R0001.DNG', tiff(T1, 10, 1), { folder: 'card/A' }), jpg: file('R0001.JPG', jpeg(T1, 10, 1), { folder: 'card/A' }) };

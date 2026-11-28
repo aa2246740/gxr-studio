@@ -27,4 +27,4 @@ def test_mobile_samename_unit() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "ℹ fail 0" in result.stdout or "# fail 0" in result.stdout, result.stdout
-    assert "ℹ pass 15" in result.stdout or "# pass 15" in result.stdout, result.stdout
+    assert "ℹ pass 17" in result.stdout or "# pass 17" in result.stdout, result.stdout
