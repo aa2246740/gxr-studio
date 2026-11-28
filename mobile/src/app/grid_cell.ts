@@ -1,6 +1,7 @@
 // 网格里的一格：角标、读不了/卡/只有 RAW、编辑过的铅笔、读屏名称和缩略图。从 grid.ts 原样搬出来（单文件行数）。
 
 import { groupsPresent } from '../lib/paste';
+import { isComputer, saveWord } from '../lib/save_mode';
 import { el, icon } from './dom';
 import { DIPTYCH_BADGE, DIPTYCH_NOTE, cellAriaLabel } from './layout';
 import { unread, type Photo } from './model';
@@ -16,6 +17,16 @@ function gridBitmapId(bitmap: ImageBitmap): number {
     bitmapIds.set(bitmap, id);
   }
   return id;
+}
+
+/**
+ * 电脑上网格只占一个 Tab 位（roving tabindex）：`stop`（上次有焦点的那张）这一格 tabIndex 0，它不在画出来的这几行里就是
+ * 画出来的第一格；别的格子 -1，下一个 Tab 就出网格。方向键、Enter、空格照旧。手机和 iPad 不变（每格都能 Tab 到）。
+ */
+export function rovingTabs(cells: ReadonlyMap<string, HTMLButtonElement>, stop: string | null): void {
+  if (!isComputer()) return;
+  const at = stop !== null && cells.has(stop) ? stop : cells.keys().next().value;
+  for (const [id, cell] of cells) cell.tabIndex = id === at ? 0 : -1;
 }
 
 export function fillCell(cell: HTMLButtonElement, photo: Photo, selected: boolean, index: number | undefined): void {
@@ -74,4 +85,12 @@ export function fillCell(cell: HTMLButtonElement, photo: Photo, selected: boolea
   canvas.height = bmp.height;
   canvas.getContext('2d')?.drawImage(bmp, 0, 0);
   canvas.dataset.drawn = drawnKey;
+}
+
+/** 拔卡提示的两行数字（从 grid.ts 原样搬出来，单文件行数）。 */
+export function cardText(sheet: HTMLElement, ready: number, missing: number): void {
+  const first = sheet.querySelector('p.ready');
+  const second = sheet.querySelector('p.missing');
+  if (first) first.textContent = `已经读进来的 ${ready} 张照片不受影响，可以接着换配方、${saveWord()}。`;
+  if (second) second.textContent = `还有 ${missing} 张没读完。把卡插回去，再点「重新选照片」，选同样的照片；做过的设置会保留。`;
 }
