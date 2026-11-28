@@ -261,6 +261,8 @@ def test_stage_cache_key_changes_with_every_output_input(settings: Any, lib: Lib
         "size": key(max_edge=1600),
         "quality": key(quality=90),
         "base": key(base="neutral"),
+        "lut": key(plan=(None, FrameSpec(), StampSpec(), dataclasses.replace(edit, lut="a" * 64))),
+        "other lut": key(plan=(None, FrameSpec(), StampSpec(), dataclasses.replace(edit, lut="b" * 64))),
     }
     src.write_bytes(b"y" * 11)  # 文件换了（大小和修改时间）
     changed["file content"] = key()
