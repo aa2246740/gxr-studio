@@ -251,6 +251,49 @@ def _prepare_render_target(
     return shot, edit, side, use_stage
 
 
+def _stage_response(
+    request: Request,
+    c: Any,
+    shot: dict[Any, Any],
+    edit: EditState,
+    side: dict[Any, Any],
+    use_stage: str,
+    *,
+    max_edge: int | None,
+    quality: int,
+    size: str | None,
+    cache: bool,
+) -> Response:
+    from ..finish.serve import render_stage
+
+    try:
+        jpeg, labels = render_stage(c.render, c.lib, shot, edit, side, stage=use_stage, max_edge=max_edge, quality=quality, cache=cache)
+    except RenderUnavailable as exc:
+        raise _unavailable(c, exc) from exc
+    except NoRaw as exc:
+        raise ApiError(409, "no_raw", str(exc) or "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。") from exc
+    except EditError as exc:
+        raise _edit_error(exc) from exc
+    except RawDecodeError as exc:
+        raise ApiError(422, "raw_unreadable", "这份 RAW 暂时读不出来。请换一张照片或重新导入后再试。") from exc
+    headers = {"Cache-Control": "private, no-cache", "X-GXR-Cache": labels.get("cache") or "miss"}
+    if use_stage == "uncropped" and labels.get("valid"):
+        headers["X-GXR-Valid-Rect"] = labels["valid"]
+    if use_stage == "final":
+        machine = labels.get("label") if labels.get("label") in {"prediction", "approx", "original"} else "original"
+        if machine == "original" and labels.get("id") == "camera-jpg":
+            machine = "camera-jpg"
+        headers["X-GXR-Label"] = quote(str(machine))
+        headers["X-GXR-Calibrated"] = "1" if labels.get("calibrated") == "1" else "0"
+        if labels.get("scale"):
+            headers["X-GXR-Scale"] = labels["scale"]
+        if machine == "prediction":
+            headers["X-GXR-Prediction"] = "1"
+        elif machine == "approx":
+            headers["X-GXR-Look"] = "approx"
+    return Response(jpeg, media_type="image/jpeg", headers=headers)
+
+
 def _render(
     request: Request,
     shot_id: str,
@@ -263,7 +306,7 @@ def _render(
     size: str | None = None,
     view: str | None = None,
 ) -> Response:
-    from ..finish.serve import SIZE_EDGE, render_stage
+    from ..finish.serve import SIZE_EDGE
 
     c = ctx(request)
     shot = _shot_or_404(c, shot_id)
@@ -279,34 +322,10 @@ def _render(
         raise ApiError(422, "bad_size", "请求无效。请刷新页面后重试。", {"detail": f"max_edge 要在 64 到 {MAX_EDGE_LIMIT} 之间"})
     if not 30 <= quality <= 100:
         raise ApiError(422, "bad_quality", "请求无效。请刷新页面后重试。", {"detail": "品质要在 30 到 100 之间。"})
+    pair = is_pair_second(shot)  # 半格一对（含单张视图）的成片按编辑缓存，见 finish.serve._stage_key
     shot, edit, side, use_stage = _prepare_render_target(c, shot, body, stage, view)
     if use_stage:
-        try:
-            jpeg, labels = render_stage(c.render, c.lib, shot, edit, side, stage=use_stage, max_edge=max_edge, quality=quality)
-        except RenderUnavailable as exc:
-            raise _unavailable(c, exc) from exc
-        except NoRaw as exc:
-            raise ApiError(409, "no_raw", str(exc) or "配方需要 RAW 文件。拍摄时将画质设为 RAW+JPEG。") from exc
-        except EditError as exc:
-            raise _edit_error(exc) from exc
-        except RawDecodeError as exc:
-            raise ApiError(422, "raw_unreadable", "这份 RAW 暂时读不出来。请换一张照片或重新导入后再试。") from exc
-        headers = {"Cache-Control": "private, no-cache", "X-GXR-Cache": labels.get("cache") or "miss"}
-        if use_stage == "uncropped" and labels.get("valid"):
-            headers["X-GXR-Valid-Rect"] = labels["valid"]
-        if use_stage == "final":
-            machine = labels.get("label") if labels.get("label") in {"prediction", "approx", "original"} else "original"
-            if machine == "original" and labels.get("id") == "camera-jpg":
-                machine = "camera-jpg"
-            headers["X-GXR-Label"] = quote(str(machine))
-            headers["X-GXR-Calibrated"] = "1" if labels.get("calibrated") == "1" else "0"
-            if labels.get("scale"):
-                headers["X-GXR-Scale"] = labels["scale"]
-            if machine == "prediction":
-                headers["X-GXR-Prediction"] = "1"
-            elif machine == "approx":
-                headers["X-GXR-Look"] = "approx"
-        return Response(jpeg, media_type="image/jpeg", headers=headers)
+        return _stage_response(request, c, shot, edit, side, use_stage, max_edge=max_edge, quality=quality, size=size, cache=pair)
     try:
         crop = _crop_of(side) if apply_crop else None
         out = c.render.render_preview(shot, edit, max_edge=max_edge, exact=exact, crop=crop, quality=quality)
