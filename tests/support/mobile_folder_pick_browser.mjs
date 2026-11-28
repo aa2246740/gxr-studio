@@ -94,6 +94,7 @@ async function startAtSizes(page, label) {
 /** 点可见的按钮，接住选择窗口，选一个文件夹（Playwright 给 webkitdirectory 选择框传目录，带 webkitRelativePath）。 */
 async function chooseFolder(page, click, dir) {
   const wait = page.waitForEvent('filechooser', { timeout: 5_000 });
+  wait.catch(() => {}); // 按钮不在（改动之前的代码）：点击先报错，等选择窗口的那个超时也不能变成未处理的拒绝
   await click();
   const chooser = await wait;
   const multiple = chooser.isMultiple();
@@ -115,7 +116,7 @@ async function computerFlow(browser) {
   step.inputsBefore = await page.evaluate(() => document.querySelectorAll('input[type="file"]').length);
 
   // 开始页：选一个像存储卡的文件夹。
-  step.multiple = await chooseFolder(page, () => page.locator('[data-act="pick-folder"]').click(), manifest.cardDir);
+  step.multiple = await chooseFolder(page, () => page.locator('[data-act="pick-folder"]').click({ timeout: 5_000 }), manifest.cardDir);
   step.input = await page.evaluate(() => {
     const input = document.querySelector('input.folderpick');
     return input ? { dir: input.webkitdirectory, multiple: input.multiple, tab: input.tabIndex, hidden: input.getAttribute('aria-hidden'), visible: input.getBoundingClientRect().width > 1 } : null;
@@ -133,7 +134,7 @@ async function computerFlow(browser) {
   step.gridRows = await openMore(page);
   await page.evaluate(() => document.querySelectorAll('.ftoast').forEach((node) => node.remove()));
   const row = page.locator('.ms .lrow', { has: page.locator('b', { hasText: /^选文件夹$/ }) });
-  step.gridMultiple = await chooseFolder(page, () => row.click(), manifest.moreDir);
+  step.gridMultiple = await chooseFolder(page, () => row.click({ timeout: 5_000 }), manifest.moreDir);
   await waitCells(page, manifest.cardStems.length + 1).catch(() => {});
   step.gridCells = await cellCount(page);
   step.gridToast = await waitToast(page, 2_000);
