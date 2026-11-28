@@ -45,11 +45,61 @@ export function ipadSizeOf(width: number, height: number): IpadSize {
   return longEdge >= 1240 && shortEdge >= 900 ? '13' : '11';
 }
 
-/** 图库网格列数：手机保持 3 列；iPad 按宽度分列，使单张缩略图落在 150–200 pt（13" 竖 6 / 横 8，11" 竖 5 / 横 7）。 */
-export function gridColumns(width: number, ipad: boolean): number {
+/** 27 寸级大屏（机主 2026-11-28）：网页窗口宽 >= 2000、高 >= 1100 才放大网格缩略图、右边栏和角标/标尺的字。
+ * 和 ipad.css 末尾那段 @media 用同一组数；手机、iPad 和小窗口不变。 */
+export const BIG_SCREEN_MIN_WIDTH = 2000;
+export const BIG_SCREEN_MIN_HEIGHT = 1100;
+export const BIG_SCREEN_QUERY = `(min-width: ${BIG_SCREEN_MIN_WIDTH}px) and (min-height: ${BIG_SCREEN_MIN_HEIGHT}px)`;
+
+/** 给了宽高就按宽高判；没给就问浏览器（和 CSS 的 @media 是同一个答案）。没有窗口（Node 单测、Worker）时不是大屏。 */
+export function isBigScreen(width?: number, height?: number): boolean {
+  if (width !== undefined && height !== undefined) return width >= BIG_SCREEN_MIN_WIDTH && height >= BIG_SCREEN_MIN_HEIGHT;
+  return typeof matchMedia === 'function' && matchMedia(BIG_SCREEN_QUERY).matches;
+}
+
+/** 大屏网格每格约 214–238 px：宽 2000 起 9 列，2560 宽 11 列约 231 px。 */
+const BIG_GRID_STEP = 216;
+
+/** 图库网格列数：手机保持 3 列；iPad 按宽度分列，使单张缩略图落在 150–200 pt（13" 竖 6 / 横 8，11" 竖 5 / 横 7）。大屏每格约 214–238。 */
+export function gridColumns(width: number, ipad: boolean, big: boolean = isBigScreen()): number {
   if (!ipad) return 3;
   const w = Number.isFinite(width) && width > 0 ? width : 700;
+  if (big) return Math.max(4, Math.floor((w + 2) / BIG_GRID_STEP));
   return Math.max(4, Math.floor((w + 2) / 160));
+}
+
+/** 网格缩略图解码宽度。小版式一直是 360；大屏按格宽 × 设备像素比（最多 2 倍）解，不比 360 小。 */
+export const GRID_THUMB_WIDTH = 360;
+
+export function gridThumbWidth(viewWidth: number, dpr: number, big: boolean): number {
+  if (!big || !Number.isFinite(viewWidth) || viewWidth <= 0) return GRID_THUMB_WIDTH;
+  // 网格按滚动区宽分列，比窗口窄一条滚动条：按少算 24 px 分列，列数只会少不会多，格宽只会估大。
+  const cols = gridColumns(viewWidth - 24, true, true);
+  const cell = (viewWidth - (cols - 1) * 2) / cols;
+  const scale = Number.isFinite(dpr) && dpr > 1 ? Math.min(2, dpr) : 1;
+  return Math.max(GRID_THUMB_WIDTH, Math.ceil(cell * scale));
+}
+
+/** 现在这扇窗口的网格缩略图解码宽度（没有窗口时 360）。 */
+export function currentGridThumbWidth(): number {
+  if (typeof window === 'undefined') return GRID_THUMB_WIDTH;
+  return gridThumbWidth(window.innerWidth, window.devicePixelRatio, isBigScreen());
+}
+
+/** 配方卡小图的长边。小版式一直是 192；大屏按 13" 横屏配方卡宽（ipad.css 的 132）× 设备像素比（最多 2 倍）烘焙。 */
+export const CARD_BAKE_EDGE = 192;
+const BIG_CARD_WIDTH = 132;
+
+export function cardBakeEdge(dpr: number, big: boolean): number {
+  if (!big) return CARD_BAKE_EDGE;
+  const scale = Number.isFinite(dpr) && dpr > 1 ? Math.min(2, dpr) : 1;
+  return Math.max(CARD_BAKE_EDGE, Math.ceil(BIG_CARD_WIDTH * scale));
+}
+
+/** 现在这扇窗口的配方卡小图长边（没有窗口时 192）。 */
+export function currentCardBakeEdge(): number {
+  if (typeof window === 'undefined') return CARD_BAKE_EDGE;
+  return cardBakeEdge(window.devicePixelRatio, isBigScreen());
 }
 
 export interface CellLabelInfo {
