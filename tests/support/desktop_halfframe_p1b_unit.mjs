@@ -268,9 +268,16 @@ const hmath = await load('histogram_math.js');
   assert.equal(lone.textContent, '半格');
   assert.equal(lone.getAttribute('title'), note);
   assert.equal(lone.getAttribute('aria-label'), note);
+  assert.equal(lone.getAttribute('role'), 'img', '普通 span 上的 aria-label 读屏不读，要标成 img');
+  // 图库里读屏读的是 role=option 的格子：它的名字里也要带上这句
+  const loneCell = gallery.cell({ id: 'd', name: 'R0000002.JPG', captured_at: null, has_raw: false, has_jpg: true, diptych: true, pair: null, thumb_url: '' });
+  assert.ok(loneCell.getAttribute('aria-label').endsWith(`，${note}`), loneCell.getAttribute('aria-label'));
+  const jpgCell = gallery.cell({ id: 'j', name: 'R0000003.JPG', captured_at: null, has_raw: false, has_jpg: true, thumb_url: '' });
+  assert.ok(!jpgCell.getAttribute('aria-label').includes('半格'), jpgCell.getAttribute('aria-label'));
   const jpgOnly = gallery.pairTag({ id: 'j', has_raw: false, has_jpg: true });
   assert.equal(jpgOnly.textContent, '只有 JPG');
   assert.equal(jpgOnly.getAttribute('title'), null);
+  assert.equal(jpgOnly.getAttribute('role'), null);
   const pairSecond = gallery.pairTag({ id: 'p', has_raw: false, has_jpg: true, diptych: true, pair: { role: 'second', partner_id: 'q' } });
   assert.equal(pairSecond.textContent, '只有 JPG');
 }

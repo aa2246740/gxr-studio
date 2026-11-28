@@ -35,7 +35,7 @@ export const DIPTYCH_NOTE = '半格：按相机拼好的双联图调整，没有
 
 export function pairTag(p) {
   if (p.has_raw && p.has_jpg) return h('span', { class: 'badge pair tag' }, 'RAW+JPG');
-  if (p.has_jpg && isUnpairedDiptych(p)) return h('span', { class: 'badge tag gray', title: DIPTYCH_NOTE, 'aria-label': DIPTYCH_NOTE }, '半格');
+  if (p.has_jpg && isUnpairedDiptych(p)) return h('span', { class: 'badge tag gray', role: 'img', title: DIPTYCH_NOTE, 'aria-label': DIPTYCH_NOTE }, '半格');
   if (p.has_jpg) return h('span', { class: 'badge tag gray' }, '只有 JPG');
   // 只有 RAW 的照片没有相机 JPG 可看，缩略图是电脑画的：如实标出来
   const look = p.preview_look || {};
@@ -537,7 +537,7 @@ function countOn(date) {
   return d ? d.count : state.photos.filter((p) => p.date === date).length;
 }
 
-function cell(p, index = EAGER_THUMBS) {
+export function cell(p, index = EAGER_THUMBS) {
   const selected = isPhotoSelected(state.selection, p);
   const pair = isPairSecond(p);
   const eager = index < EAGER_THUMBS;
@@ -553,7 +553,7 @@ function cell(p, index = EAGER_THUMBS) {
   const el = h('div', {
     class: `cell${pair ? ' pair' : ''}${p.id === focusId ? ' focus' : ''}`, role: 'option',
     tabindex: p.id === focusId ? 0 : -1, 'aria-selected': String(selected),
-    'aria-label': `${p.name}，${fmtTime(p.captured_at) || '时间未知'}`,
+    'aria-label': `${p.name}，${fmtTime(p.captured_at) || '时间未知'}${p.has_jpg && !p.has_raw && isUnpairedDiptych(p) ? `，${DIPTYCH_NOTE}` : ''}`,
     title: `${p.name} · ${fmtTime(p.captured_at)}${p.date_source === 'mtime' ? '（使用文件修改日期）' : ''}`,
     onclick: (e) => onCellClick(e, p.id),
   }, img, h('span', { class: 'ck', 'aria-hidden': 'true', title: '选择' }, icon('check')), h('span', { class: 'b' }, badges),

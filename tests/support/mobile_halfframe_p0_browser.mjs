@@ -98,7 +98,7 @@ try {
     // Import P3-3：双联的角标悬停和读屏文字。
     out.gridBadgeNote = await page.locator(`${cellOf(s2)} .bl .bdg`).evaluate((n) => ({ title: n.title, aria: n.getAttribute('aria-label') }));
     const headOf = () =>
-      page.locator('.editor .nav .t b').evaluate((n) => ({ text: n.textContent, title: n.getAttribute('title'), aria: n.getAttribute('aria-label') }));
+      page.locator('.editor .nav .t b').evaluate((n) => ({ text: n.textContent, title: n.getAttribute('title'), aria: n.getAttribute('aria-label'), role: n.getAttribute('role') }));
     if (out.gridBadges[s2] !== '半格') {
       out.earlyExit = `grid badge mismatch for ${s2}: ${out.gridBadges[s2]}`;
     } else {

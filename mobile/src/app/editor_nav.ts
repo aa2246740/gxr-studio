@@ -284,9 +284,11 @@ export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, in
     recipeEl.textContent = photo.diptych ? DIPTYCH_BADGE : currentRecipeLabel(api, photo);
     if (photo.diptych) {
       recipeEl.title = DIPTYCH_NOTE;
+      recipeEl.setAttribute('role', 'img'); // 普通的 <b> 上 aria-label 会被读屏丢掉，标成 img 才把这句当名字
       recipeEl.setAttribute('aria-label', DIPTYCH_NOTE);
     } else {
       recipeEl.removeAttribute('title');
+      recipeEl.removeAttribute('role');
       recipeEl.removeAttribute('aria-label');
     }
   };

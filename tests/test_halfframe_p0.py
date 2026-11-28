@@ -633,13 +633,13 @@ def test_mobile_browser_card250_pair1_and_pair2_e2e(tmp_path: Path) -> None:
     # 第 1 张按 RAW 打开，无双联提示
     assert report["photo1"]["layer"] == {"w": 2144, "h": 1424}
     assert report["photo1"]["recipeHasDiptychNote"] is False
-    assert report["photo1"]["head"]["text"] != "半格" and report["photo1"]["head"]["title"] is None
+    assert report["photo1"]["head"]["text"] != "半格" and report["photo1"]["head"]["title"] is None and report["photo1"]["head"]["role"] is None
 
     # 第 2 张按相机 JPG 打开，舞台截图保留中央黑缝，配方页提示等待配对
     assert report["photo2"]["layer"] == {"w": 4288, "h": 2848}
     assert "这张是半格双联，配方效果要等配对功能。" in report["photo2"]["recipeText"]
     # 编辑页顶部和配方说明也不说「只有 JPG」
-    assert report["photo2"]["head"] == {"text": "半格", "title": diptych_note, "aria": diptych_note}
+    assert report["photo2"]["head"] == {"text": "半格", "title": diptych_note, "aria": diptych_note, "role": "img"}
     assert "这张按相机拼好的双联图调整" in report["photo2"]["recipeText"]
     assert "只有相机 JPG" not in report["photo2"]["recipeText"]
     sc_mean, sc_max, sl, sr = _stage_png_seam_stats(stage_png)
