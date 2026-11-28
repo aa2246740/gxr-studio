@@ -15,6 +15,8 @@ export interface ThumbRequest {
   /** jpg / dng：缩略图和拍摄时间。full：整份文件的字节，转移回主线程（主线程不调 File.arrayBuffer）。 */
   role: 'jpg' | 'dng' | 'full';
   width: number;
+  /** 大屏网格：还要盖住这么高（设备像素，object-fit: cover）。0 或没有：只按宽解（今天的小版式）。 */
+  height?: number;
 }
 
 export interface ThumbOk {
@@ -96,7 +98,13 @@ async function readRange(file: File, start: number, length: number): Promise<Uin
 
 const NO_META: PhotoMeta = { lens: null, iso: null };
 
-async function fromJpeg(file: File, width: number): Promise<{ captureMs: number | null; bitmap: ImageBitmap | null; meta: PhotoMeta; frame: Frame | null; diptych: boolean }> {
+/** 按文件头的转正尺寸把解码宽放到盖得住 `height`（比格子宽的照片要更宽），最多 2 倍 `width`。不知道比例就只按宽。 */
+function coverWidth(width: number, height: number, frame: Frame | null): number {
+  if (!(height > 0) || !frame || frame.width <= 0 || frame.height <= 0 || !Number.isFinite(width)) return width;
+  return Math.min(2 * width, Math.max(width, Math.ceil((height * frame.width) / frame.height)));
+}
+
+async function fromJpeg(file: File, width: number, height: number): Promise<{ captureMs: number | null; bitmap: ImageBitmap | null; meta: PhotoMeta; frame: Frame | null; diptych: boolean }> {
   const head = await readRange(file, 0, PREFIX);
   const captureMs = head ? captureTimeFromJpeg(head)?.ms ?? null : null;
   const meta = head ? photoMetaFromJpeg(head) : NO_META;
@@ -105,11 +113,11 @@ async function fromJpeg(file: File, width: number): Promise<{ captureMs: number 
     const wide = await readRange(file, 0, SIZE_PREFIX);
     if (wide) frame = jpegFrame(wide);
   }
-  const [bitmap, diptych] = await Promise.all([scaled(file, width), isDiptychBlob(file, frame)]);
+  const [bitmap, diptych] = await Promise.all([scaled(file, coverWidth(width, height, frame)), isDiptychBlob(file, frame)]);
   return { captureMs, bitmap, meta, frame, diptych };
 }
 
-async function fromDng(file: File, width: number): Promise<{ captureMs: number | null; bitmap: ImageBitmap | null; bad: boolean; meta: PhotoMeta; frame: Frame | null; diptych: boolean }> {
+async function fromDng(file: File, width: number, height: number): Promise<{ captureMs: number | null; bitmap: ImageBitmap | null; bad: boolean; meta: PhotoMeta; frame: Frame | null; diptych: boolean }> {
   const head = await readRange(file, 0, TIFF_PREFIX);
   // 只看第一个字节不够：「II」开头的坏文件也会被当成 RAW。先查完整的 TIFF 头和 IFD 结构。
   if (!head || checkDng(head, file.size) !== null) return { captureMs: null, bitmap: null, bad: true, meta: NO_META, frame: null, diptych: false };
@@ -122,12 +130,12 @@ async function fromDng(file: File, width: number): Promise<{ captureMs: number |
   const jpeg = await readRange(file, range.offset, range.length);
   if (!jpeg || jpeg.length < 4 || jpeg[0] !== 0xff || jpeg[1] !== 0xd8) return { captureMs, bitmap: null, bad: false, meta, frame, diptych: false };
   if (captureMs === null) captureMs = captureTimeFromJpeg(jpeg)?.ms ?? null;
-  const bitmap = await scaled(new Blob([jpeg.slice()], { type: 'image/jpeg' }), width);
+  const bitmap = await scaled(new Blob([jpeg.slice()], { type: 'image/jpeg' }), coverWidth(width, height, frame));
   return { captureMs, bitmap, bad: false, meta, frame, diptych: false };
 }
 
 self.onmessage = (event: MessageEvent<ThumbRequest>) => {
-  const { id, file, role, width } = event.data;
+  const { id, file, role, width, height = 0 } = event.data;
   const name = file.name;
   if (role === 'full') {
     file
@@ -143,7 +151,7 @@ self.onmessage = (event: MessageEvent<ThumbRequest>) => {
     return;
   }
   const thumbWidth = width > 0 ? width : THUMB;
-  const run = role === 'jpg' ? fromJpeg(file, thumbWidth).then((row) => ({ ...row, bad: row.bitmap === null && role === 'jpg' })) : fromDng(file, thumbWidth);
+  const run = role === 'jpg' ? fromJpeg(file, thumbWidth, height).then((row) => ({ ...row, bad: row.bitmap === null && role === 'jpg' })) : fromDng(file, thumbWidth, height);
   run
     .then((row) => {
       const reply: ThumbOk = {

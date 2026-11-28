@@ -86,10 +86,15 @@ export interface Outcome {
 
 type Line = (who: string, info: Skip & Partial<Outcome>) => string;
 
+/** 结果句里半格双联的 needs_raw 换成这个原因，说「按相机拼好的双联图调整」。 */
+export const DIPTYCH_NEEDS_RAW = 'diptych_needs_raw';
+
 /** `SKIP_LINES`：跳过的原因 → 一句话。who 是「2 张」或（只有一张时）「这张」。 */
 const SKIP_LINES: Record<string, Line> = {
   unit_mismatch: (who) => `${who}镜头单元不同，没有套用配方`,
   needs_raw: (who, s) => `${who}只有 JPG，没有套用${s.part === 'lut' ? ' LUT' : '配方'}`,
+  /** 半格双联没有 RAW（Import P3-3）：不说「只有 JPG」。只在手机的结果句里用，桌面 `Outcome` 仍是 `needs_raw`。 */
+  [DIPTYCH_NEEDS_RAW]: (who, s) => `${who}按相机拼好的双联图调整，没有套用${s.part === 'lut' ? ' LUT' : '配方'}`,
   lut_missing: (who) => `${who}找不到这个 LUT，没有套用 LUT`,
   recipe_rejected: (who) => `${who}用不了这个配方，没有套用配方`,
   not_copied: (who, s) => `${who}没有套用${groupName(s.group)}（复制时没带上）`,

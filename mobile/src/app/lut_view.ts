@@ -13,6 +13,7 @@ import {
   type LutRecord,
 } from '../lib/lut';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
+import { currentCardBakeEdge } from './layout';
 import { button, el, icon } from './dom';
 import { exportPaused } from './export_pause';
 import { lookCache } from './looks';
@@ -619,7 +620,7 @@ export class LutView {
         look: { recipe: recKey, lut: built.token, lutStrength: 1, curve: null, adjust: ADJUST },
         geometry: GEOMETRY,
         aspect: null,
-        maxEdge: 192,
+        maxEdge: currentCardBakeEdge(),
       });
       if (!out || !alive()) return;
       const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));

@@ -269,7 +269,7 @@ export function openJpgInfoSheet(shell: HTMLElement, diptych: boolean): void {
   note.append(text);
   openRecipeInfoSheet(shell, '配方需要 RAW 文件', [
     note,
-    el('p', 'dim', '这张只有相机 JPG。下面这些照常能用，导出的是相机 JPG 加上这些改动：调整、裁剪、边框、曲线。'),
+    el('p', 'dim', `${diptych ? '这张按相机拼好的双联图调整' : '这张只有相机 JPG'}。下面这些照常能用，导出的是相机 JPG 加上这些改动：调整、裁剪、边框、曲线。`),
     el('p', 'faint', 'HDR 需要 RAW 文件。这张会存普通版本。'),
   ]);
 }

@@ -94,6 +94,19 @@ function workerCount(): number {
   return Math.min(4, Math.max(1, cores - 1));
 }
 
+/** 活着的池子（stop() 之前）。只给 poolLoad() 数数用。 */
+const livePools = new Set<Pool>();
+
+/**
+ * 所有活着的池子里还没回来的请求加上还在单子里等的请求，一共几个（只读）。网格上的预烘焙（app/prebake.ts）用它判断
+ * 池子是不是只在跑它自己的活：比它在途的多，就是别人（打开照片、读 DAT、LUT……）在用，先不开始新的。
+ */
+export function poolLoad(): number {
+  let n = 0;
+  for (const pool of livePools) n += pool.outstanding();
+  return n;
+}
+
 async function compileWasmModule(): Promise<WebAssembly.Module> {
   const res = await fetch(wasmAssetUrl(), { credentials: 'same-origin' });
   if (!res.ok) throw new Error(`WASM HTTP ${res.status}`);
@@ -139,6 +152,12 @@ export class Pool {
     this.cap = workerCount();
     this.workers = Array.from({ length: this.cap }, () => null);
     this.bgMax = Math.max(1, this.cap - 1);
+    livePools.add(this);
+  }
+
+  /** 还没回来的请求和还在单子里等的请求一共几个（只读，见 poolLoad）。 */
+  outstanding(): number {
+    return this.fgWaiting.length + this.bgWaiting.length + this.pending.size;
   }
 
   /**
@@ -173,6 +192,7 @@ export class Pool {
 
   stop(): void {
     this.stopped = true;
+    livePools.delete(this);
     for (const job of [...this.fgWaiting.splice(0), ...this.bgWaiting.splice(0)]) {
       job.lane?.onPromote(null);
       job.reject(new Error('Worker 已停止'));

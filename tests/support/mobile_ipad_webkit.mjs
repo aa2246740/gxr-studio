@@ -213,7 +213,7 @@ async function auditD5Labels(page, phase, { expectEdited = false, expectSelected
       const lower = label.toLowerCase();
       const leakedStem = stems.some((s) => s && lower.includes(s.toLowerCase()));
       const leakedTime = timeOrDate.test(label);
-      const hasKind = /RAW\+JPG|RAW|JPG|半格双联/.test(label);
+      const hasKind = /RAW\+JPG|RAW|JPG|半格/.test(label);
       const hasPos = /第\s*\d+\s*张/.test(label);
       return {
         nonEmpty: label.length > 0,

@@ -63,7 +63,7 @@ function stemOf(name: string): string {
   return dot <= 0 ? name : name.slice(0, dot);
 }
 
-/** `R*.DNG` 和 `R*.JPG` 按主文件名配对。`GXRCE.DAT` 和 `GXRFX.BIN` 单独留下（几个里取最新的）。别的都计入忽略。 */
+/** `R*.DNG` 和 `R*.JPG` 按主文件名配对。`GXRCE.DAT` 和 `GXRFX.BIN` 单独留下（几个里取最新的）。点开头的跳过，别的都计入忽略。 */
 export function classify(files: readonly Incoming[]): Classified {
   const buckets = new Map<string, ClassifiedPhoto>();
   const order: string[] = [];
@@ -74,6 +74,8 @@ export function classify(files: readonly Incoming[]): Classified {
   let ignored = 0;
   let unusable = 0;
   files.forEach((file, index) => {
+    // 点开头的（Mac 在卡上生成的 ._R0001.JPG 这类 AppleDouble、.DS_Store）不是用户的文件：直接跳过，不算「没有用上」。
+    if (file.name.startsWith('.')) return;
     if (DAT.test(file.name)) {
       datCount += 1;
       if (datIndex === null || file.lastModified > files[datIndex].lastModified) datIndex = index;

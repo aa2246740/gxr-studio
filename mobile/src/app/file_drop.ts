@@ -2,6 +2,8 @@
 // 带文件的拖动在每一屏都在 window 上取消 dragover / drop，浏览器就不会拿拖进来的照片换掉整个应用。
 // 开始页和网格：松开后和「选照片」走同一个 take(files)。编辑器里不导入，只提示回到照片列表。
 // 不带文件的拖动（文字、链接、页面自己的滑块）一概不管。
+// 「选文件夹」（2026-11-28，只在电脑上）：<input webkitdirectory> 选出来的文件按拖文件夹的规矩筛一遍（点开头跳过、层数和文件数上限），
+// 再走同一个 take(files)。File 对象原样传下去，webkitRelativePath 留着。
 
 import { showToast } from './toast';
 
@@ -76,6 +78,71 @@ export async function walkEntries(entries: readonly DropEntry[], maxDepth = DROP
   return { files, capped };
 }
 
+/** 选文件夹拿到的文件里用得到的那几样（Node 单测用假的）。`webkitRelativePath` 以选中的文件夹开头，比如 `CARD/DCIM/100RICOH/R0000001.JPG`。 */
+export interface PickedFile {
+  readonly name: string;
+  readonly webkitRelativePath: string;
+}
+
+/**
+ * 选文件夹拿到的文件按拖文件夹的规矩筛：路径里哪一段是 `.` 开头（.Trashes/、._R0001.JPG）就跳过；
+ * 选中的文件夹是第 0 层，比 `maxDepth` 更深的文件夹里的不要；收满 `maxFiles` 个就停。留下的是原来的对象，顺序不变。
+ */
+export function folderFiles<T extends PickedFile>(picked: readonly T[], maxDepth = DROP_MAX_DEPTH, maxFiles = DROP_MAX_FILES): { files: T[]; capped: boolean } {
+  const files: T[] = [];
+  let capped = false;
+  for (const file of picked) {
+    const parts = (file.webkitRelativePath || file.name).split('/');
+    if (parts.some((part) => part.startsWith('.'))) continue;
+    // 文件在第 parts.length - 1 层；第 maxDepth 层的文件还能读到（同 walkEntries）。
+    if (parts.length - 1 > maxDepth) {
+      capped = true;
+      continue;
+    }
+    if (files.length >= maxFiles) {
+      capped = true;
+      break;
+    }
+    files.push(file);
+  }
+  return { files, capped };
+}
+
+export const FOLDER_PICK_LABEL = '选文件夹';
+export const FOLDER_PICK_NOTE = '浏览器可能会问是否“上传”，其实文件只在这台电脑上读取，不会传出去。';
+
+let folderShell: HTMLElement | null = null;
+let folderTake: ((files: File[]) => void) | null = null;
+let folderInput: HTMLInputElement | null = null;
+
+/** 「选文件夹」按钮调这个：第一次用时才建选择框（手机和 iPad 上不会有），在这次点击里同步打开。 */
+export function pickFolder(): void {
+  const shell = folderShell;
+  const take = folderTake;
+  if (!shell || !take) return;
+  if (!folderInput) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.webkitdirectory = true;
+    input.className = 'folderpick';
+    // 和别的选择框一样：不进 Tab 顺序，读屏跳过，可见的按钮负责打开。
+    input.tabIndex = -1;
+    input.setAttribute('aria-hidden', 'true');
+    input.addEventListener('change', () => {
+      const picked = input.files ? Array.from(input.files) : [];
+      input.value = '';
+      const { files, capped } = folderFiles(picked);
+      const screen = shell.dataset.screen;
+      if (files.length && (screen === 'start' || screen === 'grid')) take(files);
+      if (capped) showToast(shell, DROP_CAP_NOTE, 5000);
+    });
+    shell.append(input);
+    folderInput = input;
+  }
+  folderInput.click();
+}
+
 function hasFiles(event: DragEvent): boolean {
   const types = event.dataTransfer?.types;
   return Boolean(types && Array.from(types).includes('Files'));
@@ -98,8 +165,12 @@ function droppedFiles(data: DataTransfer): Promise<Walked> {
   return walkEntries(entries).then((walked) => ({ files: [...loose, ...walked.files], capped: walked.capped }));
 }
 
-/** 在 window 上接住带文件的拖动。`take` 就是「选照片」那条路；屏幕看 shell 的 data-screen。 */
+/** 在 window 上接住带文件的拖动，也记下「选文件夹」要用的 take。`take` 就是「选照片」那条路；屏幕看 shell 的 data-screen。 */
 export function bindFileDrop(shell: HTMLElement, take: (files: File[]) => void): void {
+  // 「选文件夹」走同一个 take（pickFolder）。
+  folderShell = shell;
+  folderTake = take;
+  folderInput = null;
   const overlay = document.createElement('div');
   overlay.className = 'filedrop';
   overlay.setAttribute('aria-hidden', 'true');

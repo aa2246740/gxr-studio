@@ -583,7 +583,7 @@ mod tests {
         }
 
         // 非严格递增 patch（相等或递减）在 r5/r6 上均拒绝
-        for generation in [262u32, 266] {
+        for generation in [262u32, 266, 267] {
             for relocs in [[(260, 256), (260, 256)], [(264, 256), (260, 256)]] {
                 let bad = synthetic_r5_shell(generation, 2, &relocs, 32);
                 let err = parse(&bad, None).expect_err("expected non-increasing patch rejection");
@@ -592,7 +592,7 @@ mod tests {
         }
 
         // 合法双条重定位通过结构解析后，仍受 BOUND_ENGINES 精确绑定拦截（包括 g262）
-        for generation in [262u32, 266] {
+        for generation in [262u32, 266, 267] {
             let two_ok = synthetic_r5_shell(generation, 2, &[(260, 256), (264, 256)], 32);
             let err = parse(&two_ok, None).expect_err("expected engine binding rejection");
             assert_eq!(err.message, format!("{generation} 引擎或链接布局未登记"));

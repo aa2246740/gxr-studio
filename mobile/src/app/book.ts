@@ -21,7 +21,7 @@ export type { Dat, PhotoDatTarget };
  * 显卡这边用 24 个固定的键轮流装，同一个键再装一次引擎会销毁旧的那份，所以引擎里我们的表永远不超过 24 张。
  * 舞台正在用的那张不会被换掉。
  */
-const KEEP_BAKES = 16;
+export const KEEP_BAKES = 16;
 const GPU_SLOTS = 24;
 
 export interface Pack {
@@ -594,6 +594,11 @@ export class Book {
     } else if (!background) this.laneOf.get(job)?.promote();
     await job;
     return key;
+  }
+
+  /** 这张表已经做好、还在 JS 的缓存里（不装进显卡，也不算用过一次）。网格上的预烘焙用它跳过做好的表。 */
+  cached(key: string): boolean {
+    return this.done.has(key);
   }
 
   /** 已经做好、拿得到显卡键就是 true。 */

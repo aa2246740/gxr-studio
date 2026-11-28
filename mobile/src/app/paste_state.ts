@@ -9,7 +9,7 @@ import { isDisplaySpace } from '../lib/lut';
 import { curveJson } from '../lib/export_request';
 import { copyFrom, pasteBatch, PasteUndo, undoBatch, type Clip, type Env, type Target } from '../lib/paste';
 import { photoWithAdopted, shelf, shelves } from '../lib/recipes';
-import { copyMessage, groupName, pasteMessage, undoMessage, type GroupId, type Outcome } from '../lib/paste_text';
+import { copyMessage, DIPTYCH_NEEDS_RAW, groupName, pasteMessage, undoMessage, type GroupId, type Outcome } from '../lib/paste_text';
 import type { AppApi, Photo } from './model';
 
 /** 几何 / 裁剪变了，把旧图刷出的中性小图和配方卡小图放掉（不在这里 static import model.ts，Node 测试安全）。 */
@@ -56,6 +56,14 @@ function envOf(api: AppApi): Env {
       return !isDisplaySpace(rec.input_space);
     },
   };
+}
+
+/** 结果句用的结果：半格双联没套上配方 / LUT 时说「按相机拼好的双联图调整」，不说「只有 JPG」（Import P3-3）。`lastOutcomes` 不动，仍和桌面同形。 */
+export function shownOutcomes(outcomes: readonly Outcome[], diptychs: ReadonlySet<string>): readonly Outcome[] {
+  if (!diptychs.size) return outcomes;
+  return outcomes.map((r) =>
+    diptychs.has(r.id) ? { ...r, skipped: r.skipped.map((s) => (s.reason === 'needs_raw' ? { ...s, reason: DIPTYCH_NEEDS_RAW } : s)) } : r,
+  );
 }
 
 /** 一组照片的时间范围（设计稿的「17:43–17:45」）。 */
@@ -271,7 +279,7 @@ export class PasteState {
     if (api.session() !== session) return outcomes;
     this.lastOutcomes = outcomes;
     const used = outcomes.some((r) => r.applied.length);
-    const line = pasteMessage(outcomes);
+    const line = pasteMessage(shownOutcomes(outcomes, new Set(photos.filter((photo) => photo.diptych).map((photo) => photo.id))));
     const ids = new Set(outcomes.filter((r) => r.applied.length).map((r) => r.id));
     for (const id of ids) invalidateThumbs(api.photo(id));
     if (used) this.setBar({ kind: 'applied', batchId, line, sub: `${range} · ${groupsText(clip.groups)}`, used, ids });

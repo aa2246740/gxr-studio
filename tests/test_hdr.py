@@ -547,8 +547,8 @@ def test_export_hdr_without_raw_or_as_png_says_why(client, hdr_card):
     p1 = _photo(client, "HDR0001")
     png = _export(client, p1, hdr=True, format="png")
     assert png["hdr"] is False and png["hdr_note"] == "HDR 需要 JPEG 格式"
-    other = _export(client, _photo(client, "HDR0002"), hdr=True)
-    assert other["hdr"] is False and other["hdr_note"] == "这张照片不支持 HDR"
+    other = _export(client, _photo(client, "HDR0002"), hdr=True)  # DNG 来自错开的画面：not_aligned 有自己的一句
+    assert other["hdr"] is False and other["hdr_note"] == "RAW 与 JPG 画面对不上"
     assert client.put(f"/api/photos/{p1['id']}/edit", json={"frame": {"style": "blur_fill"}}).status_code == 200
     blur = _export(client, p1, hdr=True)
     assert blur["hdr"] is False and blur["hdr_note"] == "这个边框样式不能存 HDR"

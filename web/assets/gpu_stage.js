@@ -27,6 +27,17 @@ const prefetched = new Set(); // 已经预取过的 照片:rev:代数
 const PREFETCH = 1; // 左右各预取几张
 let lastRerun = null; // 设备丢失、数据换代时让当前照片重新走一遍
 let lastPrefetch = null;
+// RAW 源图没下载下来（网络或服务器一时出错）：等一会儿自动再试一次，再失败才退回服务器，直到重新打开这张照片。
+// 只管下载失败：超出显卡限额这类每次都会失败的照样马上退回服务器；设备丢失是整个会话退回服务器（见上面的 disabled）。
+const RAW_RETRY_MS = 1000;
+const rawFlaky = new Set(); // 下载失败的 RAW 源图键（failed 里也有）：可以自动重试，重新打开时重来
+const rawRetried = new Set(); // 已经自动重试过一次的源图键
+let rawRetry = null; // 正在等的那一次重试：{ key, view, rerun, timer }
+// 只给测试读的状态（gpuStageStateForTests）：只有布尔、键和时刻
+let lostAt = null;
+let lastRequested = null;
+let lastFinished = null;
+const nowMs = () => Math.round(globalThis.performance?.now?.() ?? Date.now());
 
 function bumpGeneration() {
   generation += 1;
@@ -35,6 +46,9 @@ function bumpGeneration() {
   lutMeta.clear();
   failed.clear();
   prefetched.clear();
+  rawFlaky.clear();
+  rawRetried.clear();
+  cancelRawRetry();
   lastPrefetch = null;
   lastRerun?.();
 }
@@ -60,6 +74,8 @@ function loadEngine() {
         e.onLost = () => {
           disabled = true;
           engine = null;
+          lostAt = nowMs();
+          cancelRawRetry();
           lastRerun?.();
         };
       }
@@ -86,8 +102,15 @@ function photoInfo(id) {
 
 async function binary(url) {
   const res = await fetch(url, { credentials: 'same-origin' });
-  if (!res.ok) throw new Error(`http_${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(`http_${res.status}`), { status: res.status });
   return { data: await res.arrayBuffer(), headers: res.headers };
+}
+
+// RAW 下载失败：连不上、读到一半断了、服务器 5xx，记成可以重试（4xx 是这张照片本身的问题，不重试）
+function retryable(e) {
+  const err = e instanceof Error ? e : new Error(String(e));
+  if (!(err.status >= 400 && err.status < 500)) err.retryable = true;
+  throw err;
 }
 
 // 同一个键同时只加载一次。fn(current)：current() 为假说明已经换代，结果不能写回。
@@ -97,7 +120,10 @@ function once(key, fn) {
   const tagged = `${key}@${gen}`;
   if (!pending.has(tagged)) {
     pending.set(tagged, fn(current).catch((e) => {
-      if (current()) failed.add(key);
+      if (current()) {
+        failed.add(key);
+        if (e?.retryable) rawFlaky.add(key);
+      }
       throw e;
     }).finally(() => pending.delete(tagged)));
   }
@@ -152,6 +178,57 @@ function sourceKey(id, info, base) {
   return base === 'raw' ? `raw:${id}:${info.raw.url}` : `jpg:${id}:${info.jpg.url}`;
 }
 
+// 这张照片的 RAW 源图键（单张 RAW 或半格一对的两份 RAW；相机 JPG 不算）
+function isRawKeyOf(key, id) {
+  return key.startsWith(`raw:${id}:`) || key.startsWith(`pair:${id}:`);
+}
+
+// 重新打开这张照片：上次 RAW 没下载下来的记号和用过的重试都作废，再走一次显卡
+function forgetRawFailure(id) {
+  for (const key of [...rawFlaky]) {
+    if (!isRawKeyOf(key, id)) continue;
+    rawFlaky.delete(key);
+    failed.delete(key);
+  }
+  for (const key of [...rawRetried]) if (isRawKeyOf(key, id)) rawRetried.delete(key);
+}
+
+// 关掉大图、换照片、换代、设备丢失时停掉还在等的重试（view 给了就只停这个视图的）
+export function cancelRawRetry(view = null) {
+  if (!rawRetry || (view && rawRetry.view !== view)) return;
+  clearTimeout(rawRetry.timer);
+  rawRetry = null;
+}
+
+// RAW 源图第一次下载失败：约一秒后清掉失败记号、再走一遍 route（只试一次）。返回 true = 重试还在等，先别退回服务器。
+// 等完之后先核对：还是同一代、同一个引擎、设备没丢、开关没关、这个视图还开着、还是这张照片；不对就不试
+// （换代和设备丢失自己会让当前照片重走一遍，关掉的视图不用再画）。重试不带当时的草稿：rerun 进 route 时按那一刻的
+// 照片、rev 和草稿重新算，所以等的这一秒里改了参数也是按新的画。
+function scheduleRawRetry(view, key, rerun) {
+  if (rawRetry && rawRetry.key === key && rawRetry.view === view) {
+    rawRetry.rerun = rerun; // 期间草稿或编辑记录换了：用最新的那次 rerun
+    return true;
+  }
+  if (!rawFlaky.has(key) || rawRetried.has(key)) return false;
+  cancelRawRetry();
+  rawRetried.add(key);
+  const gen = generation;
+  const eng = engine;
+  const id = view.photo.id;
+  const timer = setTimeout(() => {
+    if (!rawRetry || rawRetry.timer !== timer) return;
+    const { rerun: again } = rawRetry;
+    rawRetry = null;
+    if (gen !== generation || !engine || engine !== eng || disabled || !flagOn()) return;
+    if (view.disposed || !view.ed || view.photo.id !== id) return;
+    failed.delete(key);
+    rawFlaky.delete(key);
+    again();
+  }, RAW_RETRY_MS);
+  rawRetry = { key, view, rerun, timer };
+  return true;
+}
+
 function ensureSource(id, info, base) {
   const key = sourceKey(id, info, base);
   if (engine.hasSource(key)) return null;
@@ -168,12 +245,12 @@ function ensureSource(id, info, base) {
         ],
       };
       if (typeof engine.checkPairLimits === 'function') engine.checkPairLimits(cfg);
-      const [r0, r1] = await Promise.all([binary(s0.raw.url), binary(s1.raw.url)]);
+      const [r0, r1] = await Promise.all([binary(s0.raw.url), binary(s1.raw.url)]).catch(retryable);
       if (current()) {
         await engine.addPairRaw(key, cfg, r0.data, r1.data);
       }
     } else if (base === 'raw') {
-      const { data } = await binary(info.raw.url);
+      const { data } = await binary(info.raw.url).catch(retryable);
       if (current()) await engine.addRaw(key, info.raw, data, info.scene);
     } else {
       // 浏览器按 EXIF 方向解码（不做色彩转换）：实测与服务器 PIL 的 load_jpeg 逐字节相同
@@ -255,6 +332,7 @@ export function route(view, ctx, rerun) {
   const gen = generation;
   const info = view.gpuInfo;
   if (!info || view.gpuInfoId !== `${id}@${gen}`) {
+    if (!view.gpuInfoId) forgetRawFailure(id); // 新打开的视图第一次来问
     photoInfo(id).then((i) => {
       if (gen !== generation) return; // 已换代：新的一轮会自己再取
       view.gpuInfo = i;
@@ -286,7 +364,12 @@ export function route(view, ctx, rerun) {
   const loads = [];
   const isPair = plan.base === 'pair-raw';
   const sKey = sourceKey(id, info, plan.base);
-  if (failed.has(sKey)) return 'server';
+  lastRequested = { key: JSON.stringify([gen, sKey, plan.recipe ?? null, plan.lut || null]), at: nowMs() };
+  if (failed.has(sKey)) {
+    if (!scheduleRawRetry(view, sKey, rerun)) return 'server';
+    if (!(view.gpuActive && engine.currentKey() === sKey)) view.gpuActive = null;
+    return 'wait';
+  }
   const needBake = (plan.base === 'raw' || isPair) && plan.recipe !== undefined;
   const bUrl = needBake ? bakeUrl(id, plan.recipe, isPair ? 0 : null) : null;
   const bUrl2 = needBake && isPair ? bakeUrl(id, plan.recipe, 1) : null;
@@ -365,6 +448,7 @@ export function route(view, ctx, rerun) {
     ctx.stage === 'final' ? box.box : null,
     view.gpuAspect,
   ]);
+  lastFinished = { key: view.gpuFinishKey, at: nowMs() };
   ed.error = null;
   ed.busy = false;
   prefetch(view);
@@ -492,6 +576,25 @@ export function gpuEngineForTests() {
   return engine;
 }
 
+// 测试读的状态（浏览器测试等显卡画面超时时附在失败输出里）：只有布尔、键和时刻，没有照片内容。只读，不改任何东西。
+// disabled：本次会话走服务器（没有 WebGPU、引擎建不起来或设备丢失）；deviceLost：其中是设备丢失；
+// rawFailed：view 这张照片的 RAW 源图记着加载失败；rawRetry：'pending' 正在等重试，'used' 这次打开已经重试过；
+// requested / finished：最后一次要画的帧（代数、源图、配方、LUT）和最后画好的帧键，各带时刻（performance.now 毫秒）。
+export function gpuStageStateForTests(view = null) {
+  const id = view?.photo?.id ?? null;
+  const mine = (keys) => id !== null && [...keys].some((k) => isRawKeyOf(k, id));
+  return {
+    disabled,
+    deviceLost: lostAt !== null,
+    lostAt,
+    engine: !!engine,
+    rawFailed: mine(failed),
+    rawRetry: rawRetry && (!view || rawRetry.view === view) ? 'pending' : mine(rawRetried) ? 'used' : null,
+    requested: lastRequested ? { ...lastRequested } : null,
+    finished: lastFinished ? { ...lastFinished } : null,
+  };
+}
+
 // 显卡画布现在的画面（成片，只有照片，不含边框）：重画一帧，在同一个任务里交给 use(canvas)——WebGPU 画布的内容只在提交的那个任务里有效。
 // 边框卡片用它缩成小底图（finish_cards.js）。画布就是显示的大小，比把整张成片读回 CPU 快得多（大图要一秒多）。
 // 显卡不在、或画布没挂在页面上时返回 null。
@@ -526,6 +629,7 @@ export async function lookThumb(view, ctx, recipe, edge, still = () => true) {
   const sKey = sourceKey(id, info, plan.base);
   const url = bakeUrl(id, plan.recipe, isPair ? 0 : null);
   const url2 = isPair ? bakeUrl(id, plan.recipe, 1) : null;
+  if (rawRetry && rawRetry.key === sKey) return 'wait'; // 舞台的 RAW 还在等重试：卡片也先等，不掉到服务器出图上
   if (failed.has(sKey) || failed.has(url) || (url2 && failed.has(url2))) return null;
   const loads = [
     ensureSource(id, info, plan.base),
@@ -536,7 +640,10 @@ export async function lookThumb(view, ctx, recipe, edge, still = () => true) {
     try {
       await Promise.all(loads);
     } catch {
-      return still() ? null : 'wait';
+      if (!still()) return 'wait';
+      // 下载比卡片慢、在等的时候失败了：舞台已经排上重试，卡片也等，不掉到服务器小图上（那张会占住这张卡片的缓存）
+      if (rawRetry && rawRetry.key === sKey) return 'wait';
+      return null;
     }
   }
   const meta = bakeMeta.get(url);
