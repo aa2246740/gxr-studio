@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
+from anyio import from_thread
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -21,9 +24,11 @@ from ..library import sidecar as sc
 from ..library.edits import RevisionConflict
 from ..lut.errors import LutError
 from ..lut.spaces import DISPLAY
+from ..observe import log
 from ..raw.dng import RawDecodeError
 from ..render import edits as render_edits
 from ..render.camera_recipe import editor_edit
+from ..render.cancel import RenderCancelled, cancel_when
 from ..render.params import (
     EditError,
     EditState,
@@ -251,6 +256,18 @@ def _prepare_render_target(
     return shot, edit, side, use_stage
 
 
+def _client_gone(request: Request) -> Callable[[], bool]:
+    """出图在线程池里跑：回事件循环问一下这个请求的连接断了没有。页面刷新、换照片或中止 fetch 时浏览器会断开。"""
+
+    def gone() -> bool:
+        try:
+            return bool(from_thread.run(request.is_disconnected))
+        except RuntimeError:  # 不在 AnyIO 工作线程里（直接调用）：当作还有人等
+            return False
+
+    return gone
+
+
 def _stage_response(
     request: Request,
     c: Any,
@@ -266,8 +283,12 @@ def _stage_response(
 ) -> Response:
     from ..finish.serve import render_stage
 
+    done: tuple[bytes, dict[str, str]] | None = None
     try:
-        jpeg, labels = render_stage(c.render, c.lib, shot, edit, side, stage=use_stage, max_edge=max_edge, quality=quality, cache=cache)
+        with cancel_when(_client_gone(request)):
+            done = render_stage(c.render, c.lib, shot, edit, side, stage=use_stage, max_edge=max_edge, quality=quality, cache=cache)
+    except RenderCancelled:
+        pass  # 出了 except 再报错：不让异常链拉住算到一半的大数组
     except RenderUnavailable as exc:
         raise _unavailable(c, exc) from exc
     except NoRaw as exc:
@@ -276,6 +297,10 @@ def _stage_response(
         raise _edit_error(exc) from exc
     except RawDecodeError as exc:
         raise ApiError(422, "raw_unreadable", "这份 RAW 暂时读不出来。请换一张照片或重新导入后再试。") from exc
+    if done is None:  # 请求方已经走了，这个回应没人收；不会给出半张图
+        log.event(logging.INFO, "render_cancelled", stage=use_stage, size=size or "")
+        raise ApiError(409, "render_cancelled", "这次出图已取消。")
+    jpeg, labels = done
     headers = {"Cache-Control": "private, no-cache", "X-GXR-Cache": labels.get("cache") or "miss"}
     if use_stage == "uncropped" and labels.get("valid"):
         headers["X-GXR-Valid-Rect"] = labels["valid"]

@@ -13,6 +13,7 @@ from PIL import Image, ImageOps
 
 from ..library.store import Library
 from ..raw.dng import RawDecodeError
+from ..render.cancel import checkpoint
 from ..render.params import EditError, EditState
 from ..render.service import NoRaw, RenderService, RenderUnavailable
 from .approx import ENABLED, apply_lut
@@ -435,6 +436,7 @@ def _stage_rgb(
     use_custom = _custom_logo(stage, frame)
     logos_info = render.logos.info_map() if use_custom else None
     logo_images = render.logos.image_map(frame.logo) if use_custom else None
+    checkpoint()  # 安全点（render.cancel）：底图算完，几何、边框之前
     rgb, header = finish_array(
         rgb,
         bare_edit,
@@ -451,6 +453,7 @@ def _stage_rgb(
         logos=logos_info,
         logo_images=logo_images,
     )
+    checkpoint()
     labels["valid"] = header or ""
     labels.setdefault("label", labels.get("kind") or "original")
     labels.setdefault("text", "原图")
@@ -475,7 +478,8 @@ def render_stage(
 ) -> tuple[bytes, dict[str, str]]:
     """预览和接口用的成片 JPEG。没有编辑的相机 JPG 在全尺寸时原样返回文件字节，其余是 `render_stage_rgb` 编码一次。
 
-    `cache`：按 `_stage_key` 存进渲染服务的结果缓存，同一张图、同一份编辑、同一档参数再要时直接给字节（标注 `cache: hit`）。"""
+    `cache`：按 `_stage_key` 存进渲染服务的结果缓存，同一张图、同一份编辑、同一档参数再要时直接给字节（标注 `cache: hit`）。
+    出图被取消（`render.cancel`）时抛 `RenderCancelled`，不存。"""
     plan = _plan(render, lib, shot, edit, side, stage=stage, base=base)
     original = plan[0]
     if original is not None and max_edge is None:
@@ -492,6 +496,7 @@ def render_stage(
     rgb, labels = _stage_rgb(render, lib, shot, side, plan, stage=stage, max_edge=max_edge, quality=quality, base=base, track=track)
     jpeg = encode_jpeg(rgb, quality)  # rgb 已经按 max_edge 缩好
     if key is not None:
+        checkpoint()  # 取消了的图不进缓存
         render.keep_stage_result(key, jpeg, labels)
     return jpeg, labels
 

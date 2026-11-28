@@ -2,6 +2,7 @@
 
 - 同一对、同一份编辑、同一档 stage/size/视图再要一次：`X-GXR-Cache: hit`，字节和第一次、和清掉缓存后重算的都一样；
 - 改了编辑：miss，字节不同；
+- 发请求的连接断了（页面刷新、换照片、中止 fetch）：服务器在下一个条带停下，不进缓存；之后的新请求照常算出同样的字节；
 - 缓存键覆盖每个会改变输出的输入（不需要样本）。
 
 实拍样本用 r6-field-20261118/card250 的前两对（和 test_halfframe_p1a_editor_browser 一样）。不打印文件名和 EXIF。
@@ -11,10 +12,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import socket
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 
 from conftest import PORT
@@ -92,6 +99,125 @@ def test_edited_pair_full_render_after_edit_is_miss_with_new_bytes(settings: Any
         assert after.headers["X-GXR-Cache"] == "miss", "改了编辑还拿到了缓存"
         assert after.content != before.content
         assert c.post(FULL.format(p2), json=_page_body(1.0)).headers["X-GXR-Cache"] == "hit"
+
+
+_CLIENT = r"""
+import http.client, json, sys
+port, path, token, body_file, out_file, mode = sys.argv[1:7]
+body = open(body_file, "rb").read()
+conn = http.client.HTTPConnection("127.0.0.1", int(port), timeout=600)
+conn.request("POST", path, body, {"X-GXR-Token": token, "Content-Type": "application/json"})
+if mode == "abandon":
+    print("sent", flush=True)
+    sys.stdin.readline()
+    conn.sock.shutdown(2)
+    conn.close()
+    print("closed", flush=True)
+    sys.exit(0)
+res = conn.getresponse()
+data = res.read()
+open(out_file, "wb").write(data)
+print(json.dumps({"status": res.status, "cache": res.getheader("X-GXR-Cache")}), flush=True)
+"""
+
+
+def _wait(pred: Any, timeout: float, what: str) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"timeout waiting for {what}")
+
+
+def test_abandoned_full_render_stops_and_newer_render_gets_right_bytes(
+    settings: Any, lib: Library, volumes: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """真 uvicorn、真 TCP：客户端发完请求就断开（浏览器刷新页面、中止 fetch 时就是这样）。
+
+    条带计数器 + 每条带 0.2 秒的慢步骤：断开后服务器在下一个条带停下，不跑到最后，也不把半张图存进缓存；
+    之后同一份编辑的新请求是 miss，字节和事先单独算的一样。"""
+    from gxr_studio import halfframe_compose as hfc
+    from gxr_studio.finish import serve
+
+    p2 = _pair_library(settings, lib, volumes)
+    body = tmp_path / "body.json"
+    body.write_text(json.dumps(_page_body(0.5)), encoding="utf-8")
+    with _client(settings) as c:
+        assert c.put(f"/api/photos/{p2}/edit", json={"adjust": {"exposure_ev": 0.5}}).status_code == 200
+        reference = c.post(FULL.format(p2), json=_page_body(0.5))
+        assert reference.status_code == 200, reference.text
+
+    strips = {"n": 0, "slow": True}
+    real_strips = hfc.demosaic_strips
+
+    def slow_strips(dng: Any, *args: Any, **kwargs: Any) -> Any:
+        for item in real_strips(dng, *args, **kwargs):
+            strips["n"] += 1
+            if strips["slow"]:
+                time.sleep(0.2)
+            yield item
+
+    outcomes: list[str] = []
+    real_stage = serve.render_stage
+
+    def watched_stage(*args: Any, **kwargs: Any) -> Any:
+        try:
+            out = real_stage(*args, **kwargs)
+        except Exception as exc:
+            outcomes.append(type(exc).__name__)
+            raise
+        outcomes.append("done")
+        return out
+
+    monkeypatch.setattr(hfc, "demosaic_strips", slow_strips)
+    monkeypatch.setattr(serve, "render_stage", watched_stage)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    app = create_app(settings.with_(port=port))
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+
+    def client(mode: str, out: Path) -> subprocess.Popen[str]:
+        args = [sys.executable, "-I", "-c", _CLIENT, str(port), FULL.format(p2), settings.token, str(body), str(out), mode]
+        return subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+    try:
+        _wait(lambda: server.started, 10, "server start")
+        gone = client("abandon", tmp_path / "unused.jpg")
+        try:
+            assert gone.stdout is not None and gone.stdout.readline().strip() == "sent"
+            _wait(lambda: strips["n"] >= 3, 120, "abandoned render to reach strip 3")
+            at_close = strips["n"]
+            assert gone.stdin is not None
+            gone.stdin.write("\n")
+            gone.stdin.flush()
+            assert gone.stdout.readline().strip() == "closed"
+        finally:
+            gone.communicate(timeout=30)
+        _wait(lambda: bool(outcomes), 120, "abandoned render to end")
+        stopped_at = strips["n"]
+        time.sleep(0.6)
+        assert strips["n"] == stopped_at, "断开之后还在算条带"
+        # 一张 card250 DNG 是 12 个条带，一对 24 个；断开时在第 at_close 个
+        assert outcomes == ["RenderCancelled"], f"没人等的出图跑到了最后：{outcomes}, 条带 {stopped_at}（断开时 {at_close}）"
+        assert stopped_at <= at_close + 3, (stopped_at, at_close)
+        assert _stage_entries(app) == 0, "取消的出图进了缓存"
+
+        strips["slow"] = False
+        newer = client("wait", tmp_path / "newer.jpg")
+        line, _ = newer.communicate(timeout=300)
+        got = json.loads(line.strip().splitlines()[-1])
+        assert got == {"status": 200, "cache": "miss"}, got
+        assert (tmp_path / "newer.jpg").read_bytes() == reference.content
+        assert outcomes == ["RenderCancelled", "done"]
+    finally:
+        server.should_exit = True
+        thread.join(timeout=30)
+        sock.close()
 
 
 def test_stage_cache_key_changes_with_every_output_input(settings: Any, lib: Library, monkeypatch: pytest.MonkeyPatch) -> None:

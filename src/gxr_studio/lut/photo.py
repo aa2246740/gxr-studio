@@ -8,6 +8,7 @@ from typing import Any, cast
 import numpy as np
 
 from ..raw import NEUTRAL, Renderer, open_dng, render_full, render_half
+from ..render.cancel import checkpoint
 from ..render.params import Adjust, EditError, EditState
 from ..render.service import RenderUnavailable
 from .errors import LutError
@@ -90,6 +91,7 @@ def _apply(target: Any, rgb: np.ndarray, xyz: np.ndarray | None = None) -> np.nd
     result = np.empty(flat.shape, np.uint8)
     # 整张照片也限制中间数组大小，和全尺寸 RAW 的条带接口兼容。
     for start in range(0, len(flat), 65536):
+        checkpoint()  # 安全点（render.cancel）
         end = start + 65536
         out = target.render(flat[start:end], None if scene is None else scene[start:end])
         if not np.isfinite(out).all():

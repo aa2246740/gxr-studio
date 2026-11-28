@@ -36,6 +36,7 @@ from ..lut.library import LutLibrary
 from ..raw import Renderer, half_res_codes, open_dng, orient_array
 from ..recipes import RecipeError, RecipeRepository
 from . import chain
+from .cancel import checkpoint
 from .params import EditState, RecipeSel
 from .recipes import CameraData, Menu, unit_of_lens
 from .tones import channel_gains, display_table
@@ -591,11 +592,13 @@ class RenderService:
             model = plan.model or self.model(plan.model_iso, plan.unit)
 
             def display(codes: np.ndarray) -> np.ndarray:
+                checkpoint()  # 条带之间的安全点（render.cancel）；导出没有登记取消条件，这里什么都不做
                 return chain.exact_u8(model, plan.entry, codes, gains, table)
         else:
             bk = chain.bake_chroma(plan.model or self.model(plan.model_iso, plan.unit), plan.entry, EXPORT_STEP)
 
             def display(codes: np.ndarray) -> np.ndarray:
+                checkpoint()
                 return chain.chroma_u8(codes, bk, gains, table)
 
         desc = (
