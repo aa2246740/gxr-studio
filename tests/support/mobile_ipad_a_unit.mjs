@@ -137,7 +137,9 @@ test('cellAriaLabel formats position, kind and state without leaking private nam
   assert.equal(cellAriaLabel(3, { dng: true, jpg: true }, true, true), '第 3 张，RAW+JPG，已编辑，已选中');
   assert.equal(cellAriaLabel(1, { dng: true, jpg: false }, false, false), '第 1 张，RAW');
   assert.equal(cellAriaLabel(2, { dng: false, jpg: true }, false, true), '第 2 张，JPG，已选中');
-  assert.equal(cellAriaLabel(4, { dng: false, jpg: true, diptych: true }, false, false), '第 4 张，半格双联');
+  // Import P3-3：半格双联读屏说「半格」、按相机拼好的双联图调整、没有 HDR；真正只有 JPG 的仍是「JPG」。
+  assert.equal(cellAriaLabel(4, { dng: false, jpg: true, diptych: true }, false, false), '第 4 张，半格：按相机拼好的双联图调整，没有 HDR');
+  assert.equal(cellAriaLabel(4, { dng: false, jpg: true, diptych: false }, false, false), '第 4 张，JPG');
   assert.equal(cellAriaLabel(5, { dng: true, jpg: false, bad: true }, false, false), '第 5 张，RAW，读不了');
 });
 

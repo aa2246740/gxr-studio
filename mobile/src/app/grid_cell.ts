@@ -2,7 +2,7 @@
 
 import { groupsPresent } from '../lib/paste';
 import { el, icon } from './dom';
-import { cellAriaLabel } from './layout';
+import { DIPTYCH_BADGE, DIPTYCH_NOTE, cellAriaLabel } from './layout';
 import { unread, type Photo } from './model';
 import { PASTE_ICON } from './paste_ui';
 
@@ -30,7 +30,12 @@ export function fillCell(cell: HTMLButtonElement, photo: Photo, selected: boolea
   }
   if (bl) {
     bl.replaceChildren();
-    if (photo.jpg && !photo.dng) bl.append(el('span', 'bdg', 'JPG'));
+    if (photo.diptych) {
+      const badge = el('span', 'bdg', DIPTYCH_BADGE);
+      badge.title = DIPTYCH_NOTE;
+      badge.setAttribute('aria-label', DIPTYCH_NOTE);
+      bl.append(badge);
+    } else if (photo.jpg && !photo.dng) bl.append(el('span', 'bdg', 'JPG'));
   }
   // 04e：带着编辑（配方/LUT、调整/曲线、拉直、裁剪、边框、时间戳任一组）的照片右下角有铅笔，按现在的编辑状态挂上或拿掉。
   const edited = groupsPresent(photo).length > 0;
