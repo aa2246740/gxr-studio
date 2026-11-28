@@ -1,5 +1,6 @@
 // 电脑上网格只占一个 Tab 位（roving tabindex，backlog-4b）：30 张照片，从顶栏「选择」按一次 Tab 落到一格，再按一次就出网格；
 // Shift-Tab 回来还是那一格，方向键走过以后再进来落在走到的那一格。有触摸的手机尺寸不变：每格都能 Tab 到。
+// 顺带（同一页，P3-18 c）：编辑器里的照片信息面板，电脑上不画手机的拖动条，手机照旧。
 // 隐私：报告里只有布尔和计数，没有照片名。
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -68,6 +69,15 @@ async function grid(browser, label, options) {
       await page.keyboard.press('Enter');
       await page.waitForFunction(() => document.querySelector('.app')?.dataset.screen === 'editor', null, { timeout: 120_000 });
       step.enterOpens = true;
+      // P3-18 c：编辑器 ⋯ → 照片信息，面板顶上的拖动条电脑上不画，手机照旧。
+      await page.locator('[data-act="editor-more"]').click();
+      await page.locator('[data-act="more-photo-info"]').click();
+      await page.waitForSelector('[data-state="photo-info"]');
+      step.grab = await page.evaluate(() => {
+        const grab = document.querySelector('[data-state="photo-info"] .grab');
+        const box = grab?.getBoundingClientRect();
+        return { present: Boolean(grab), display: grab ? getComputedStyle(grab).display : '', height: box ? Math.round(box.height) : 0 };
+      });
     }
     return step;
   } finally {

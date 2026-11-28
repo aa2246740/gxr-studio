@@ -3,6 +3,7 @@
 - 电脑（没有触摸点、指针精确）1440×900、30 张照片：从顶栏「选择」按一次 Tab 落到一格，再按一次就出网格；Shift-Tab 回来还是
   那一格。方向键走过以后，Tab 出去再 Shift-Tab 回来落在走到的那一格；Enter 照旧打开照片。
 - 有触摸的手机尺寸不变：每格都能 Tab 到，从「选择」按两次 Tab 还在网格里。
+- 同一页顺带查编辑器 P3-18 c：电脑上照片信息面板不画手机的拖动条，手机照旧。
 
 真实照片：本机拍摄文件夹里的 30 张相机 JPG。报告里只有布尔和计数，没有文件名、拍摄时间或 EXIF。
 """
@@ -40,6 +41,11 @@ def _jpgs() -> list[Path]:
     return out[:COUNT]
 
 
+@pytest.fixture(scope="module")
+def steps(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    return _run(tmp_path_factory.mktemp("grid_tab"))
+
+
 def _run(tmp_path: Path) -> dict[str, Any]:
     _prereq()
     report_path = tmp_path / "report.json"
@@ -54,8 +60,7 @@ def _run(tmp_path: Path) -> dict[str, Any]:
     return report["steps"]
 
 
-def test_mobile_grid_tab(tmp_path: Path) -> None:
-    steps = _run(tmp_path)
+def test_mobile_grid_tab(steps: dict[str, Any]) -> None:
     pc = steps["computer"]
     check(pc["computer"] is True and pc["cells"] >= 9, f"computer context with a full grid ({pc['computer']}, {pc['cells']} cells)")
     check(pc["tabbable"] == 1, f"computer: exactly one grid cell is in the Tab order ({pc['tabbable']} of {pc['cells']})")
@@ -73,3 +78,10 @@ def test_mobile_grid_tab(tmp_path: Path) -> None:
     check(ph["tabbable"] == ph["cells"], f"phone: every cell stays in the Tab order ({ph['tabbable']} of {ph['cells']})")
     check(ph["first"]["cell"] is True and ph["second"]["cell"] is True, f"phone: Tab walks cell to cell as before ({ph['second']})")
     check(ph["second"]["index"] == ph["first"]["index"] + 1, "phone: the second Tab is the next cell")
+
+
+def test_mobile_sheet_grab_computer(steps: dict[str, Any]) -> None:
+    pc, ph = steps["computer"]["grab"], steps["phone"]["grab"]
+    check(pc["present"] is True and ph["present"] is True, "照片信息 opened in both contexts")
+    check(pc["display"] == "none" and pc["height"] == 0, f"computer: the sheet has no phone grab handle ({pc})")
+    check(ph["display"] != "none" and ph["height"] > 0, f"phone: the grab handle is unchanged ({ph})")

@@ -29,6 +29,9 @@
   .app .rc.filter-tile:hover:not(:disabled) { filter: brightness(1.18); }
   .app .ipad-filmstrip .cell:hover { filter: brightness(1.15); }
 
+  /* 电脑上没有手指往下拖面板的手势：面板顶上不画手机的拖动条（P3-18）。 */
+  .app .grab { display: none; }
+
   /* 裁剪：手柄按方向给缩放光标，拉直尺左右拖。 */
   .app .ch.corner.tl, .app .ch.corner.br { cursor: nwse-resize; }
   .app .ch.corner.tr, .app .ch.corner.bl { cursor: nesw-resize; }

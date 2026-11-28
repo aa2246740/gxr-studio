@@ -149,11 +149,13 @@ export function openLutSpaceSheet(host: HTMLElement, lutBook: LutBook, initial: 
     note.textContent = choice.default_input_note;
 
     list.replaceChildren();
+    // 还没选过（文件里没写明）：现在按默认用的那个（比如 sRGB）先标上，和上面那句说明一致（P3-18）。
+    const picked = current.input_space ?? choice.default_input_space;
     for (const group of SPACE_GROUPS) {
       list.append(el('div', 'lut-space-group', group.label));
       for (const s of SPACES) {
         if (s.kind !== group.kind) continue;
-        const on = current.input_space === s.id;
+        const on = picked === s.id;
         const row = button(on ? 'optrow lut-space-opt on' : 'optrow lut-space-opt', '');
         row.dataset.space = s.id;
         row.setAttribute('aria-pressed', on ? 'true' : 'false');
