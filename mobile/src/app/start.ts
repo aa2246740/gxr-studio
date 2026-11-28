@@ -3,6 +3,7 @@ import { camFilesRememberedLabel } from '../lib/camfiles';
 import { cardHelpTitle, deviceName, isComputerDevice, saveWord, thisDevice } from '../lib/device';
 import { FONT_LICENCE_LABELS, FONT_LICENCES } from '../lib/font_assets';
 import { button, el, icon, ICON } from './dom';
+import { FOLDER_PICK_LABEL, FOLDER_PICK_NOTE, pickFolder } from './file_drop';
 
 // 电脑上不画手机：同样的线条画一台笔记本（屏幕加底座），卡和箭头不变。
 const PHONE_SHAPE =
@@ -24,6 +25,19 @@ function hero(): SVGSVGElement {
     '<path d="M168 90h48M202 78l14 12-14 12" fill="none" stroke="#6aa6ff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>' +
     '<text x="96" y="92" text-anchor="middle" fill="#ececec" font-size="16" font-family="-apple-system,sans-serif" font-weight="700">GXR</text>';
   return svg;
+}
+
+/** 电脑上「选照片」旁边加「选文件夹」，下面一行小字说浏览器的「上传」只是本机读取。手机和 iPad 原样只有「选照片」。 */
+function withFolder(pick: HTMLButtonElement, computer: boolean): HTMLElement[] {
+  if (!computer) return [pick];
+  const row = el('div', 'pick-row');
+  const folder = button('btn lg', FOLDER_PICK_LABEL);
+  folder.dataset.act = 'pick-folder';
+  folder.addEventListener('click', () => pickFolder());
+  row.append(pick, folder);
+  const note = el('p', 'folder-note', FOLDER_PICK_NOTE);
+  note.dataset.state = 'folder-note';
+  return [row, note];
 }
 
 function paintStartBody(screen: HTMLElement, body: HTMLElement, api: AppApi): void {
@@ -62,7 +76,7 @@ function paintStartBody(screen: HTMLElement, body: HTMLElement, api: AppApi): vo
     const pick = button('btn primary lg block', '从存储卡选照片');
     pick.dataset.act = 'pick-photos';
     pick.addEventListener('click', () => api.addPhotos());
-    cta.append(pick);
+    cta.append(...withFolder(pick, computer));
     body.append(picture, heading, lead, status, priv, cta);
   } else {
     const pickFiles = button('btn primary lg block', book.datBusy ? '正在读取相机配方文件…' : '选相机配方文件');
@@ -72,7 +86,7 @@ function paintStartBody(screen: HTMLElement, body: HTMLElement, api: AppApi): vo
     const pickPhotos = button('btn lg block', '选照片');
     pickPhotos.dataset.act = 'pick-photos';
     pickPhotos.addEventListener('click', () => api.addPhotos());
-    cta.append(pickFiles, pickPhotos);
+    cta.append(pickFiles, ...withFolder(pickPhotos, computer));
     body.append(picture, heading, lead, priv);
     if (book.datError) {
       const err = el('p', 'bad small start-err', book.datError);
