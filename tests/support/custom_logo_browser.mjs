@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { waitForPage } from './browser_wait.mjs';
 
 const [runtime, port, token, photo1, photo2, photo3, filesDir] = process.argv.slice(2);
 const { launchPinnedChromium, verifyPinnedRuntime } = await import(pathToFileURL(runtime).href);
@@ -225,7 +226,7 @@ try {
     return cv && cv.width > 0 && cv.height > 0;
   });
   // 等自定义标志图片加载并画进舞台与卡片
-  await page.waitForFunction(async () => {
+  await waitForPage(page, async () => {
     const { customLogoImage } = await import('/assets/finish_frame_core.js');
     const cv = document.querySelector('.pv-deco');
     return Boolean(cv && cv.width > 0 && customLogoImage && customLogoImage(document.querySelector('.logo-tile[aria-pressed="true"]')?.dataset.logo));

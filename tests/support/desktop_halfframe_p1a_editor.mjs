@@ -2,6 +2,7 @@
 // Never prints photo names, capture times, or EXIF. Writes a JSON report to manifest.out.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { waitForPage } from './browser_wait.mjs';
 
 const [runtime, manifestPath] = process.argv.slice(2);
 const m = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -211,12 +212,13 @@ try {
   // 相机数据状态先到，再打开照片：app.js 先画页面、后补相机数据，第一次状态不触发重画；
   // 面板若先于状态画出，配方卡会一直灰着（与半格无关的启动竞态，单独处理）。这里只测半格放行。
   const waitCamdata = async () =>
-    page.waitForFunction(() => import('/assets/camdata.js').then((cd) => cd.camdataReady()), null, { timeout: 60000 });
+    waitForPage(page, () => import('/assets/camdata.js').then((cd) => cd.camdataReady()), null, { timeout: 60000 });
 
   const openPhoto = async () => {
     await waitCamdata();
     await page.goto(`${m.base}/#/photo/${m.p2}`);
-    await page.waitForFunction(
+    await waitForPage(
+      page,
       (pid) =>
         Promise.all([import('/assets/viewer.js'), import('/assets/camdata.js')]).then(([v, cd]) => {
           const c = v.currentView();
@@ -388,7 +390,8 @@ try {
   await page.evaluate((id) => {
     location.hash = `#/photo/${id}`;
   }, m.p2);
-  await page.waitForFunction(
+  await waitForPage(
+    page,
     (pid) =>
       import('/assets/viewer.js').then((v) => {
         const c = v.currentView();
@@ -400,7 +403,7 @@ try {
   await page.evaluate(() => import('/assets/viewer.js').then((v) => v.openViewerTab('recipe')));
   await page.waitForFunction(() => document.querySelectorAll('.lcard').length > 0, null, { timeout: 90000 });
   const raceEarly = await panelState();
-  await page.waitForFunction(() => import('/assets/camdata.js').then((cd) => cd.camdataReady()), null, { timeout: 90000 });
+  await waitForPage(page, () => import('/assets/camdata.js').then((cd) => cd.camdataReady()), null, { timeout: 90000 });
   let raceEnabled = true;
   try {
     await page.waitForFunction(

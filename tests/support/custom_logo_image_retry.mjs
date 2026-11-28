@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { waitForPage } from './browser_wait.mjs';
 
 const [runtime, port, token, photo, pngPath] = process.argv.slice(2);
 const { launchPinnedChromium, verifyPinnedRuntime } = await import(pathToFileURL(runtime).href);
@@ -57,7 +58,7 @@ try {
   });
   await page.goto(`${base}/#/photo/${photo}`);
   await page.getByRole('tab', { name: '边框', exact: true }).click();
-  await page.waitForFunction(async ({ photoId, logoId }) => {
+  await waitForPage(page, async ({ photoId, logoId }) => {
     try {
       const { api } = await import('/assets/api.js');
       const edit = await api(`/api/photos/${photoId}/edit`);
