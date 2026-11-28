@@ -469,6 +469,14 @@
 .app[data-layout="phone-landscape"] .nogpu-notice .warn { display: none; }
 .app[data-layout="phone-landscape"] .nogpu-notice .nogpu-title { font-size: 11px; line-height: 14px; }
 .app[data-layout="phone-landscape"] .nogpu-notice .nogpu-detail { font-size: 10px; line-height: 13px; }
+/* 568×320（SE 开放大显示）的横屏只有 166pt 高的带子：说明条只留标题一行、LUT 切换键 44、卡片区上下各 2，
+   3 个 LUT 的两行卡片和空库说明才不出屏幕。别的尺寸都高于 340，碰不到这一段。 */
+@media (max-height: 340px) {
+  .app[data-layout="phone-landscape"] .nogpu-notice { margin-top: 2px; padding-top: 3px; padding-bottom: 3px; }
+  .app[data-layout="phone-landscape"] .nogpu-notice .nogpu-detail { display: none; }
+  .app[data-layout="phone-landscape"] .panel.lut > .mode-switch { height: 44px; }
+  .app[data-layout="phone-landscape"] .panel.lut > .lut-strip-wrap { padding-top: 2px; padding-bottom: 2px; }
+}
 
 /* 首屏在 iPad 版式限宽居中（手机保持不变） */
 .app[data-layout^="ipad"] .start {
