@@ -69,6 +69,9 @@ try {
       return false;
     }
   }, { photoId: photo, logoId: logo.id }, { timeout: 8000 });
+  // 确认真的走了失败路径：图片先回 503，页面重取目录后才放行（路由不再匹配时这里会失败，而不是悄悄通过）
+  assert.equal(sawImageFailure, true, '标志图片请求没有被拦成 503，失败路径没有跑到');
+  assert.equal(allowImage, true, '图片失败后页面没有重取 /api/logos 目录');
   const edit = await (await context.request.get(`${base}/api/photos/${photo}/edit`)).json();
   assert.equal(edit.frame.logo, logo.id);
   assert.equal(savedEdits.some((body) => body.includes('"logo":"ricoh"') || body.includes('"logo": "ricoh"')), false);
