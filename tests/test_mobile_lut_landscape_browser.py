@@ -8,7 +8,7 @@
 2. 320×568 手机竖屏空库状态下导入损坏的 `.cube` 文件时，报错条（`.lut-err`）底沿与空库说明（`.lut-foot`）顶沿之间
    至少留出 4 px 间距，且空库说明不超出面板或被裁切。
 3. 手机竖屏（320/375/390/440）和 iPad（1024×1366、1366×1024）在两种状态下的每个框，和 5d972bf8 存下的基线
-   （`support/lut_landscape_baseline.json`）相差不超过 1 px。
+   （`support/lut_landscape_baseline.json`）相差不超过 1 px；有没有说明条都不出屏幕，也没有东西和卡片重叠。
 4. 横屏的检查再在藏掉无显卡说明条的版式（有 WebGPU 的 Safari，面板更高）上做一遍。
 
 仅使用合成 DNG+JPG 与合成 `.cube` 夹具，不接触真实照片；stdout 仅输出脱敏 JSON。
@@ -326,6 +326,8 @@ async function measureLutPanel(page) {
       wrap,
       pin,
       strip,
+      stripScrollW: stripEl && /auto|scroll/.test(getComputedStyle(stripEl).overflowX) ? stripEl.scrollWidth : 0, // 0: 不能横滑
+      stripClientW: stripEl ? stripEl.clientWidth : 0,
       importBtn,
       importInPanel: inside(importBtn, panel),
       importInVp: inside(importBtn, vp),
@@ -438,6 +440,44 @@ function assertLandscape(tag, m, wantEmpty) {
   }
 }
 
+/** 竖屏和 iPad（容差同横屏）：带子、面板、图钉列、菜单瓷砖、说明条不出屏幕；卡片竖着在带子里，横着只在能滑的带子里出去，
+ * 看得到的点得中；卡片互不重叠，也不碰切换键、舞台、工具栏、图钉列、菜单瓷砖、空库说明、报错条、说明条和 iPad 的 LUT 信息。 */
+function assertSettled(tag, m) {
+  const s = m.strip;
+  const span = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+  const ov = (a, b) => (a && b ? span(a.x, a.right, b.x, b.right) * span(a.y, a.bottom, b.y, b.bottom) : 0);
+  const onScreen = (b) => !b || (b.x >= -0.5 && b.y >= -0.5 && b.right <= m.vp.w + 0.5 && b.bottom <= m.vp.h + 0.5);
+  const edges = { pin: m.pin, menuTile: m.menuTile, foot: m.foot, notice: m.notice };
+  for (const [key, box] of Object.entries({ strip: s, panel: m.panel, ...edges })) {
+    check(Boolean(box || key !== 'strip') && onScreen(box), `${tag}: ${key} off screen (${JSON.stringify({ box, vp: m.vp })})`);
+  }
+  check(m.maxCardPairOverlap <= 0.5, `${tag}: LUT cards overlap each other (${m.maxCardPairOverlap}px2)`);
+  const others = { ...edges, sw: m.sw, stage: m.stage, bar: m.bar, err: m.err, ipadMeta: m.ipadMeta };
+  for (const card of m.cards) {
+    const b = card.box;
+    const shown = Boolean(b && s) && b.right <= s.right + 0.5;
+    const placed = Boolean(b && s) && b.w >= 43.5 && b.h >= 43.5 && b.x >= s.x - 0.5 && b.y >= s.y - 0.5 && b.bottom <= s.bottom + 0.5;
+    const reach = shown ? card.inVp && card.hitOk : placed && m.stripScrollW > m.stripClientW + 1 && b.right <= s.x + m.stripScrollW + 0.5;
+    const hits = Object.entries(others).filter(([, box]) => ov(b, box) > 0.5).map(([key]) => key);
+    const diag = JSON.stringify({ box: b, strip: s, scroll: [m.stripScrollW, m.stripClientW], inVp: card.inVp, hit: card.hitOk, hits });
+    check(placed && reach && hits.length === 0, `${tag}: tile ${card.lut || card.name} off screen/overlapping (${diag})`);
+  }
+}
+// 竖屏和 iPad 各视口：先带说明条量基线框，再藏掉说明条（有 WebGPU 的版式），两遍都查 assertSettled。
+async function settledPass(page, state) {
+  for (const noNotice of [false, true]) {
+    const tag = noNotice ? await page.addStyleTag({ content: '.nogpu-notice { display: none !important; }' }) : null;
+    for (const vp of BASELINE_VPS) {
+      await setVp(page, vp, vp.layout);
+      const m = await measureLutPanel(page);
+      if (!noNotice) summary.baseline[state][vp.label] = m;
+      const label = `settled ${noNotice ? 'nonotice ' : ''}${state} ${vp.label}`;
+      check(noNotice || vp.layout === 'phone-portrait' ? m.notice === null : Boolean(m.notice), `${label}: no-GPU notice wrong`);
+      assertSettled(label, m);
+    }
+    if (tag) await tag.evaluate((node) => node.remove());
+  }
+}
 /** 横屏各视口过一遍；`noNotice` 时先藏掉无显卡说明条（有 WebGPU 的 Safari 没有这条，面板更高）。 */
 async function landscapePass(page, state, wantEmpty, noNotice) {
   const tag = noNotice ? await page.addStyleTag({ content: '.nogpu-notice { display: none !important; }' }) : null;
@@ -488,11 +528,8 @@ try {
   await page.waitForFunction(() => !document.querySelector('.editor .panel.lut')?.hidden, null, { timeout: 10_000 });
   await frame(page, 3);
 
-  // 1) Empty library baseline boxes (portrait 320/375/390/440 + iPad 1024x1366 / 1366x1024)
-  for (const vp of BASELINE_VPS) {
-    await setVp(page, vp, vp.layout);
-    summary.baseline.empty[vp.label] = await measureLutPanel(page);
-  }
+  // 1) Empty library baseline boxes (portrait 320/375/390/440 + iPad 1024x1366 / 1366x1024), with and without the notice
+  await settledPass(page, 'empty');
 
   // 2) Fix 1 (empty library) on phone landscape, with and without the no-GPU notice
   await landscapePass(page, 'empty', true, false);
@@ -537,11 +574,8 @@ try {
   await page.waitForSelector('.editor .panel.lut .strip .rc[data-lut="none"].on', { timeout: 10_000 });
   await frame(page, 4);
 
-  // Portrait & iPad baseline boxes with 3 LUTs
-  for (const vp of BASELINE_VPS) {
-    await setVp(page, vp, vp.layout);
-    summary.baseline.three[vp.label] = await measureLutPanel(page);
-  }
+  // Portrait & iPad baseline boxes with 3 LUTs, with and without the notice
+  await settledPass(page, 'three');
 
   // Fix 1 (3 imported LUTs) on phone landscape, with and without the no-GPU notice
   await landscapePass(page, 'three', false, false);

@@ -45,7 +45,7 @@ def _hdr_text(outcomes: list[tuple[str, bool, str | None]]) -> tuple[str, list[s
     (design wording; desktop ``hdrSummary`` and ``HDR_NOTES``)."""
     from gxr_studio.api.routes import HDR_NOTES, HDR_UNSUPPORTED
 
-    # desktop-export F10: the phone has its own not_aligned line; the desktop HDR_NOTES do not have it yet.
+    # desktop-export F10: the phone words not_aligned its own way; desktop HDR_NOTES has the shorter 「RAW 与 JPG 画面对不上」.
     phone_notes = {**HDR_NOTES, "not_aligned": "RAW 和相机 JPG 画面对不上，这张存普通版本"}
     made = sum(1 for _s, hdr, _r in outcomes if hdr)
     jpg_only = sum(1 for _s, hdr, r in outcomes if not hdr and r == "no_raw")

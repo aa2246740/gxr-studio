@@ -520,3 +520,12 @@
 .app:not([data-layout^="ipad"]) .panel.recipe .knobs[data-disabled="1"] .krow .slider input[type="range"] { height: 30px; }
 .app .panel.adjust[data-disabled="1"] .hist-toggle:disabled,
 .app .panel.adjust[data-disabled="1"] .curves-chip:disabled { opacity: 0.42; color: var(--text-3); cursor: not-allowed; }
+
+/* ---------- 27 寸级大屏（机主 2026-11-28）：网页窗口宽 >= 2000、高 >= 1100 才放大，数和 layout.ts 的 BIG_SCREEN_* 一样。
+   右边栏 392 → 456，网格角标和拉直尺上的度数 10 → 12 px；网格每格约 214–238 由 layout.ts 的 gridColumns 分列。
+   手机、iPad 和小窗口碰不到这一段。 ---------- */
+@media (min-width: 2000px) and (min-height: 1100px) {
+  .app[data-layout="ipad-landscape"] .screen.editor { grid-template-columns: minmax(0, 1fr) 456px; }
+  .app .bdg { height: 20px; padding: 0 6px; font-size: 12px; }
+  .app .ruler-tape .tnum { font-size: 12px; line-height: 14px; }
+}

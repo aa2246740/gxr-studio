@@ -1,7 +1,7 @@
 // Browser driver for phone-halfframe-export:
 // - mode="modes": ordinary photo (no 半格 row), diptych 半格 row + PAIR_EXPORT_NOTE,
 //   两张单格 (2 files), reload persistence + one-tap 存到相册 (ori=8), 都要 (3 files), mixed batch.
-// - mode="labels": hf258 pair (with and without photo 1) — top bar「半格双联」and 照片信息「第 1 格 / 第 2 格」.
+// - mode="labels": hf258 pair (with and without photo 1) — top bar「半格」and 照片信息「第 1 格 / 第 2 格」.
 // - mode="parity": card250 diptych singles & both-mode exports (unedited, edited+crop/border/stamp, small/low, ori=6)
 //   written to outDir for Python byte-for-byte comparison with desktop export_pair_finish.
 // Photo filenames and EXIF are never printed to stdout.

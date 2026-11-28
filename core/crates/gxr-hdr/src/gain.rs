@@ -564,9 +564,17 @@ fn warped_norm(
     dy: i64,
     dx: i64,
 ) -> Result<Vec<f32>, CoreError> {
+    #[cfg(test)]
+    ZERO_WARPS.with(|count| count.set(count.get() + usize::from((dy, dx) == (0, 0))));
     #[allow(clippy::cast_precision_loss)]
     let warped = warp(raw, (h, w), s, dy as f64, dx as f64)?;
     Ok(norm(&hp32(&warped, h, w)?))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// `warped_norm(.., 0, 0)` calls on this thread, for the operation-count guard below.
+    static ZERO_WARPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Port of gxr_studio/hdr/gain.py:273 align.
@@ -729,5 +737,60 @@ mod tests {
             let b_bits: Vec<u32> = ref_v.iter().map(|v| v.to_bits()).collect();
             assert_eq!(a_bits, b_bits, "mismatch for ({h}, {w}, factor={factor})");
         }
+    }
+
+    /// A textured SDR grid and a RAW grid with the same texture under strong independent noise:
+    /// the phase peak is at zero shift, but the correlation stays at or under 0.6, so `align`
+    /// skips the shortcut and runs the full 5-scale × 9-candidate search.
+    fn full_search_pair() -> (Plane32, Plane32) {
+        let (h, w) = (48usize, 56usize);
+        let hash = |i: usize, m: usize| ((i + 1) * m % 1_000_003) as f32 / 1_000_003.0;
+        let tex: Vec<f32> = (0..h * w).map(|i| hash(i, 2_654_435_761)).collect();
+        let raw: Vec<f32> = tex
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| 0.5 * t + hash(i, 2_246_822_519))
+            .collect();
+        (Plane32 { h, w, v: tex }, Plane32 { h, w, v: raw })
+    }
+
+    fn counted_align() -> (Alignment, usize, usize) {
+        let (sdr, raw) = full_search_pair();
+        crate::fft::FORWARD_FFT2.with(|count| count.set(0));
+        ZERO_WARPS.with(|count| count.set(0));
+        let al = align(&sdr, &raw).unwrap();
+        let ffts = crate::fft::FORWARD_FFT2.with(std::cell::Cell::get);
+        (al, ffts, ZERO_WARPS.with(std::cell::Cell::get))
+    }
+
+    #[test]
+    fn full_search_align_shares_one_sdr_spectrum() {
+        let (al, ffts, _) = counted_align();
+        assert!(
+            al.correlation <= 0.6,
+            "fixture took the shortcut: corr {}",
+            al.correlation
+        );
+        // One forward FFT of the SDR grid, plus one per scale for the RAW grid.
+        let limit = 1 + SCALES.len();
+        assert!(ffts <= limit, "{ffts} forward FFTs for a limit of {limit}");
+    }
+
+    #[test]
+    fn full_search_align_reuses_the_zero_shift_candidate() {
+        let (al, _, zero) = counted_align();
+        assert!(
+            al.correlation <= 0.6,
+            "fixture took the shortcut: corr {}",
+            al.correlation
+        );
+        assert_eq!((al.dy, al.dx), (0, 0), "fixture peak moved");
+        // The centred RAW grid is warped once per scale and reused for the (0, 0) candidate.
+        assert_eq!(
+            zero,
+            SCALES.len(),
+            "{zero} zero-shift warps for {} scales",
+            SCALES.len()
+        );
     }
 }

@@ -163,8 +163,16 @@ fn along_columns(
 
 /// `fft2` / `ifft2`: `_raw_fftnd` transforms the last axis first.
 fn fft2(a: &mut [Cx<f32>], h: usize, w: usize, inverse: bool, trig: Trig) -> Result<(), CoreError> {
+    #[cfg(test)]
+    FORWARD_FFT2.with(|count| count.set(count.get() + usize::from(!inverse)));
     along_rows(a, w, inverse, trig)?;
     along_columns(a, h, w, inverse, trig)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Forward 2-D transforms on this thread, for the operation-count guard in `gain::tests`.
+    pub(crate) static FORWARD_FFT2: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// numpy complex64 `a * b` (`simd_cmul_f32`; the scalar loop fuses the same way).

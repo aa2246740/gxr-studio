@@ -88,3 +88,29 @@ test('按时间片套用：片之间 B 被编辑，B 不被改回，结果句照
   assert.equal(b.rev, 1);
   assert.equal(state.bar?.line, '已套用到 1 张；1 张在别处改过，没有粘贴');
 });
+
+test('Import P3-3：半格双联没套上配方时结果句说「按相机拼好的双联图调整」；真正只有 JPG 的照旧说「只有 JPG」；对拍用的结果不变', async () => {
+  const run = async (targets) => {
+    const byId = new Map(targets.map((p) => [p.id, p]));
+    const api = { session: () => 0, photo: (id) => byId.get(id), book: () => ({ dat: null }) };
+    const state = new PasteState();
+    const src = photo('src', { choice: { id: 'std', unit: 'jlaunch' }, levels: new Map([['std', {}]]), knobs: knobs({ exposure_ev: 0.7 }) });
+    state.clip = copyFrom(src, 'SRC', ['recipe', 'adjust']).clip;
+    assert.deepEqual(state.clip?.groups, ['recipe', 'adjust']);
+    const results = await state.apply(api, targets, '10:00');
+    return { state, results };
+  };
+  const dip = () => photo('d', { dng: null, jpg: {}, diptych: true });
+  const jpg = () => photo('j', { dng: null, jpg: {} });
+
+  const one = await run([dip()]);
+  assert.equal(one.state.bar?.line, '已套用：调整；这张按相机拼好的双联图调整，没有套用配方');
+  assert.ok(!one.state.bar.line.includes('只有 JPG'));
+  assert.deepEqual(one.state.lastOutcomes[0].skipped.map((s) => s.reason), ['needs_raw']);
+
+  const plain = await run([jpg()]);
+  assert.equal(plain.state.bar?.line, '已套用：调整；这张只有 JPG，没有套用配方');
+
+  const mixed = await run([jpg(), dip()]);
+  assert.equal(mixed.state.bar?.line, '已套用到 2 张；1 张只有 JPG，没有套用配方；1 张按相机拼好的双联图调整，没有套用配方');
+});

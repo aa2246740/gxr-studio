@@ -1,6 +1,6 @@
 // 响应式版式判定与 iPad 直方图默认开关记忆：手机竖屏 / 手机横屏 / iPad 横屏 / iPad 竖屏共用一套代码。
 
-import { isComputer } from '../lib/save_mode';
+import { isComputer } from '../lib/save_mode.ts';
 
 export type LayoutMode = 'phone-portrait' | 'phone-landscape' | 'ipad-landscape' | 'ipad-portrait';
 export type IpadSize = '13' | '11';
@@ -45,11 +45,74 @@ export function ipadSizeOf(width: number, height: number): IpadSize {
   return longEdge >= 1240 && shortEdge >= 900 ? '13' : '11';
 }
 
-/** 图库网格列数：手机保持 3 列；iPad 按宽度分列，使单张缩略图落在 150–200 pt（13" 竖 6 / 横 8，11" 竖 5 / 横 7）。 */
-export function gridColumns(width: number, ipad: boolean): number {
+/** 27 寸级大屏（机主 2026-11-28）：网页窗口宽 >= 2000、高 >= 1100 才放大网格缩略图、右边栏和角标/标尺的字。
+ * 和 ipad.css 末尾那段 @media 用同一组数；手机、iPad 和小窗口不变。 */
+export const BIG_SCREEN_MIN_WIDTH = 2000;
+export const BIG_SCREEN_MIN_HEIGHT = 1100;
+export const BIG_SCREEN_QUERY = `(min-width: ${BIG_SCREEN_MIN_WIDTH}px) and (min-height: ${BIG_SCREEN_MIN_HEIGHT}px)`;
+
+/** 给了宽高就按宽高判；没给就问浏览器（和 CSS 的 @media 是同一个答案）。没有窗口（Node 单测、Worker）时不是大屏。 */
+export function isBigScreen(width?: number, height?: number): boolean {
+  if (width !== undefined && height !== undefined) return width >= BIG_SCREEN_MIN_WIDTH && height >= BIG_SCREEN_MIN_HEIGHT;
+  return typeof matchMedia === 'function' && matchMedia(BIG_SCREEN_QUERY).matches;
+}
+
+/** 大屏网格每格约 214–238 px：宽 2000 起 9 列，2560 宽 11 列约 231 px。 */
+const BIG_GRID_STEP = 216;
+
+/** 图库网格列数：手机保持 3 列；iPad 按宽度分列，使单张缩略图落在 150–200 pt（13" 竖 6 / 横 8，11" 竖 5 / 横 7）。大屏每格约 214–238。 */
+export function gridColumns(width: number, ipad: boolean, big: boolean = isBigScreen()): number {
   if (!ipad) return 3;
   const w = Number.isFinite(width) && width > 0 ? width : 700;
+  if (big) return Math.max(4, Math.floor((w + 2) / BIG_GRID_STEP));
   return Math.max(4, Math.floor((w + 2) / 160));
+}
+
+/** 网格缩略图解码宽度。小版式一直是 360（只给宽）。 */
+export const GRID_THUMB_WIDTH = 360;
+
+/** 解缩略图要盖住的盒子（设备像素）。height 为 0 时只按宽解。 */
+export interface ThumbBox {
+  width: number;
+  height: number;
+}
+
+/**
+ * 大屏按格子（宽 × 高，高是宽的 2/3 再加 2，见 grid.ts）× 设备像素比（最多 2 倍）解，宽不比 360 小；
+ * Worker 再按照片比例把宽放到盖得住格高（object-fit: cover）。小版式 { 360, 0 }。
+ */
+export function gridThumbBox(viewWidth: number, dpr: number, big: boolean): ThumbBox {
+  if (!big || !Number.isFinite(viewWidth) || viewWidth <= 0) return { width: GRID_THUMB_WIDTH, height: 0 };
+  // 网格按滚动区宽分列，比窗口窄一条滚动条：按少算 24 px 分列，列数只会少不会多，格子只会估大。
+  const cols = gridColumns(viewWidth - 24, true, true);
+  const cell = (viewWidth - (cols - 1) * 2) / cols;
+  const scale = Number.isFinite(dpr) && dpr > 1 ? Math.min(2, dpr) : 1;
+  return { width: Math.max(GRID_THUMB_WIDTH, Math.ceil(cell * scale)), height: Math.ceil((cell * (2 / 3) + 2) * scale) };
+}
+
+/** 现在这扇窗口的网格缩略图盒子（没有窗口时 { 360, 0 }）。 */
+export function currentGridThumbBox(): ThumbBox {
+  if (typeof window === 'undefined') return { width: GRID_THUMB_WIDTH, height: 0 };
+  return gridThumbBox(window.innerWidth, window.devicePixelRatio, isBigScreen());
+}
+
+/**
+ * 配方卡小图的长边。小版式一直是 192；大屏按 13" 横屏配方卡（ipad.css 的 132×88，object-fit: cover）× 设备像素比（最多 2 倍）烘焙。
+ * 用 136 不用 132：相机 3:2 实际是 1.506:1，132 宽解出来高只有 87.7，盖不住 88 的格高。
+ */
+export const CARD_BAKE_EDGE = 192;
+const BIG_CARD_WIDTH = 136;
+
+export function cardBakeEdge(dpr: number, big: boolean): number {
+  if (!big) return CARD_BAKE_EDGE;
+  const scale = Number.isFinite(dpr) && dpr > 1 ? Math.min(2, dpr) : 1;
+  return Math.max(CARD_BAKE_EDGE, Math.ceil(BIG_CARD_WIDTH * scale));
+}
+
+/** 现在这扇窗口的配方卡小图长边（没有窗口时 192）。 */
+export function currentCardBakeEdge(): number {
+  if (typeof window === 'undefined') return CARD_BAKE_EDGE;
+  return cardBakeEdge(window.devicePixelRatio, isBigScreen());
 }
 
 export interface CellLabelInfo {
@@ -60,10 +123,14 @@ export interface CellLabelInfo {
   unread?: boolean;
 }
 
+/** 认出的半格双联（Import P3-3，机主 2026-11-28）：角标写「半格」，悬停和读屏写清按相机拼好的双联图调整、没有 HDR。真正只有 JPG 的照片仍是「JPG」。 */
+export const DIPTYCH_BADGE = '半格';
+export const DIPTYCH_NOTE = '半格：按相机拼好的双联图调整，没有 HDR';
+
 /** 图库缩略图按钮的无障碍名称（仅含序号、类型与状态，绝不含文件名或拍摄时间）。 */
 export function cellAriaLabel(pos: number | undefined, info: CellLabelInfo, edited: boolean, selected: boolean): string {
   const parts: string[] = [pos ? `第 ${pos} 张` : '照片'];
-  if (info.diptych) parts.push('半格双联');
+  if (info.diptych) parts.push(DIPTYCH_NOTE);
   else if (info.dng && info.jpg) parts.push('RAW+JPG');
   else if (info.dng) parts.push('RAW');
   else if (info.jpg) parts.push('JPG');

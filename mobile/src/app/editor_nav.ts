@@ -12,6 +12,7 @@ import { adoptedSelectionOf, DEFAULT_CARD, namesOnly, recipeUnitOf, shelf, shelv
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
 import { button, el, icon, ICON } from './dom';
 import { arrowsOwned, sheetOpen } from './keys';
+import { DIPTYCH_BADGE, DIPTYCH_NOTE } from './layout';
 import { openExportOptions } from './export_ui';
 import { nameOf, onCameraRecipe, photoMs, photoName, type AppApi, type Photo } from './model';
 import { openOffImageSheet } from './off_image_sheet';
@@ -279,7 +280,21 @@ export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, in
   back.addEventListener('click', () => api.back());
 
   const title = el('div', 't');
-  const recipeEl = el('b', '', currentRecipeLabel(api, photo));
+  // 半格双联：顶栏和图库角标一样写「半格」，悬停和读屏说清按相机拼好的双联图调整、没有 HDR（Import P3-3）。
+  const recipeEl = el('b');
+  const syncHead = () => {
+    recipeEl.textContent = photo.diptych ? DIPTYCH_BADGE : currentRecipeLabel(api, photo);
+    if (photo.diptych) {
+      recipeEl.title = DIPTYCH_NOTE;
+      recipeEl.setAttribute('role', 'img'); // 普通的 <b> 上 aria-label 会被读屏丢掉，标成 img 才把这句当名字
+      recipeEl.setAttribute('aria-label', DIPTYCH_NOTE);
+    } else {
+      recipeEl.removeAttribute('title');
+      recipeEl.removeAttribute('role');
+      recipeEl.removeAttribute('aria-label');
+    }
+  };
+  syncHead();
   const posText = photo.copy ? `${photoName(photo)} · ${index + 1} / ${total}` : `${index + 1} / ${total}`; // 同名另外留下的那张写上「名字 (2)」
   const posEl = el('small', 'num', posText);
   title.append(recipeEl, posEl);
@@ -326,7 +341,7 @@ export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, in
   nav.append(back, title, right);
 
   const refresh = () => {
-    recipeEl.textContent = currentRecipeLabel(api, photo);
+    syncHead();
     syncHdr();
   };
   const setHolding = (on: boolean) => {

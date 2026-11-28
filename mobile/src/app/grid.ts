@@ -1,6 +1,7 @@
 import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type TimeGroup, type VRow } from '../lib/group';
 import { cardHelpTitle, saveWord } from '../lib/device';
 import { calibDetail } from './calib_ui';
+import { FOLDER_PICK_LABEL, FOLDER_PICK_NOTE, pickFolder } from './file_drop';
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
 import { button, el, icon } from './dom';
 import { isComputer } from '../lib/save_mode';
@@ -749,6 +750,7 @@ export class GridView {
     sheet.append(el('div', 'grab'), row, sortCard, card);
     const rows: Array<[string, string, () => void]> = [
       ['添加照片', '再从存储卡里选几张', () => this.api.addPhotos()],
+      ...(isComputer() ? [[FOLDER_PICK_LABEL, FOLDER_PICK_NOTE, pickFolder] as [string, string, () => void]] : []), // 只在电脑上
       ['校准数据', calibDetail(this.api), () => this.api.showCalib()],
       [cardHelpTitle(), this.api.hasDat() ? '相机配方文件已选上' : '需要配方时再选 GXRCE.DAT 和 GXRFX.BIN', () => this.api.showHelp()],
     ];

@@ -34,9 +34,10 @@ import { unusedNote } from './import_note';
 import { showToast } from './toast';
 import { guardUnload } from './unload_guard';
 import { dropReply, ThumbQueue } from './queue';
+import { Prebaker } from './prebake';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
-import { watchViewportLayout } from './layout';
+import { isIpadLayout, watchViewportLayout, type LayoutMode } from './layout';
 import { installKeys } from './keys';
 
 class App implements AppApi {
@@ -102,6 +103,10 @@ class App implements AppApi {
   private readonly lutBookStore = new LutBook();
   /** 3 槽 GPU 3D LUT 纹理队列与短命 lut_table Worker 调度。 */
   private readonly lutGpuQueue = new LutGpu(() => this.engine);
+  /** 网格上空闲时先烘焙默认卡和第一屏的几张配方表（prebake.ts），编辑器第一次换卡不用等。 */
+  private readonly prebake = new Prebaker({ book: () => this.recipeBook, photos: () => this.ordered(), report: (state) => { this.shell.dataset.prebake = state; },
+    ready: () => this.screen === 'grid' && this.engine !== null && this.allRead(), readHead: (file) => this.readHead(file),
+    firstRow: () => (isIpadLayout(this.shell.dataset.layout as LayoutMode) ? 6 : 3) });
 
   /** 导出进相册（UI-M3）：导出面板、贴底的进度和结果、共享面板。在编辑器分包里，第一次加载时建一个。 */
   private exporter: ExportFlow | null = null;
@@ -119,11 +124,11 @@ class App implements AppApi {
     watchViewportLayout(shell, () => {}); // data-layout 跟着窗口走，图库和开始页上也一样（不只编辑器里）
   }
 
+  /** DNG 开头 256 KiB（拍摄配方标签、预烘焙要的镜头名）：交给读整份 DNG 的那个 Worker。 */
+  private readonly readHead = (file: File): Promise<ArrayBuffer | null> => this.reader.read(new File([file.slice(0, 262144)], file.name)).then((reply) => (reply.ok ? reply.bytes : null));
+
   start(): void {
-    registerCameraRecipeReader(async (file) => {
-      const reply = await this.reader.read(new File([file.slice(0, 262144)], file.name));
-      return reply.ok ? reply.bytes : null;
-    });
+    registerCameraRecipeReader(this.readHead);
     this.lutGpuQueue.attach(() => this.engine);
     // 相机配方文件、校准数据变了：网格的那一行跟着变。编辑器和校准卡自己订阅。
     let generation = this.recipeBook.generationId();
@@ -142,6 +147,7 @@ class App implements AppApi {
       });
     }
     this.showStart();
+    this.prebake.start(this.shell);
     // 开始页先画出来；本机存的校准、LUT、网格分包和显卡引擎（WebGPU 初始化可能要几百毫秒）都排在后面。
     this.restored = new Promise<void>((done) =>
       afterFirstPaint(() => {
@@ -171,6 +177,7 @@ class App implements AppApi {
   private useEngine(engine: Engine | null, lost: boolean): void {
     this.engine = engine;
     this.recipeBook.attach(engine);
+    this.prebake.wake();
     this.shell.dataset.gpu = engine ? '1' : '0';
     if (import.meta.env.DEV) (window as unknown as { __gxrEngine?: Engine | null }).__gxrEngine = engine; // 测试看显卡里有几份源
     if (!lost) return;
@@ -287,6 +294,12 @@ class App implements AppApi {
     let done = 0;
     for (const photo of this.byId.values()) if (photo.status !== 'pending' || photo.gone) done += 1;
     return { done, total: this.byId.size + this.intake.waiting() }; // 还在比对同名的也算没读完
+  }
+
+  /** 缩略图全读完了，也没有还在比对的同名照片（预烘焙等它）。 */
+  private allRead(): boolean {
+    const { done, total } = this.loading();
+    return done === total;
   }
 
   uploadRaw(photo: Photo, version: number, layout: RawLayout, bytes: ArrayBuffer, scene: Scene | null): Promise<boolean> {
@@ -448,6 +461,7 @@ class App implements AppApi {
     this.exporter?.clear();
     this.queue.cancel();
     this.lutGpuQueue.clear();
+    this.prebake.cancel();
     this.closeEditor();
     for (const photo of this.byId.values()) releaseBitmaps(photo);
     this.byId.clear();
@@ -561,6 +575,7 @@ class App implements AppApi {
    * 只有 RAW、没有能画的缩略图时：全部读完、再静一会儿（1.5 秒加空闲）才预取。点开照片随时都会按需加载。
    */
   private prewarmEditor(): void {
+    this.prebake.wake(); // 网格换了、又读完一张：预烘焙重新看一遍
     if (this.editorMod || this.editorLoad || this.screen !== 'grid') return;
     const { done, total } = this.loading();
     if (!total || done < Math.min(total, 8)) return;

@@ -370,7 +370,7 @@ def test_corrupted_half_dng_luma_falls_back_to_sdr_without_gainmap(
     assert hdr_dip.path.read_bytes() == sdr_dip.path.read_bytes()
     assert b"urn:iso:std:iso:ts:21496:-1" not in hdr_dip.path.read_bytes()
     dip_dict = hfe.export_result_dict(shot2["shot_id"], hdr_dip, hdr_notes=HDR_NOTES, hdr_unsupported=HDR_UNSUPPORTED)
-    assert dip_dict["hdr"] is False and dip_dict["hdr_note"] == HDR_UNSUPPORTED
+    assert dip_dict["hdr"] is False and dip_dict["hdr_note"] == "RAW 与 JPG 画面对不上"
 
     for mode in ("singles", "both"):
         sdr_entries = hfe.export_pair_finish(

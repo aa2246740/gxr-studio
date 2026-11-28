@@ -11,7 +11,7 @@ import { applyCamdataStatus } from './camdata.js';
 import { loadFrames, loadDefaults, loadPhotoCaps, loadMeta, fallbackCaps } from './caps.js';
 import { resolveFinish, DEFAULT_GEOMETRY, frameBody, NO_FRAME, NO_STAMP } from './finish.js';
 import { legacyValid, fromArray, toArray } from './geom.js';
-import { route as gpuRoute } from './gpu_stage.js';
+import { route as gpuRoute, cancelRawRetry } from './gpu_stage.js';
 import { curveBody, normalizeCurves } from './curves.js';
 import { rememberRecipe } from './my_recipes.js';
 export { CURVE_MAX, curveBody } from './curves.js';
@@ -629,6 +629,7 @@ export function originalFallbackUrl(view) {
 // 关掉大图：只停预览、放掉图片。已经排队的保存不受影响（它们绑定的是保存记录，不是 ed）。
 export function disposeEdit(view) {
   view.disposed = true;
+  cancelRawRetry(view); // 这张照片还在等的 RAW 重试不再跑
   if (typeof view.logoCatalogWatch === 'function') { view.logoCatalogWatch(); view.logoCatalogWatch = null; }
   const ed = view.ed;
   if (!ed) return;
