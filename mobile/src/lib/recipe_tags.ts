@@ -37,6 +37,7 @@ export const DAT_LIBRARY_GENERATIONS: Readonly<Record<number, number | null>> = 
   176: 176,
   178: 178, 181: 178, 182: 178, 185: 178,
   250: 178, 253: 178, 256: 178, 257: 178, 258: 178, 259: 178, 260: 178, 262: 178, 266: 178,
+  267: 178,
 };
 
 const G176_DESCRIPTORS: ReadonlyArray<readonly [string, number]> = [
