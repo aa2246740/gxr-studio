@@ -275,7 +275,10 @@ export class Prebaker {
       // 和编辑器一样先用相机 JPG 的，没有再用 DNG 的（网格上还没读 DNG 时用刚读的开头）。
       const meta = mergeMeta(photo.jpgMeta, photo.dngMeta ?? this.heads.get(photoKey(photo)) ?? null);
       const adopted = adoptedSelectionOf(photo, dat);
-      const unit = recipeUnitOf(photo.choice, adopted, unitOfLens(meta.lens));
+      const lensUnit = unitOfLens(meta.lens);
+      // 选择、采用的配方、镜头名都说不出单元（开头没读、读不出）：编辑器读了 DNG 才知道，猜了多半白烘焙，不排。
+      if (!photo.choice && !adopted && lensUnit === null) continue;
+      const unit = recipeUnitOf(photo.choice, adopted, lensUnit);
       const state = book.unitStateFor(photo, unit).state;
       if (state === 'checking') return null;
       if (state !== 'ready') continue;
@@ -314,14 +317,13 @@ export class Prebaker {
 
   /** 网格上不知道这张的镜头名（相机 JPG 里没有、DNG 还没读）：读 DNG 开头，开始了返回 true。 */
   private readHead(photo: Photo): boolean {
-    const read = this.host.readHead;
     const file = photo.dng;
     const key = photoKey(photo);
-    if (!read || !file || photo.dngMeta !== null || photo.jpgMeta?.lens || this.heads.has(key)) return false;
+    if (!this.host.readHead || !file || photo.dngMeta !== null || photo.jpgMeta?.lens || this.heads.has(key)) return false;
     this.heads.set(key, null);
     const round = this.round;
     this.begin(
-      read(file).then((bytes) => {
+      this.host.readHead(file).then((bytes) => {
         if (round === this.round && bytes && photo.dng === file) this.heads.set(key, photoMetaFromTiff(new Uint8Array(bytes)));
       }),
     );

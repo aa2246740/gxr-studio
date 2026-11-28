@@ -427,4 +427,16 @@ test('5. a MOUNT photo whose JPG has no lens name: the DNG head names the unit, 
   await sleep(20);
   assert.deepEqual(heads, ['m.DNG'], 'not read again');
   pre.stop();
+  // 读不了开头（或者没有读的办法）：不知道单元就不猜，一张也不烘焙。
+  const io2 = makeIo();
+  const book2 = await readyBook(io2);
+  const blind = { ...photo('n', 'l08firm', null), jpgMeta: { lens: null, iso: null, copyright: null } };
+  for (const extra of [{ readHead: async () => null }, {}]) {
+    const h2 = host(book2, [blind], extra);
+    const pre2 = new Prebaker(h2, 4, () => 0);
+    pre2.start(null);
+    await until(() => done(h2), 'pre-bake done without a unit');
+    assert.equal(io2.bakes.length, 0, 'no guessed-unit bakes');
+    pre2.stop();
+  }
 });
