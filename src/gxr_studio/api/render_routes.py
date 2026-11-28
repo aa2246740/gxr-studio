@@ -347,10 +347,11 @@ def _render(
         raise ApiError(422, "bad_size", "请求无效。请刷新页面后重试。", {"detail": f"max_edge 要在 64 到 {MAX_EDGE_LIMIT} 之间"})
     if not 30 <= quality <= 100:
         raise ApiError(422, "bad_quality", "请求无效。请刷新页面后重试。", {"detail": "品质要在 30 到 100 之间。"})
-    pair = is_pair_second(shot)  # 半格一对（含单张视图）的成片按编辑缓存，见 finish.serve._stage_key
+    # 成片按编辑缓存（finish.serve._stage_key）：半格一对（含单张视图）每档尺寸都存，单张照片只存全尺寸
+    cache = is_pair_second(shot) or max_edge is None
     shot, edit, side, use_stage = _prepare_render_target(c, shot, body, stage, view)
     if use_stage:
-        return _stage_response(request, c, shot, edit, side, use_stage, max_edge=max_edge, quality=quality, size=size, cache=pair)
+        return _stage_response(request, c, shot, edit, side, use_stage, max_edge=max_edge, quality=quality, size=size, cache=cache)
     try:
         crop = _crop_of(side) if apply_crop else None
         out = c.render.render_preview(shot, edit, max_edge=max_edge, exact=exact, crop=crop, quality=quality)

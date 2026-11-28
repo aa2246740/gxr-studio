@@ -7,6 +7,12 @@
 - 导出：全分辨率条带，同一个烘焙（更细的网格），或 `precise` 时逐像素精确链；
 - 缓存：解码后的码值图、烘焙结果、渲染结果三层，键按 §5.3：源文件 SHA-256、方向、调整、配方条目 SHA-256、曲线、
   引擎版本、目标宽度；同一张照片同一组参数不重复计算；
+- 成片缓存（`stage_result`）：`finish.serve.render_stage(cache=True)` 按 `_stage_key` 存编码好的成片 JPEG（半格一对每档尺寸，
+  单张照片只存全尺寸）。键里有照片和文件、编辑和编辑记录、默认边框与日期戳、LUT、标志、相机数据与校准、引擎和应用版本、
+  stage / 尺寸 / 品质 / 底图。本机配方不缓存，取消的出图不存。和渲染结果同一个 LRU，但成片最多占 `stage_bytes`（32 MB），
+  挤不掉预览；
+- 取消：接口出图时用 `render.cancel.cancel_when` 登记连接断开的检查，`renderer` 每次 `display` 都过一个安全点，
+  连接断了就抛 `RenderCancelled`。导出和缩略图没有登记，安全点什么都不做；
 - 没有导入相机数据（或没有标定包）时抛 `RenderUnavailable`，调用方返回明确的状态，而不是渲染一张不对的图。
 
 每一张图都是"电脑预测"。仅对应单元的实拍校准 ISO 算已校准；未知镜头或跨单元配方另标未校准。
@@ -63,10 +69,14 @@ class NoRaw(Exception):
 
 
 class ByteLRU[T]:
-    def __init__(self, limit_bytes: int) -> None:
+    """按字节限额的 LRU。`groups` 给某一类条目再定一个子限额：这一类超了只挤掉同一类里最旧的，不碰别的条目。"""
+
+    def __init__(self, limit_bytes: int, groups: dict[str, int] | None = None) -> None:
         self.limit = limit_bytes
-        self._d: OrderedDict[Any, tuple[T, int]] = OrderedDict()
+        self.groups = dict(groups or {})
+        self._d: OrderedDict[Any, tuple[T, int, str | None]] = OrderedDict()
         self._size = 0
+        self._group_size = dict.fromkeys(self.groups, 0)
         self._lock = threading.Lock()
 
     def get(self, key: Any) -> T | None:
@@ -76,21 +86,34 @@ class ByteLRU[T]:
                 self._d.move_to_end(key)
             return None if hit is None else hit[0]
 
-    def put(self, key: Any, value: T, nbytes: int) -> None:
+    def put(self, key: Any, value: T, nbytes: int, group: str | None = None) -> None:
         with self._lock:
             old = self._d.pop(key, None)
             if old is not None:
-                self._size -= old[1]
-            self._d[key] = (value, nbytes)
+                self._forget(old)
+            self._d[key] = (value, nbytes, group)
             self._size += nbytes
+            if group in self._group_size:
+                self._group_size[group] += nbytes
+                while self._group_size[group] > self.groups[group]:
+                    oldest = next(k for k, v in self._d.items() if v[2] == group)
+                    if oldest == key:  # 只剩这一条：和总限额一样，至少留一条
+                        break
+                    self._forget(self._d.pop(oldest))
             while self._size > self.limit and len(self._d) > 1:
-                _, (_, n) = self._d.popitem(last=False)
-                self._size -= n
+                _, entry = self._d.popitem(last=False)
+                self._forget(entry)
+
+    def _forget(self, entry: tuple[T, int, str | None]) -> None:
+        self._size -= entry[1]
+        if entry[2] in self._group_size:
+            self._group_size[entry[2]] -= entry[1]
 
     def clear(self) -> None:
         with self._lock:
             self._d.clear()
             self._size = 0
+            self._group_size = dict.fromkeys(self.groups, 0)
 
     def __len__(self) -> int:
         return len(self._d)
@@ -162,6 +185,7 @@ class RenderService:
         *,
         proxy_bytes: int = 640 << 20,
         result_bytes: int = 96 << 20,
+        stage_bytes: int = 32 << 20,
         max_concurrent: int = 2,
         forbidden: tuple[Path, ...] = (),
     ) -> None:
@@ -186,7 +210,8 @@ class RenderService:
         self._look_labels: dict[tuple[Any, Any, Any], str | None] = {}
         self._proxies: ByteLRU[np.ndarray] = ByteLRU(proxy_bytes)
         self._bakes: ByteLRU[chain.ChromaBake] = ByteLRU(64 << 20)
-        self._results: ByteLRU[tuple[Any, ...]] = ByteLRU(result_bytes)  # 预览 (jpeg, 宽, 高)；成片 (jpeg, 标注)，见 stage_result
+        # 预览 (jpeg, 宽, 高)；成片 (jpeg, 标注)，见 stage_result。全尺寸成片一张几 MB，只能占 stage_bytes，挤不掉编辑器要的预览
+        self._results: ByteLRU[tuple[Any, ...]] = ByteLRU(result_bytes, {"stage": stage_bytes})
         self._approx: dict[tuple[Any, ...], np.ndarray] = {}
         self._warmed: set[tuple[Any, ...]] = set()
         self.stats = {"decodes": 0, "bakes": 0, "renders": 0, "result_hits": 0}
@@ -513,7 +538,8 @@ class RenderService:
         return hashlib.sha256(json.dumps(parts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def stage_result(self, key: str) -> tuple[bytes, dict[str, str]] | None:
-        """成片缓存（`finish.serve.render_stage(cache=True)`）。和预览结果同一个按字节限额的 LRU，换相机数据时一起清空。"""
+        """成片缓存（`finish.serve.render_stage(cache=True)`）。和预览结果同一个按字节限额的 LRU，换相机数据时一起清空。
+        成片条目另有子限额（`stage_bytes`，默认 32 MB）：超了只挤掉最旧的成片，不挤预览。"""
         hit = self._results.get(("stage", key))
         if hit is None:
             return None
@@ -521,7 +547,7 @@ class RenderService:
         return hit[0], dict(hit[1])
 
     def keep_stage_result(self, key: str, jpeg: bytes, labels: dict[str, str]) -> None:
-        self._results.put(("stage", key), (jpeg, dict(labels)), len(jpeg))
+        self._results.put(("stage", key), (jpeg, dict(labels)), len(jpeg), group="stage")
 
     # ---- 预览 -------------------------------------------------------------
     def render_preview(
