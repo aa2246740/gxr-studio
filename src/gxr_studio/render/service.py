@@ -42,7 +42,7 @@ from ..lut.library import LutLibrary
 from ..raw import Renderer, half_res_codes, open_dng, orient_array
 from ..recipes import RecipeError, RecipeRepository
 from . import chain
-from .cancel import checkpoint
+from .cancel import Flights, checkpoint
 from .params import EditState, RecipeSel
 from .recipes import CameraData, Menu, unit_of_lens
 from .tones import channel_gains, display_table
@@ -212,6 +212,8 @@ class RenderService:
         self._bakes: ByteLRU[chain.ChromaBake] = ByteLRU(64 << 20)
         # 预览 (jpeg, 宽, 高)；成片 (jpeg, 标注)，见 stage_result。全尺寸成片一张几 MB，只能占 stage_bytes，挤不掉编辑器要的预览
         self._results: ByteLRU[tuple[Any, ...]] = ByteLRU(result_bytes, {"stage": stage_bytes})
+        # 在算的成片按键登记：同一个键的请求等同一次出图（finish.serve.render_stage）
+        self.stage_flights = Flights()
         self._approx: dict[tuple[Any, ...], np.ndarray] = {}
         self._warmed: set[tuple[Any, ...]] = set()
         self.stats = {"decodes": 0, "bakes": 0, "renders": 0, "result_hits": 0}

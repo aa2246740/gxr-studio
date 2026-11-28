@@ -479,6 +479,7 @@ def render_stage(
     """预览和接口用的成片 JPEG。没有编辑的相机 JPG 在全尺寸时原样返回文件字节，其余是 `render_stage_rgb` 编码一次。
 
     `cache`：按 `_stage_key` 存进渲染服务的结果缓存，同一张图、同一份编辑、同一档参数再要时直接给字节（标注 `cache: hit`）。
+    同一个键还在算时不另算，等它算完拿同样的字节（标注 `cache: joined`）；等的请求都走了才取消。
     出图被取消（`render.cancel`）时抛 `RenderCancelled`，不存。"""
     plan = _plan(render, lib, shot, edit, side, stage=stage, base=base)
     original = plan[0]
@@ -493,12 +494,20 @@ def render_stage(
     hit = render.stage_result(key) if key is not None else None
     if hit is not None:
         return hit[0], {**hit[1], "cache": "hit"}
-    rgb, labels = _stage_rgb(render, lib, shot, side, plan, stage=stage, max_edge=max_edge, quality=quality, base=base, track=track)
-    jpeg = encode_jpeg(rgb, quality)  # rgb 已经按 max_edge 缩好
-    if key is not None:
-        checkpoint()  # 取消了的图不进缓存
-        render.keep_stage_result(key, jpeg, labels)
-    return jpeg, labels
+
+    def work() -> tuple[bytes, dict[str, str]]:
+        rgb, labels = _stage_rgb(render, lib, shot, side, plan, stage=stage, max_edge=max_edge, quality=quality, base=base, track=track)
+        jpeg = encode_jpeg(rgb, quality)  # rgb 已经按 max_edge 缩好
+        if key is not None:
+            checkpoint()  # 取消了的图不进缓存
+            render.keep_stage_result(key, jpeg, labels)
+        return jpeg, labels
+
+    if key is None:
+        return work()
+    # 同一个键正在算（例如算到一半刷新了页面）：等那一次，拿同样的字节（render.cancel.Flights）
+    (jpeg, labels), joined = render.stage_flights.run(key, work)
+    return (jpeg, {**labels, "cache": "joined"}) if joined else (jpeg, labels)
 
 
 def _custom_logo(stage: str, frame: Any) -> bool:
