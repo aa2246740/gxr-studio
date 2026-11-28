@@ -42,7 +42,8 @@ try {
   assert.equal(put.status(), 200, await put.text());
   let sawImageFailure = false;
   let allowImage = false;
-  await context.route('**/api/logos/**', async (route) => {
+  // 目录 GET /api/logos 也要经过这里（glob '**/api/logos/**' 匹配不到它），图片才会在页面重取目录后放行
+  await context.route((u) => u.pathname === '/api/logos' || u.pathname.startsWith('/api/logos/'), async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.endsWith('/image') && !allowImage) {
       sawImageFailure = true;
