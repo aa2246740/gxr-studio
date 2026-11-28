@@ -295,7 +295,7 @@ def test_mobile_halfframe_g258_labels_browser(tmp_path: Path) -> None:
 
     # 1. With matching ori=1 photo 1 present
     wf = report["withFirst"]
-    check(wf["topLabel"] == "半格双联", "top bar shows 半格双联 for diptych")
+    check(wf["topLabel"] == "半格", "top bar shows 半格 for diptych (Import P3-3)")
     check(wf["statusLabel"] == "半格双联", "recipe status pill shows 半格双联")
     rows_wf = wf["info"]["rows"]
     cur_wf = next((r for r in rows_wf if r["label"] == "当前配方"), None)
@@ -309,7 +309,7 @@ def test_mobile_halfframe_g258_labels_browser(tmp_path: Path) -> None:
 
     # 2. Without photo 1 (only diptych imported): omit 第 1 格, export strips Copyright from 第 1 格 while keeping Make/Model & 第 2 格 tag
     os2 = report["onlySecond"]
-    check(os2["topLabel"] == "半格双联", "top bar shows 半格双联 when photo 1 absent")
+    check(os2["topLabel"] == "半格", "top bar shows 半格 when photo 1 absent (Import P3-3)")
     hf_alone = next((r for r in os2["info"]["rows"] if r["role"] == "halfframe-recipes"), None)
     check(hf_alone is not None, "照片信息 has halfframe shooting recipes row when alone")
     by_half_alone = {v["half"]: v["text"] for v in hf_alone["values"]}

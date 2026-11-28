@@ -10,6 +10,7 @@ import { registerHooks } from 'node:module';
 
 registerHooks({
   resolve(spec, ctx, next) {
+    if (spec.endsWith('.css')) return { shortCircuit: true, url: 'data:text/javascript,export default ""' };
     try {
       return next(spec, ctx);
     } catch (err) {
@@ -183,4 +184,39 @@ test('deviceName detects iPadOS via maxTouchPoints + Mac/iPad UA and keeps iPhon
   const logoSrc = readFileSync(new URL('../../mobile/src/app/logo_sheet.ts', import.meta.url), 'utf8');
   assert.ok(logoSrc.includes("标志只保存在${thisDevice('上')}"), 'logo_sheet must use thisDevice()');
   assert.ok(!logoSrc.includes('这台手机'), 'logo_sheet must not hardcode 这台手机');
+});
+
+// 放在最后：这一项要装上 mini_dom 的 document，前面几项不碰 DOM。
+test('Import P3-3：网格角标半格双联写「半格」，悬停和读屏说没有 HDR；真正只有 JPG 的仍是「JPG」', async () => {
+  const { installDom } = await import('./mini_dom.mjs');
+  delete globalThis.localStorage; // installMemoryStorage 定义成只读的，mini_dom 要自己放一个
+  installDom();
+  const { fillCell } = await import('../../mobile/src/app/grid_cell.ts');
+  const cell = () => {
+    const node = document.createElement('button');
+    const raw = document.createElement('span');
+    raw.className = 'raw';
+    const bl = document.createElement('span');
+    bl.className = 'bl';
+    node.append(raw, bl);
+    return node;
+  };
+  const photo = (over) => ({ id: 'a', stem: 'A', status: 'ready', jpg: {}, dng: null, diptych: false, bitmap: null, knobs: {}, levels: new Map(), memory: new Map(), choice: null, ...over });
+  const note = '半格：按相机拼好的双联图调整，没有 HDR';
+
+  const dip = cell();
+  fillCell(dip, photo({ diptych: true }), false, 2);
+  const dipBadge = dip.querySelector('.bdg');
+  assert.equal(dipBadge.textContent, '半格');
+  assert.equal(dipBadge.title, note);
+  assert.equal(dipBadge.getAttribute('aria-label'), note);
+  assert.equal(dip.getAttribute('aria-label'), `第 2 张，${note}`);
+
+  const jpg = cell();
+  fillCell(jpg, photo({ diptych: false }), false, 2);
+  const jpgBadge = jpg.querySelector('.bdg');
+  assert.equal(jpgBadge.textContent, 'JPG');
+  assert.ok(!jpgBadge.title);
+  assert.equal(jpgBadge.getAttribute('aria-label'), null);
+  assert.equal(jpg.getAttribute('aria-label'), '第 2 张，JPG');
 });

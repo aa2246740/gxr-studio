@@ -624,17 +624,24 @@ def test_mobile_browser_card250_pair1_and_pair2_e2e(tmp_path: Path) -> None:
     assert "error" not in report, report
     assert report["pageErrors"] == []
 
-    # 网格徽标：第 1 张有 RAW（无 JPG 角标），第 2 张标 JPG
+    # 网格徽标：第 1 张有 RAW（无 JPG 角标），第 2 张是半格双联，标「半格」，悬停和读屏说没有 HDR（Import P3-3）
+    diptych_note = "半格：按相机拼好的双联图调整，没有 HDR"
     assert report["gridBadges"]["R0000001"] == ""
-    assert report["gridBadges"]["R0000002"] == "JPG"
+    assert report["gridBadges"]["R0000002"] == "半格"
+    assert report["gridBadgeNote"] == {"title": diptych_note, "aria": diptych_note}
 
     # 第 1 张按 RAW 打开，无双联提示
     assert report["photo1"]["layer"] == {"w": 2144, "h": 1424}
     assert report["photo1"]["recipeHasDiptychNote"] is False
+    assert report["photo1"]["head"]["text"] != "半格" and report["photo1"]["head"]["title"] is None
 
     # 第 2 张按相机 JPG 打开，舞台截图保留中央黑缝，配方页提示等待配对
     assert report["photo2"]["layer"] == {"w": 4288, "h": 2848}
     assert "这张是半格双联，配方效果要等配对功能。" in report["photo2"]["recipeText"]
+    # 编辑页顶部和配方说明也不说「只有 JPG」
+    assert report["photo2"]["head"] == {"text": "半格", "title": diptych_note, "aria": diptych_note}
+    assert "这张按相机拼好的双联图调整" in report["photo2"]["recipeText"]
+    assert "只有相机 JPG" not in report["photo2"]["recipeText"]
     sc_mean, sc_max, sl, sr = _stage_png_seam_stats(stage_png)
     assert sc_mean <= 10.0 and sc_max <= 15 and sl > 50 and sr > 50, f"mobile editor stage seam lost: {(sc_mean, sc_max, sl, sr)}"
 

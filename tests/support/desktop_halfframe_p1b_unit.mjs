@@ -257,4 +257,22 @@ const hmath = await load('histogram_math.js');
   assert.deepEqual(created, ['a', 'p1', 'p2', 'b']);
 }
 
+// Import P3-3：没配上的半格双联在图库和编辑器顶栏（共用 pairTag）写「半格」，悬停和读屏说没有 HDR；
+// 真正只有 JPG 的、半格一对都不变。放在最后：要装 mini_dom 的 document。
+{
+  const { installDom } = await import('./mini_dom.mjs');
+  installDom();
+  const gallery = await load('gallery.js');
+  const note = '半格：按相机拼好的双联图调整，没有 HDR';
+  const lone = gallery.pairTag({ id: 'd', has_raw: false, has_jpg: true, diptych: true, pair: null });
+  assert.equal(lone.textContent, '半格');
+  assert.equal(lone.getAttribute('title'), note);
+  assert.equal(lone.getAttribute('aria-label'), note);
+  const jpgOnly = gallery.pairTag({ id: 'j', has_raw: false, has_jpg: true });
+  assert.equal(jpgOnly.textContent, '只有 JPG');
+  assert.equal(jpgOnly.getAttribute('title'), null);
+  const pairSecond = gallery.pairTag({ id: 'p', has_raw: false, has_jpg: true, diptych: true, pair: { role: 'second', partner_id: 'q' } });
+  assert.equal(pairSecond.textContent, '只有 JPG');
+}
+
 console.log('OK');
