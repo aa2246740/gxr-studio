@@ -385,10 +385,15 @@
 .app[data-layout="phone-landscape"] .panel.lut > .lut-foot[hidden] {
   display: none;
 }
+/* 右栏卡片下面最多只空 9pt，放不下提示；「已导入 N 个 LUT」这类提示改贴在照片右下角、紧挨右栏，不压卡片和卡名。
+   右栏宽 197 + 右安全区，和上面 .screen.editor 的网格列一致；底下留 36，让开舞台底部居中的 HDR 说明（shell.css .hdr-screen-note）。 */
 .app[data-layout="phone-landscape"] .panel.lut > .lut-err {
-  left: 6px;
-  right: 6px;
-  bottom: 2px;
+  position: fixed;
+  left: auto;
+  right: calc(197px + var(--safe-right) + 8px);
+  bottom: calc(36px + var(--safe-bottom));
+  width: max-content;
+  max-width: calc(100vw - 197px - var(--safe-right) - var(--safe-left) - 16px);
   padding: 1px 8px;
   font-size: 10px;
   line-height: 14px;

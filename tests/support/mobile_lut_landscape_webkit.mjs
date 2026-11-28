@@ -55,6 +55,7 @@ const pageErrors = [];
 const summary = {
   landscape: { empty: {}, three: {}, emptyNoNotice: {}, threeNoNotice: {} },
   err320: null,
+  toast: {},
   baseline: { empty: {}, three: {} },
   shots: [],
 };
@@ -230,6 +231,7 @@ async function measureLutPanel(page) {
         ovSw: overlap(box, sw),
         ovStage: overlap(box, stage),
         ovPin: overlap(box, pin),
+        ovErrName: overlap(rect(node.querySelector('.nm')), err),
       };
     });
 
@@ -415,6 +417,34 @@ async function settledPass(page, state) {
     if (tag) await tag.evaluate((node) => node.remove());
   }
 }
+/** 导入 3 个 LUT 后的「已导入 3 个 LUT」提示：横屏各视口（有没有说明条）都在面板和屏幕里，不压任何一张卡的卡名。 */
+async function toastPass(page) {
+  for (const noNotice of [false, true]) {
+    const tag = noNotice ? await page.addStyleTag({ content: '.nogpu-notice { display: none !important; }' }) : null;
+    for (const vp of LANDSCAPE_VPS) {
+      await setVp(page, vp, 'phone-landscape');
+      const m = await measureLutPanel(page);
+      const label = `toast ${noNotice ? 'nonotice ' : ''}${vp.label}`;
+      summary.toast[label] = { err: m.err, names: m.cards.map((c) => c.ovErrName) };
+      check(m.errText.includes('已导入 3 个 LUT') && m.errInVp, `${label}: import toast missing/off screen (${JSON.stringify({ err: m.err, text: m.errText })})`);
+      const hits = m.cards.filter((c) => c.ovErrName > 0.5).map((c) => `${c.lut === 'none' ? 'none' : c.name}:${c.ovErrName}px2`);
+      check(hits.length === 0, `${label}: import toast covers card names (${hits.join(', ')}; err ${JSON.stringify(m.err)})`);
+      const span = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
+      const ov = (b) => (b && m.err ? span(b.x, b.right, m.err.x, m.err.right) * span(b.y, b.bottom, m.err.y, m.err.bottom) : 0);
+      const hdrNote = await page.evaluate(() => {
+        const b = document.querySelector('.editor .stage .hdr-screen-note')?.getBoundingClientRect();
+        return b && b.width > 0.5 ? { x: b.left, y: b.top, right: b.right, bottom: b.bottom } : null;
+      });
+      const boxes = { sw: m.sw, bar: m.bar, pin: m.pin, hdrNote, ...Object.fromEntries(m.cards.map((c, i) => [`card${i}`, c.box])) };
+      const covered = Object.entries(boxes).filter(([, box]) => ov(box) > 0.5).map(([key]) => key);
+      check(covered.length === 0, `${label}: import toast covers ${covered.join(', ')} (err ${JSON.stringify(m.err)})`);
+      if (manifest.shotsDir && !noNotice && (vp.label === '844x390' || vp.label === '568x320')) {
+        await page.screenshot({ path: path.join(manifest.shotsDir, `${manifest.shotsPrefix || 'shot'}-toast-${vp.label}.png`), animations: 'disabled' });
+      }
+    }
+    if (tag) await tag.evaluate((node) => node.remove());
+  }
+}
 /** 横屏各视口过一遍；`noNotice` 时先藏掉无显卡说明条（有 WebGPU 的 Safari 没有这条，面板更高）。 */
 async function landscapePass(page, state, wantEmpty, noNotice) {
   const tag = noNotice ? await page.addStyleTag({ content: '.nogpu-notice { display: none !important; }' }) : null;
@@ -505,6 +535,8 @@ try {
   // 4) Import 3 LUTs and clear transient import toast by selecting first LUT then returning to 「不用 LUT」
   await page.locator('input.lutpick').setInputFiles(manifest.cubes);
   await page.waitForFunction(() => (window.__gxrLutBook?.list?.()?.length ?? 0) === 3, null, { timeout: 30_000 });
+  await toastPass(page);
+  await setVp(page, BASELINE_VPS[0], 'phone-portrait');
   await page.locator('.editor .panel.lut .strip .rc:not([data-lut="none"])').first().tap();
   await page.waitForSelector('.editor .panel.lut .strip .rc.on:not([data-lut="none"])', { timeout: 10_000 });
   await page.locator('.editor .panel.lut .strip .rc[data-lut="none"]').tap();
