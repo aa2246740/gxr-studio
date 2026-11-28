@@ -21,6 +21,7 @@ registerHooks({
 const { Intake, EDGE, gather, keptNote, newPhoto, printOf } = await import('../../mobile/src/app/new_photo.ts');
 const { copyFileName, nameOf, photoName } = await import('../../mobile/src/app/model.ts');
 const { findFirstHalfNeighbor } = await import('../../mobile/src/lib/halfframe.ts');
+const { ExportBatch } = await import('../../mobile/src/app/export_batch.ts');
 
 /** 只有 IFD0 一项 DateTime (0x0132) 的小端 TIFF。`fill` 个字节的填充让文件大过头尾两段。 */
 function tiff(when, fill = 0, seed = 0) {
@@ -458,4 +459,37 @@ test('half-frame first frame: same folder first, otherwise the nearest capture t
   const d = cand('r0001~d', '', 500_000);
   assert.equal(await findFirstHalfNeighbor(dip('', 499_000), [c, d], yes), d, 'no folders: the nearest capture time');
   assert.equal(await findFirstHalfNeighbor(dip('', 2000), [c], yes), c, 'one candidate: as before');
+});
+
+test('export failures and fallback names say 「名字 (2)」 for the kept copy (review r1 P3)', async () => {
+  const photos = new Map([
+    ['r0001', { version: 1, dng: null, jpg: null }],
+    ['r0001~x', { version: 1, dng: null, jpg: null, copy: 2 }],
+  ]);
+  const runs = [];
+  const host = {
+    run: (item) => new Promise((resolve) => runs.push({ item, resolve })),
+    stop() {},
+    idle() {},
+    session: () => 1,
+    photo: (id) => photos.get(id) ?? null,
+    markGone() {},
+    busy() {},
+    changed() {},
+  };
+  const item = (id) => ({ id, stem: 'R0001', version: 1, dng: null, jpg: null, req: { quality: 95 } });
+  const batch = new ExportBatch([item('r0001'), item('r0001~x'), { ...item('r0001~x#half:2'), photoId: 'r0001~x' }], host);
+  batch.start();
+  const next = () => new Promise((done) => setTimeout(done, 0));
+  await next();
+  runs.shift().resolve({ ok: false, kind: 'trap', code: 'x', message: '' });
+  await next();
+  runs.shift().resolve({ ok: false, kind: 'trap', code: 'x', message: '' });
+  await next();
+  // 没有 file_name 的成片用兜底名字：第 2 份写「名字 (2)_gxr.jpg」。
+  runs.shift().resolve({ ok: true, file: new ArrayBuffer(4), result: {}, shot: {}, ms: 1 });
+  await batch.settled();
+  assert.equal(batch.failures.get('r0001').stem, 'R0001');
+  assert.equal(batch.failures.get('r0001~x').stem, 'R0001 (2)');
+  assert.deepEqual(batch.staged.map((s) => s.file.name), ['R0001 (2)_gxr.jpg']);
 });

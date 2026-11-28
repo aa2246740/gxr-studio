@@ -7,6 +7,7 @@ import type { ExportRequest } from '../lib/export_request';
 import type { HalfframeRole, HalfframeSource } from '../lib/halfframe';
 import { isComputer } from '../lib/save_mode';
 import { trackCrc } from '../lib/zip_write';
+import { copyFileName, photoName } from './model';
 
 /** 做好、还没交出去的文件最多占这么多字节。下一张会超过时先停在「做好了」那一栏，交出去、点「好」以后再接着做。 */
 export const STAGE_CAP_BYTES = 384 * 1024 * 1024;
@@ -110,8 +111,8 @@ export interface BatchHost {
   /** 一批不再跑了：让 Worker 闲 30 秒后关掉。 */
   idle(): void;
   session(): number;
-  /** 这张照片现在的版本和文件句柄；去掉了是 null。 */
-  photo(id: string): { version: number; dng: File | null; jpg: File | null } | null;
+  /** 这张照片现在的版本和文件句柄；去掉了是 null。`copy`：同名另外留下的第几份（失败那一行和兜底文件名写「名字 (2)」）。 */
+  photo(id: string): { version: number; dng: File | null; jpg: File | null; copy?: number } | null;
   /** 文件读不了：走 M1 的 gone（拔卡）路径。 */
   markGone(id: string, version: number): void;
   /** 跑着的时候 true：配方卡小图和烘焙先停，申请屏幕常亮。 */
@@ -421,7 +422,9 @@ export class ExportBatch {
       this.hold();
       return;
     }
-    const name = typeof result.result.file_name === 'string' ? result.result.file_name : `${item.stem}_gxr.jpg`;
+    const copy = this.copyOf(item);
+    const fallback = copy ? copyFileName(`${item.stem}_gxr.jpg`, item.stem, copy) : `${item.stem}_gxr.jpg`;
+    const name = typeof result.result.file_name === 'string' ? result.result.file_name : fallback;
     const file = new File([result.file], name, { type: 'image/jpeg' });
     // 电脑上一批打成一个 ZIP 下载：CRC 现在就分片算，点「下载」时不用再读文件（手机走共享面板，不用算）。
     if (isComputer()) trackCrc(file, result.file);
@@ -486,8 +489,13 @@ export class ExportBatch {
 
   private fail(item: BatchItem, kind: FailKind | 'stale', code: string, message: string): void {
     this.states.set(item.id, 'fail');
-    this.failures.set(item.id, { id: item.id, stem: item.stem, kind, message: failText(kind, code, message) });
+    this.failures.set(item.id, { id: item.id, stem: photoName({ stem: item.stem, copy: this.copyOf(item) }), kind, message: failText(kind, code, message) });
     this.host.changed();
+  }
+
+  /** 成片来自的那张照片是同名另外留下的第几份（半格第 1 格切的是邻居那张）。 */
+  private copyOf(item: BatchItem): number | undefined {
+    return this.host.photo(item.sourcePhotoId ?? batchPhotoId(item))?.copy;
   }
 
   /** 测试用：等这一轮跑完。 */

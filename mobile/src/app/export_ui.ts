@@ -330,7 +330,7 @@ export class ExportFlow {
       session: () => this.app.session(),
       photo: (id) => {
         const p = this.app.photo(id);
-        return p ? { version: p.version, dng: p.dng, jpg: p.jpg } : null;
+        return p ? { version: p.version, dng: p.dng, jpg: p.jpg, copy: p.copy } : null;
       },
       markGone: (id, version) => this.app.markGone(id, version),
       busy: (on) => this.busy(on),
