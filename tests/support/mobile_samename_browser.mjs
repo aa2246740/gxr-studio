@@ -76,6 +76,20 @@ async function pickFolder(page, dir) {
   await picker(page).evaluate((node) => node.removeAttribute('webkitdirectory'));
 }
 
+/** 扣住页面主线程里的 Blob.arrayBuffer（比对同名照片读头尾、试读都走它），releaseSlices 再一起放出去。 */
+const holdSlices = (page) => page.evaluate(() => {
+  window.__sliceHeld = [];
+  if (!window.__sliceNative) window.__sliceNative = Blob.prototype.arrayBuffer;
+  const native = window.__sliceNative;
+  Blob.prototype.arrayBuffer = function held() {
+    return new Promise((resolve, reject) => window.__sliceHeld.push(() => native.call(this).then(resolve, reject)));
+  };
+});
+const releaseSlices = (page) => page.evaluate(() => {
+  Blob.prototype.arrayBuffer = window.__sliceNative;
+  for (const run of window.__sliceHeld.splice(0)) run();
+});
+
 const ids = (page) => page.locator('.cell').evaluateAll((nodes) => nodes.map((n) => n.dataset.id || ''));
 const toast = (page) => page.evaluate(() => document.querySelector('.ftoast')?.textContent ?? null);
 const uploads = (page) => page.evaluate(() => window.__uploads.map((row) => ({ ...row })));
@@ -188,10 +202,22 @@ async function keepFlow(browser) {
     step.edited = await dragExposure(page);
     await back(page);
 
-    // 文件夹 B：同名的另一张。
+    // 文件夹 B：同名的另一张。比对读文件头尾时扣住，趁这时打开 A：比对做完以后编辑器还开着（审 r1 P2）。
+    await holdSlices(page);
     await pickFolder(page, manifest.folderB);
-    await waitGrid(page, 2);
+    await page.waitForFunction(() => window.__sliceHeld.length > 0, null, { timeout: 30_000 });
+    await openCell(page, first);
+    await page.waitForTimeout(1500);
+    await releaseSlices(page);
     step.toast = await waitToast(page, KEPT_ONE);
+    await page.waitForTimeout(1500);
+    // A：还是原来那份，调整在，显卡里的源还在（不再上传）。
+    const stay = await navFacts(page);
+    step.editorStays = { screen: await page.evaluate(() => document.querySelector('.app')?.dataset.screen), onFirst: stay.id === first };
+    const inEditor = step.editorStays.screen === 'editor';
+    step.firstReopen = { uploads: (await uploads(page)).length, posPlain: !stay.pos.includes(S), exposure: inEditor ? await exposure(page) : '' };
+    if (inEditor) await back(page);
+    await waitGrid(page, 2);
     const both = await ids(page);
     const second = both.find((id) => id !== first) ?? '';
     step.ids = { count: both.length, firstKept: both.includes(first), secondFromFile: second.startsWith(`${first}~`) };
@@ -199,12 +225,6 @@ async function keepFlow(browser) {
     step.secondCell = await cellFacts(page, second);
     const r1 = await rows(page, null, '__tA');
     step.rows = { firstIsA: r1.find((r) => r.id === first)?.isMarked === true, secondIsA: r1.find((r) => r.id === second)?.isMarked === true };
-
-    // A：还是原来那份，调整在，显卡里的源还在（不再上传）。
-    await openCell(page, first);
-    await page.waitForTimeout(2500);
-    step.firstReopen = { uploads: (await uploads(page)).length, posPlain: !(await navFacts(page)).pos.includes(S), exposure: await exposure(page) };
-    await back(page);
 
     // B：传进显卡的是 B 的 DNG；顶栏、照片信息写「名字 (2)」。
     const before = (await uploads(page)).length;
@@ -222,8 +242,25 @@ async function keepFlow(browser) {
     await back(page);
 
     // 倒着、不带文件夹、重新拷过（修改时间变了）选回来：认出各是哪一份，不多留，调整还在 A 上。
+    // 比对时打开第 2 份：它被同一份替换了，编辑器不关，读好以后在原地重新打开它（再传一次 B 的 DNG）。
+    await holdSlices(page);
     await picker(page).setInputFiles(manifest.again);
-    await page.waitForTimeout(300);
+    await page.waitForFunction(() => window.__sliceHeld.length > 0, null, { timeout: 30_000 });
+    await openCell(page, second);
+    await page.waitForTimeout(1500);
+    const beforeReload = (await uploads(page)).length;
+    await releaseSlices(page);
+    await page
+      .waitForFunction((n) => window.__uploads.length > n && window.__uploads.every((row) => row.done), beforeReload, { timeout: 120_000 })
+      .catch(() => {});
+    await page.waitForTimeout(500);
+    const reloaded = (await uploads(page)).slice(beforeReload);
+    step.reload = {
+      screen: await page.evaluate(() => document.querySelector('.app')?.dataset.screen),
+      onSecond: (await navFacts(page)).id === second,
+      uploadB: reloaded.length === 1 && reloaded[0].size === manifest.bSize,
+    };
+    if (step.reload.screen === 'editor') await back(page);
     await waitGrid(page, 2);
     await page.waitForTimeout(1000);
     const after = await ids(page);

@@ -126,6 +126,15 @@ def test_mobile_samename_first_copy_keeps_its_edits_and_gpu_source(steps: dict[s
     check(keep["firstCell"]["pencil"] is True and keep["secondCell"]["pencil"] is False, "the pencil stays on the first copy")
 
 
+def test_mobile_samename_editor_stays_open_during_a_same_name_re_add(steps: dict[str, Any]) -> None:
+    keep = _flow_ok(steps, "keep")
+    stays = keep["editorStays"]
+    check(stays == {"screen": "editor", "onFirst": True}, f"opened while the comparison ran, the editor stays open: {stays}")
+    reload = keep["reload"]
+    check(reload["screen"] == "editor" and reload["onSecond"] is True, f"the open photo replaced by the same file keeps the editor: {reload}")
+    check(reload["uploadB"] is True, f"it is reopened in place once read again (B's DNG uploads again): {reload}")
+
+
 def test_mobile_samename_recopied_files_map_back_to_their_copies(steps: dict[str, Any]) -> None:
     again = _flow_ok(steps, "keep")["again"]
     check(again["sameIds"] is True, "re-picking identical re-copies (new mtime) keeps the same two photos, none added")

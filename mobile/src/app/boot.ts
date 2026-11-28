@@ -75,7 +75,9 @@ class App implements AppApi {
   private readonly uploads = new Map<string, Promise<unknown>>();
   /** 选进来的照片落到 byId：同名的同一份替换，原来那张好好的又不是同一份就另外留下（new_photo.ts）。 */
   private readonly intake = new Intake({ photos: this.byId, busy: (photo) => this.uploads.has(photo.id), session: () => this.generation,
-    read: (photo, session) => void this.readPhoto(photo, photo.version, session), settled: (kept) => this.intakeDone(kept) });
+    read: (photo, session) => this.intakeRead(photo, session), settled: (kept) => this.intakeDone(kept) });
+  /** 开着的这张在比对之后被替换了（同一份重新选进来）：缩略图读好以后在编辑器里重新打开它，不离开编辑器。 */
+  private reload: Photo | null = null;
   private readonly queue = new ThumbQueue(2);
   /** 整份 DNG 单独一个 Worker：点开照片不排在缩略图后面。 */
   private readonly reader = new ThumbQueue(1);
@@ -621,11 +623,17 @@ class App implements AppApi {
     else this.showStart();
   }
 
-  /** 等过同名比对的那几张都落定了：另外留下了的说一句，再照 ingest 的最后几步刷新。 */
+  /** 等过同名比对的那几张都落定了：另外留下了的说一句。网格上就地刷新；开着编辑器就不动（回到网格时会重新挂）。 */
   private intakeDone(kept: number): void {
     if (kept) showToast(this.shell, keptNote(kept), 5000);
     this.cardIsOut = [...this.byId.values()].some((photo) => unread(photo));
-    if (this.byId.size) this.showGrid(this.screen !== 'grid');
+    if (this.screen === 'grid') this.grid?.refresh();
+    else if (this.screen === 'start' && this.byId.size) this.showGrid(true);
+  }
+
+  private intakeRead(photo: Photo, session: number): void {
+    if (this.screen === 'editor' && this.editing === photo) this.reload = photo;
+    void this.readPhoto(photo, photo.version, session);
   }
 
   private async readPhoto(photo: Photo, version: number, generation: number): Promise<void> {
@@ -701,6 +709,9 @@ class App implements AppApi {
   }
 
   private afterRead(photo: Photo): void {
+    const reload = this.reload === photo && this.screen === 'editor' && this.editing === photo && this.editorMod !== null && openable(photo);
+    if (this.reload === photo) this.reload = null;
+    if (reload && this.editorMod) this.mountEditor(this.editorMod, photo);
     if (this.screen === 'grid') this.grid?.update(photo.id);
     if (photo.status === 'bad' && this.screen === 'grid') this.grid?.showUnreadable(photo.id);
     this.prewarmEditor();
