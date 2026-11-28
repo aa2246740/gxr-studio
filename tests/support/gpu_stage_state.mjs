@@ -9,7 +9,7 @@ const file = (name) => pathToFileURL(`${folder}/${name}`).href;
 // ---- 替身 ----
 const calls = { api: [], fetch: [], engine: [], boxBodies: [] };
 const deferred = new Map(); // url 片段 → { resolve, reject }[]
-const routes = { info: () => null, edit: () => ({ recipe: null }), table: null, bake: null, box: null };
+const routes = { info: () => null, edit: () => ({ recipe: null }), table: null, bake: null, box: null, raw: null };
 Object.defineProperty(globalThis, 'navigator', { value: { gpu: {} }, configurable: true, writable: true });
 globalThis.createImageBitmap = async () => ({ width: 120, height: 80, close() {} });
 globalThis.engineLog = calls.engine;
@@ -34,6 +34,7 @@ function hold(fragment) {
 }
 globalThis.fetch = async (url) => {
   calls.fetch.push(url);
+  if (url.includes('/raw') && routes.raw) return routes.raw(url);
   if (url.includes('/raw') || url.includes('/camera-jpg')) return okBody({});
   if (url.includes('/table')) return routes.table(url);
   if (url.includes('/bake')) return routes.bake(url);
@@ -43,6 +44,30 @@ const lutHeader = (key) => ({ 'x-gxr-lut': encodeURIComponent(JSON.stringify({ n
 const bakeHeader = (key) => ({ 'x-gxr-bake': encodeURIComponent(JSON.stringify({ key, nx: 2, ny: 2, origin: [0, 0], step: 1, calibrated: true })) });
 const INFO = { enabled: true, unit: 'jlaunch', raw: { url: '/api/photos/P/raw?v=1', layer: [100, 80], full: [200, 160] }, raw_reason: null, jpg: { url: '/api/photos/P/camera-jpg?v=1' }, scene: { A: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], b: [0, 0, 0] } };
 routes.info = () => INFO;
+
+// RAW 重试的场景：一秒的重试定时器由脚本决定什么时候到（不靠时间）；短的定时器照常
+const longTimers = [];
+if (scenario.startsWith('raw-retry')) {
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  globalThis.setTimeout = (fn, ms, ...a) => {
+    if (!(ms >= 500)) return realSet(fn, ms, ...a);
+    const t = { fn, ms, live: true };
+    longTimers.push(t);
+    return t;
+  };
+  globalThis.clearTimeout = (t) => {
+    if (t && typeof t === 'object' && 'live' in t) t.live = false;
+    else realClear(t);
+  };
+}
+const liveTimers = () => longTimers.filter((t) => t.live).length;
+const fireTimers = () => {
+  for (const t of longTimers.filter((x) => x.live)) {
+    t.live = false;
+    t.fn();
+  }
+};
 
 const { state, emit } = await import(file('state.js'));
 const gs = await import(file('gpu_stage.js'));
@@ -194,6 +219,84 @@ if (scenario === 'camera-jpg-label') {
   still = true; // 松手
   out.afterRelease = await gs.lookThumb(view, ctxFor(REC2), REC2, 300, () => still);
   out.thumbsAfterRelease = thumbs();
+} else if (scenario === 'raw-retry-card-inflight') {
+  // 舞台和一张配方卡片在等同一次 RAW 下载；下载比卡片结算还晚失败：卡片也要等重试，不能拿 null 去画服务器小图（review r1 P1）
+  let held = true;
+  routes.raw = () => (held ? hold('raw') : okBody({}));
+  routes.bake = () => okBody(bakeHeader('K1'));
+  const view = makeView();
+  // 舞台先走到下 RAW 那一步（像 settle 一样反复 route，直到 RAW 请求挂起、引擎已起）
+  // rerun 像编辑器那样同步再走一遍 route：下载失败时舞台马上排上重试
+  const rerun = () => { gs.route(view, ctxFor(REC), rerun); };
+  for (let i = 0; i < 30 && !(deferred.get('raw')?.length && gs.gpuStageStateForTests?.(view)?.engine); i++) {
+    gs.route(view, ctxFor(REC), rerun);
+    await flush();
+  }
+  const REC2 = { kind: 'builtin', unit: 'jlaunch', slot: 2, levels: {} };
+  const card = gs.lookThumb(view, ctxFor(REC2), REC2, 300, () => true); // 卡片在等同一次下载
+  await flush();
+  held = false;
+  for (const d of deferred.get('raw') || []) d.resolve(fail(503));
+  out.cardInflight = await card;
+  out.retry = gs.gpuStageStateForTests?.(view)?.rawRetry ?? null;
+  fireTimers();
+  out.stageAfter = await settle(view, ctxFor(REC));
+  const after = await gs.lookThumb(view, ctxFor(REC2), REC2, 300, () => true);
+  out.cardAfter = after && typeof after === 'object' ? { w: after.w } : after;
+} else if (scenario.startsWith('raw-retry')) {
+  // RAW 源图下载失败：等一秒再试一次（不马上退回服务器）；再失败才退回，重新打开这张照片时重来
+  let fails = scenario === 'raw-retry-twice' ? 2 : scenario === 'raw-retry-404' ? 99 : 1;
+  const status = scenario === 'raw-retry-404' ? 404 : 503;
+  routes.raw = () => (fails-- > 0 ? fail(status) : okBody({}));
+  routes.bake = () => okBody(bakeHeader('K1'));
+  const raws = () => calls.fetch.filter((u) => u.includes('/raw')).length;
+  const st = (view) => {
+    const s = gs.gpuStageStateForTests?.(view);
+    return s ? { rawFailed: s.rawFailed, rawRetry: s.rawRetry, engine: s.engine, deviceLost: s.deviceLost } : null;
+  };
+  const view = makeView();
+  out.first = await settle(view, ctxFor(REC));
+  out.during = { state: st(view), timers: liveTimers(), rawFetches: raws() };
+  if (scenario === 'raw-retry-once' || scenario === 'raw-retry-twice') {
+    fireTimers();
+    out.after = await settle(view, ctxFor(REC));
+    out.stateAfter = st(view);
+    out.timersLeft = liveTimers();
+    out.rawFetches = raws();
+    out.addedRaws = added('addRaw').length;
+    if (scenario === 'raw-retry-twice') {
+      out.again = await settle(view, ctxFor(REC)); // 重试用过了：不再排第二次
+      out.timersAgain = liveTimers();
+      const reopened = makeView(); // 关掉再打开这张照片：新的视图
+      out.reopen = await settle(reopened, ctxFor(REC));
+      out.rawFetchesAfterReopen = raws();
+    }
+  } else if (scenario === 'raw-retry-dispose') {
+    gs.cancelRawRetry(makeView()); // 别的视图关掉：不动这一张的重试
+    out.timersAfterOtherClose = liveTimers();
+    view.disposed = true;
+    gs.cancelRawRetry(view); // disposeEdit：关掉这一张
+    out.timersAfterClose = liveTimers();
+    // 定时器在关掉之前就到了，但视图已经关了：不清记号、不重画
+    const late = { photo: { id: 'L', name: 'L' }, ed: makeView().ed };
+    fails = 1;
+    out.lateFirst = await settle(late, ctxFor(REC), 3);
+    fails = 0;
+    const timer = longTimers.find((t) => t.live);
+    late.disposed = true;
+    const before = raws();
+    if (timer) { timer.live = false; timer.fn(); }
+    await flush();
+    out.late = { state: st(late), rawFetches: raws() - before };
+    // 等重试时相机数据换了一代：重试作废（定时器停掉），换代自己让当前照片重走一遍
+    fails = 1;
+    const bumped = { photo: { id: 'B', name: 'B' }, ed: makeView().ed };
+    out.bumpFirst = await settle(bumped, ctxFor(REC), 3);
+    state.camdata = { dataVersion: 'v2' };
+    emit('camdata-changed');
+    out.timersAfterBump = liveTimers();
+    out.bumpAfter = await settle(bumped, ctxFor(REC));
+  }
 } else if (scenario === 'flag-off') {
   state.settings = { gpu_preview: false };
   const view = makeView();

@@ -7,6 +7,7 @@
 - 刷新页面后，舞台画面、配方状态、以及编辑后缩略图都是带编辑的合成图；
 - 导出对话框默认导出即合成图；
 - 整个过程中舞台与面板从未提示「没有 RAW / 相机 JPG」或请求 `/camera-jpg`。
+- 显卡开：刷新后重新打开时第一次 RAW 请求失败（503），重试一次后舞台照样回到显卡，不一直留在服务器出图上。
 """
 
 from __future__ import annotations
@@ -176,9 +177,11 @@ def test_desktop_editor_halfframe_pair(
         assert proc.returncode == 0, f"driver failed (rc={proc.returncode}): {proc.stderr[-2000:]}"
         assert out_path.is_file(), proc.stderr[-2000:]
         ui = json.loads(out_path.read_text(encoding="utf-8"))
-        # 等出图超时时驱动脚本附上出图时间线（renderTimeline）：放在最前面，免得被截断
+        # 等出图超时时驱动脚本附上页面一侧的显卡状态（gpuState：会话是否因设备丢失退回服务器、这张照片的 RAW 是否
+        # 记着加载失败、引擎在不在、最后要画和画好的帧键）和出图时间线（renderTimeline）：放在最前面，免得被截断
+        gpu_state = json.dumps(ui.get("gpuState"), ensure_ascii=False)
         timeline = json.dumps(ui.get("renderTimeline", [])[-60:], ensure_ascii=False)
-        assert "error" not in ui, f"{ui.get('error')}\nrenderTimeline={timeline}\n{str(ui)[:800]}"
+        assert "error" not in ui, f"{ui.get('error')}\ngpuState={gpu_state}\nrenderTimeline={timeline}\n{str(ui)[:800]}"
         race = ui["steps"]["startupRace"]
         assert race["cards"] > 0 and race["earlyDisabled"] > 0, f"startup race not reproduced: {race}"
         assert race["enabledAfterStatus"] is True, f"recipe cards stayed disabled after the camera-data status arrived: {race}"
@@ -287,6 +290,11 @@ def test_desktop_editor_halfframe_pair(
             assert pv["leftover"] and pv["reachedFirst"] and not pv["showedLeftover"], pv
             fb = ui["steps"]["pairFallbackStale"]
             assert fb["leftover"] and fb["reachedServer"] and not fb["showedLeftover"], fb
+            # 7) 重新打开时第一次 RAW 请求失败（503）：重试一次，舞台照样回到显卡，不留在服务器出图上
+            rr = ui["steps"]["rawRetry"]
+            assert rr["served503"] == 1 and rr["statuses"].count(503) == 1 and rr["statuses"].count(200) >= 2, rr
+            st = rr["state"]
+            assert st["engine"] is True and st["deviceLost"] is False and st["rawFailed"] is False and st["rawRetry"] == "used", rr
     finally:
         server.should_exit = True
         thread.join(timeout=20)

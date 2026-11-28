@@ -42,6 +42,15 @@ const mark = (e) => {
   renderTimeline.push({ t: Date.now() - T0, ...e });
   if (renderTimeline.length > 300) renderTimeline.shift();
 };
+// 等画面超时时附上的页面一侧显卡状态（gpu_stage.js 的 gpuStageStateForTests）：只有布尔、键和时刻。
+// 键里长的十六进制串只留前 6 位，整串最多 160 个字符。
+let readGpuState = async () => null;
+const shortKey = (k) => (typeof k === 'string' ? k.replace(/[0-9a-f]{16,}/g, (x) => x.slice(0, 6)).slice(0, 160) : k ?? null);
+const compactGpuState = (st) => {
+  if (!st || typeof st !== 'object' || st.missing) return st;
+  const frame = (f) => (f ? { key: shortKey(f.key), at: f.at } : null);
+  return { ...st, requested: frame(st.requested), finished: frame(st.finished) };
+};
 const waitFor = async (pred, timeoutMs = 45000, label = 'condition') => {
   mark({ ev: 'wait', label, timeoutMs });
   const deadline = Date.now() + timeoutMs;
@@ -66,6 +75,7 @@ try {
       out.cameraJpgReqs.push(`${rq.method()} /api/photos/P2/camera-jpg`);
     }
   });
+  const bodyReads = new Set();
   page.on('response', async (res) => {
     const u = new URL(res.url());
     const p = u.pathname;
@@ -101,8 +111,11 @@ try {
       });
     }
     if (p === `/api/photos/${m.p2}/gpu`) {
-      let body = null;
-      try { body = await res.json(); } catch { /* ignore */ }
+      // 读回应内容要再问一次浏览器：换页之前先等这些读完（步骤 7 之前），否则读不到
+      const read = res.json().catch(() => null);
+      bodyReads.add(read);
+      const body = await read;
+      bodyReads.delete(read);
       out.gpuResponses.push({ status: res.status(), body });
     }
   });
@@ -122,6 +135,18 @@ try {
       }
     },
   );
+
+  readGpuState = () =>
+    Promise.race([
+      page.evaluate(() =>
+        Promise.all([import('/assets/viewer.js'), import('/assets/gpu_stage.js')]).then(([v, gs]) =>
+          typeof gs.gpuStageStateForTests === 'function'
+            ? { at: Math.round(performance.now()), ...gs.gpuStageStateForTests(v.currentView()) }
+            : { missing: 'gpuStageStateForTests' },
+        ),
+      ),
+      sleep(5000).then(() => ({ missing: 'timeout' })),
+    ]).then(compactGpuState, (e) => ({ missing: line(e) }));
 
   const api = (path, opts) =>
     page.evaluate(
@@ -214,7 +239,7 @@ try {
   const waitCamdata = async () =>
     waitForPage(page, () => import('/assets/camdata.js').then((cd) => cd.camdataReady()), null, { timeout: 60000 });
 
-  const openPhoto = async () => {
+  const openPhoto = async (gpuLabel = 'initial GPU stage frame') => {
     await waitCamdata();
     await page.goto(`${m.base}/#/photo/${m.p2}`);
     await waitForPage(
@@ -240,7 +265,7 @@ try {
             }),
           ),
         60000,
-        'initial GPU stage frame',
+        gpuLabel,
       );
     } else {
       await waitFor(() => out.renders.some(isStageRender), 60000, 'initial stage render');
@@ -626,12 +651,47 @@ try {
     }
     await page.evaluate(() => import('/assets/gpu_pref.js').then((g) => g.setGpuPreference(true)));
     out.steps.pairFallbackStale = { leftover: !!leftover2, showedLeftover: seen2.includes(leftover2), reachedServer, samples: seen2.length };
+
+    // 7) GPU on: the first RAW request of the reopened photo fails once (503). The stage retries it and still
+    // ends on the GPU within openPhoto's 60 s wait (before the fix it stayed on server rendering).
+    // First let 6b's switch back to the GPU finish (it re-reads /gpu), so no response is cut off by the reload.
+    await waitFor(async () => {
+      const s = await viewState();
+      return s.pv === 'diptych' && s.gpuActive === 'final' && !s.busy;
+    }, 60000, 'diptych back on the GPU before the RAW step');
+    await Promise.allSettled([...bodyReads]);
+    const isRaw = (u) => u.pathname === `/api/photos/${m.p2}/raw`;
+    let served503 = 0;
+    await page.route(isRaw, async (route) => {
+      if (served503 === 0) {
+        served503 += 1;
+        await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"busy"}' });
+        return;
+      }
+      await route.fallback();
+    });
+    const rawBeforeRetry = out.rawReqs.length;
+    await page.goto(`${m.base}/`);
+    await page.waitForSelector('.top, .grid, .empty', { timeout: 90000 });
+    const tRetry = Date.now();
+    await openPhoto('GPU stage frame after a RAW request failed once');
+    out.steps.rawRetry = {
+      served503,
+      ms: Date.now() - tRetry,
+      statuses: out.rawReqs.slice(rawBeforeRetry).map((r) => r.status),
+      state: await readGpuState(),
+    };
+    await page.unroute(isRaw);
   }
 
   await page.close();
 } catch (e) {
   out.error = line(e);
-  if (/^timeout waiting for .*(stage|render)/.test(out.error)) out.renderTimeline = renderTimeline;
+  if (/^timeout waiting for .*(stage|render|GPU)/.test(out.error)) {
+    out.gpuState = await readGpuState().catch((err) => ({ missing: line(err) }));
+    mark({ ev: 'gpuState', ...(out.gpuState || {}) });
+    out.renderTimeline = renderTimeline;
+  }
 } finally {
   writeFileSync(m.out, JSON.stringify(out, null, 1));
   await browser.close();
