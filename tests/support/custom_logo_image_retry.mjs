@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { waitForPage } from './browser_wait.mjs';
 
 const [runtime, port, token, photo, pngPath] = process.argv.slice(2);
 const { launchPinnedChromium, verifyPinnedRuntime } = await import(pathToFileURL(runtime).href);
@@ -41,7 +42,8 @@ try {
   assert.equal(put.status(), 200, await put.text());
   let sawImageFailure = false;
   let allowImage = false;
-  await context.route('**/api/logos/**', async (route) => {
+  // 目录 GET /api/logos 也要经过这里（glob '**/api/logos/**' 匹配不到它），图片才会在页面重取目录后放行
+  await context.route((u) => u.pathname === '/api/logos' || u.pathname.startsWith('/api/logos/'), async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.endsWith('/image') && !allowImage) {
       sawImageFailure = true;
@@ -57,7 +59,7 @@ try {
   });
   await page.goto(`${base}/#/photo/${photo}`);
   await page.getByRole('tab', { name: '边框', exact: true }).click();
-  await page.waitForFunction(async ({ photoId, logoId }) => {
+  await waitForPage(page, async ({ photoId, logoId }) => {
     try {
       const { api } = await import('/assets/api.js');
       const edit = await api(`/api/photos/${photoId}/edit`);
@@ -67,6 +69,9 @@ try {
       return false;
     }
   }, { photoId: photo, logoId: logo.id }, { timeout: 8000 });
+  // 确认真的走了失败路径：图片先回 503，页面重取目录后才放行（路由不再匹配时这里会失败，而不是悄悄通过）
+  assert.equal(sawImageFailure, true, '标志图片请求没有被拦成 503，失败路径没有跑到');
+  assert.equal(allowImage, true, '图片失败后页面没有重取 /api/logos 目录');
   const edit = await (await context.request.get(`${base}/api/photos/${photo}/edit`)).json();
   assert.equal(edit.frame.logo, logo.id);
   assert.equal(savedEdits.some((body) => body.includes('"logo":"ricoh"') || body.includes('"logo": "ricoh"')), false);

@@ -17,7 +17,7 @@ import pytest
 
 from support.dng_writer import write_dng
 
-pytestmark = pytest.mark.browser_serial
+pytestmark = [pytest.mark.browser_serial, pytest.mark.browser_alone]
 
 REPO = Path(__file__).resolve().parents[1]
 

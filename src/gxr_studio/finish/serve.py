@@ -13,6 +13,7 @@ from PIL import Image, ImageOps
 
 from ..library.store import Library
 from ..raw.dng import RawDecodeError
+from ..render.cancel import checkpoint
 from ..render.params import EditError, EditState
 from ..render.service import NoRaw, RenderService, RenderUnavailable
 from .approx import ENABLED, apply_lut
@@ -432,9 +433,10 @@ def _stage_rgb(
     if isinstance(raw_rect, list) and len(raw_rect) == 4:
         crop_rect = (float(raw_rect[0]), float(raw_rect[1]), float(raw_rect[2]), float(raw_rect[3]))
     preset = crop_raw.get("preset") if isinstance(crop_raw, dict) else None
-    use_custom = stage == "final" and frame.style != "none" and frame.logo not in ("", "ricoh", "none")
+    use_custom = _custom_logo(stage, frame)
     logos_info = render.logos.info_map() if use_custom else None
     logo_images = render.logos.image_map(frame.logo) if use_custom else None
+    checkpoint()  # 安全点（render.cancel）：底图算完，几何、边框之前
     rgb, header = finish_array(
         rgb,
         bare_edit,
@@ -451,6 +453,7 @@ def _stage_rgb(
         logos=logos_info,
         logo_images=logo_images,
     )
+    checkpoint()
     labels["valid"] = header or ""
     labels.setdefault("label", labels.get("kind") or "original")
     labels.setdefault("text", "原图")
@@ -471,8 +474,12 @@ def render_stage(
     quality: int,
     base: str = "auto",
     track: HdrTrack | None = None,
+    cache: bool = False,
 ) -> tuple[bytes, dict[str, str]]:
-    """预览和接口用的成片 JPEG。没有编辑的相机 JPG 在全尺寸时原样返回文件字节，其余是 `render_stage_rgb` 编码一次。"""
+    """预览和接口用的成片 JPEG。没有编辑的相机 JPG 在全尺寸时原样返回文件字节，其余是 `render_stage_rgb` 编码一次。
+
+    `cache`：按 `_stage_key` 存进渲染服务的结果缓存，同一张图、同一份编辑、同一档参数再要时直接给字节（标注 `cache: hit`）。
+    出图被取消（`render.cancel`）时抛 `RenderCancelled`，不存。"""
     plan = _plan(render, lib, shot, edit, side, stage=stage, base=base)
     original = plan[0]
     if original is not None and max_edge is None:
@@ -480,8 +487,88 @@ def render_stage(
         if track is not None:
             track.begin(load_jpeg(original, None))
         return raw, _original_labels(shot, None)
+    key = None
+    if cache and track is None:
+        key = _stage_key(render, lib, shot, side, plan, stage=stage, max_edge=max_edge, quality=quality, base=base)
+    hit = render.stage_result(key) if key is not None else None
+    if hit is not None:
+        return hit[0], {**hit[1], "cache": "hit"}
     rgb, labels = _stage_rgb(render, lib, shot, side, plan, stage=stage, max_edge=max_edge, quality=quality, base=base, track=track)
-    return encode_jpeg(rgb, quality), labels  # rgb 已经按 max_edge 缩好
+    jpeg = encode_jpeg(rgb, quality)  # rgb 已经按 max_edge 缩好
+    if key is not None:
+        checkpoint()  # 取消了的图不进缓存
+        render.keep_stage_result(key, jpeg, labels)
+    return jpeg, labels
+
+
+def _custom_logo(stage: str, frame: Any) -> bool:
+    return stage == "final" and frame.style != "none" and frame.logo not in ("", "ricoh", "none")
+
+
+def _file_tokens(lib: Library, shot: dict[str, Any]) -> list[Any]:
+    """照片记录里每个文件的 (相对路径, SHA-256, 修改时间, 大小)。日期戳会用到文件时间，文件被换掉时也不会用到旧图。"""
+    raw_sources = shot.get("pair_sources")
+    sources: dict[str, Any] = raw_sources if isinstance(raw_sources, dict) else {}
+    groups = [shot.get("files"), *((src.get("all_files") if isinstance(src, dict) else None) for src in sources.values())]
+    out: list[Any] = []
+    for files in groups:
+        for rec in (files or {}).values():
+            if isinstance(rec, dict) and rec.get("relpath"):
+                try:
+                    st = lib.abspath(rec["relpath"]).stat()
+                    stat: tuple[int, int] | None = (st.st_mtime_ns, st.st_size)
+                except OSError:
+                    stat = None
+                out.append((rec["relpath"], rec.get("sha256"), stat))
+    return out
+
+
+def _stage_key(
+    render: RenderService,
+    lib: Library,
+    shot: dict[str, Any],
+    side: dict[str, Any],
+    plan: tuple[Path | None, Any, Any, EditState],
+    *,
+    stage: str,
+    max_edge: int | None,
+    quality: int,
+    base: str,
+) -> str | None:
+    """成片缓存的键：影响输出字节和响应标注的都在里面。照片记录和各文件、合并后的编辑和编辑记录、用上的默认边框与日期戳、
+    LUT 的出图标识、自定义标志、相机数据与校准包（engine_pin）、渲染引擎和应用版本、stage / 尺寸 / 品质 / 底图。
+    半格单张视图传进来的已经是那一半自己的照片记录和编辑。本机配方的内容在配方库里，键看不到，返回 None（不缓存）。
+    显卡预览开关不影响服务器出的图，不在键里。"""
+    import dataclasses
+    import hashlib
+
+    from .. import __version__
+    from ..render.service import ENGINE
+
+    original, frame, stamp, bare_edit = plan
+    if bare_edit.recipe is not None and bare_edit.recipe.kind == "local":
+        return None
+    logo = render.logos.info_map().get(frame.logo) if _custom_logo(stage, frame) else None
+    parts = {
+        "app": __version__,
+        "engine": ENGINE,
+        "data": render.data_version(),
+        "pin": render.engine_pin(),
+        "shot": shot,
+        "files": _file_tokens(lib, shot),
+        "side": side,
+        "edit": dataclasses.asdict(bare_edit),
+        "frame": dataclasses.asdict(frame),
+        "stamp": dataclasses.asdict(stamp),
+        "lut": render.luts.render_token(bare_edit.lut, persist=False) if bare_edit.lut else None,
+        "logo": dataclasses.asdict(logo) if logo is not None else None,
+        "original": str(original) if original is not None else None,
+        "stage": stage,
+        "max_edge": max_edge,
+        "quality": quality,
+        "base": base,
+    }
+    return hashlib.sha256(json.dumps(parts, sort_keys=True, separators=(",", ":"), default=repr).encode()).hexdigest()
 
 
 def export_finish(

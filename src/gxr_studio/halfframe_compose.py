@@ -28,6 +28,7 @@ from .raw.demosaic import demosaic_strips
 from .raw.dng import require_finite
 from .render import chain
 from .render.camera_recipe import recorded_recipe
+from .render.cancel import checkpoint
 from .render.params import EditError, EditState, same_recipe_entries
 from .render.tones import channel_gains, display_table
 
@@ -251,6 +252,7 @@ def render_dng_strip_full(dng: Dng, renderer: Renderer, geo: PairGeometry | None
     out = np.empty((h, g.half_w, 3), np.uint8)
     x0, x1 = g.strip_x0, g.strip_x0 + g.half_w
     for y0, strip in demosaic_strips(dng):
+        checkpoint()  # 安全点：没人等这张图了就在这里停下（render.cancel）
         sliced = strip[:, x0:x1]
         require_finite(sliced, "去马赛克结果")
         out[y0 : y0 + strip.shape[0]] = renderer.display(sliced)

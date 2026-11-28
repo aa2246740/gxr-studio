@@ -36,6 +36,7 @@ from ..lut.library import LutLibrary
 from ..raw import Renderer, half_res_codes, open_dng, orient_array
 from ..recipes import RecipeError, RecipeRepository
 from . import chain
+from .cancel import checkpoint
 from .params import EditState, RecipeSel
 from .recipes import CameraData, Menu, unit_of_lens
 from .tones import channel_gains, display_table
@@ -185,7 +186,7 @@ class RenderService:
         self._look_labels: dict[tuple[Any, Any, Any], str | None] = {}
         self._proxies: ByteLRU[np.ndarray] = ByteLRU(proxy_bytes)
         self._bakes: ByteLRU[chain.ChromaBake] = ByteLRU(64 << 20)
-        self._results: ByteLRU[tuple[bytes, int, int]] = ByteLRU(result_bytes)
+        self._results: ByteLRU[tuple[Any, ...]] = ByteLRU(result_bytes)  # 预览 (jpeg, 宽, 高)；成片 (jpeg, 标注)，见 stage_result
         self._approx: dict[tuple[Any, ...], np.ndarray] = {}
         self._warmed: set[tuple[Any, ...]] = set()
         self.stats = {"decodes": 0, "bakes": 0, "renders": 0, "result_hits": 0}
@@ -511,6 +512,17 @@ class RenderService:
         }
         return hashlib.sha256(json.dumps(parts, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
+    def stage_result(self, key: str) -> tuple[bytes, dict[str, str]] | None:
+        """成片缓存（`finish.serve.render_stage(cache=True)`）。和预览结果同一个按字节限额的 LRU，换相机数据时一起清空。"""
+        hit = self._results.get(("stage", key))
+        if hit is None:
+            return None
+        self.stats["result_hits"] += 1
+        return hit[0], dict(hit[1])
+
+    def keep_stage_result(self, key: str, jpeg: bytes, labels: dict[str, str]) -> None:
+        self._results.put(("stage", key), (jpeg, dict(labels)), len(jpeg))
+
     # ---- 预览 -------------------------------------------------------------
     def render_preview(
         self,
@@ -580,11 +592,13 @@ class RenderService:
             model = plan.model or self.model(plan.model_iso, plan.unit)
 
             def display(codes: np.ndarray) -> np.ndarray:
+                checkpoint()  # 条带之间的安全点（render.cancel）；导出没有登记取消条件，这里什么都不做
                 return chain.exact_u8(model, plan.entry, codes, gains, table)
         else:
             bk = chain.bake_chroma(plan.model or self.model(plan.model_iso, plan.unit), plan.entry, EXPORT_STEP)
 
             def display(codes: np.ndarray) -> np.ndarray:
+                checkpoint()
                 return chain.chroma_u8(codes, bk, gains, table)
 
         desc = (
