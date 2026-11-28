@@ -21,7 +21,7 @@ OFFENDER = re.compile(
     r"^\s*async\b"  # async () => … / async function
     r"|\bawait\b"
     r"|\bimport\s*\("
-    r"|\.then\s*\("
+    r"|\.\s*then\s*\("
     r"|\bnew\s+Promise\b"
     r"|\bPromise\s*\.\s*(?:resolve|reject|all|allSettled|any|race)\b"
 )
@@ -133,7 +133,7 @@ def _definition(src: str, name: str) -> str | None:
 
 
 def driver_files() -> list[Path]:
-    files = [*TESTS.rglob("*.mjs"), *TESTS.rglob("*.js"), *TESTS.glob("test_*.py")]
+    files = [*TESTS.rglob("*.mjs"), *TESTS.rglob("*.js"), *TESTS.rglob("test_*.py")]
     return sorted(p for p in files if p.name != Path(__file__).name and "node_modules" not in p.parts)
 
 
@@ -174,12 +174,13 @@ def test_scanner_flags_promise_predicates(tmp_path: Path) -> None:
                 "const sync = () => !!window.done;",
                 "await page.waitForFunction(sync);",
                 "await waitForPage(page, () => import('/a.js').then((m) => m.ok()));",
+                "await page.waitForFunction(() => window.ready.\n  then((v) => v));",  # 18
             ]
         ),
         encoding="utf-8",
     )
     lines = [int(o.rsplit(":", 1)[1]) for o in offenders([js], tmp_path)]
-    assert lines == [1, 2, 3, 5, 6, 7, 8]
+    assert lines == [1, 2, 3, 5, 6, 7, 8, 18]
 
 
 def test_no_driver_wait_returns_a_promise() -> None:
