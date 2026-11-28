@@ -174,8 +174,8 @@ h1, h2, p { margin: 0; }
 .start .cta { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
 .start-status { text-align: center; color: var(--accent-text); font: 500 13px/18px var(--font-ui); }
 .start-err { text-align: center; }
-.pick-row { display: flex; gap: 10px; } .pick-row .btn { flex: 1 1 0; min-width: 0; } /* 电脑上「选照片」「选文件夹」并排，下面一行小字 */
-.folder-note { margin-top: -4px; text-align: center; color: var(--text-3); font-size: 12px; line-height: 16px; }
+.pick-row { display: flex; gap: 10px; } .pick-row .btn { flex: 1 1 0; min-width: 0; } /* 电脑上「选照片」「选文件夹」并排，下面一行小字 */ .folder-note { margin-top: -6px; text-align: center; color: var(--text-3); font-size: 12px; line-height: 16px; }
+@media (max-height: 640px) { .pick-row .btn { min-height: 46px; } .folder-note { line-height: 14px; } } /* 矮窗口（900×590）首屏不出滚动条 */
 .help { display: flex; justify-content: center; }
 
 .gscroll { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; }
