@@ -75,6 +75,7 @@ try {
       out.cameraJpgReqs.push(`${rq.method()} /api/photos/P2/camera-jpg`);
     }
   });
+  const bodyReads = new Set();
   page.on('response', async (res) => {
     const u = new URL(res.url());
     const p = u.pathname;
@@ -110,8 +111,11 @@ try {
       });
     }
     if (p === `/api/photos/${m.p2}/gpu`) {
-      let body = null;
-      try { body = await res.json(); } catch { /* ignore */ }
+      // 读回应内容要再问一次浏览器：换页之前先等这些读完（步骤 7 之前），否则读不到
+      const read = res.json().catch(() => null);
+      bodyReads.add(read);
+      const body = await read;
+      bodyReads.delete(read);
       out.gpuResponses.push({ status: res.status(), body });
     }
   });
@@ -650,6 +654,12 @@ try {
 
     // 7) GPU on: the first RAW request of the reopened photo fails once (503). The stage retries it and still
     // ends on the GPU within openPhoto's 60 s wait (before the fix it stayed on server rendering).
+    // First let 6b's switch back to the GPU finish (it re-reads /gpu), so no response is cut off by the reload.
+    await waitFor(async () => {
+      const s = await viewState();
+      return s.pv === 'diptych' && s.gpuActive === 'final' && !s.busy;
+    }, 60000, 'diptych back on the GPU before the RAW step');
+    await Promise.allSettled([...bodyReads]);
     const isRaw = (u) => u.pathname === `/api/photos/${m.p2}/raw`;
     let served503 = 0;
     await page.route(isRaw, async (route) => {
