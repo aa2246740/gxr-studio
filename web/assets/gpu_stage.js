@@ -640,7 +640,10 @@ export async function lookThumb(view, ctx, recipe, edge, still = () => true) {
     try {
       await Promise.all(loads);
     } catch {
-      return still() ? null : 'wait';
+      if (!still()) return 'wait';
+      // 下载比卡片慢、在等的时候失败了：舞台已经排上重试，卡片也等，不掉到服务器小图上（那张会占住这张卡片的缓存）
+      if (rawRetry && rawRetry.key === sKey) return 'wait';
+      return null;
     }
   }
   const meta = bakeMeta.get(url);

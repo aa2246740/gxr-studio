@@ -152,6 +152,13 @@ def test_a_raw_download_that_fails_twice_stays_on_the_server_until_the_photo_is_
     assert out["reopen"] == "gpu" and out["rawFetchesAfterReopen"] == 3, out  # 重新打开：再走一次显卡
 
 
+def test_a_card_waiting_on_the_same_raw_download_waits_for_the_retry(tmp_path):
+    out = run(tmp_path, "raw-retry-card-inflight")
+    # 下载比卡片结算还晚失败：已经在等的卡片也等重试（wait），不能拿 null 去画服务器小图、占住这张卡片的缓存
+    assert out["cardInflight"] == "wait" and out["retry"] == "pending", out
+    assert out["stageAfter"] == "gpu" and out["cardAfter"] == {"w": 2}, out
+
+
 def test_a_raw_that_the_server_refuses_is_not_retried(tmp_path):
     out = run(tmp_path, "raw-retry-404")
     assert out["first"] == "server" and out["during"]["timers"] == 0 and out["during"]["state"]["rawRetry"] is None, out

@@ -219,6 +219,30 @@ if (scenario === 'camera-jpg-label') {
   still = true; // 松手
   out.afterRelease = await gs.lookThumb(view, ctxFor(REC2), REC2, 300, () => still);
   out.thumbsAfterRelease = thumbs();
+} else if (scenario === 'raw-retry-card-inflight') {
+  // 舞台和一张配方卡片在等同一次 RAW 下载；下载比卡片结算还晚失败：卡片也要等重试，不能拿 null 去画服务器小图（review r1 P1）
+  let held = true;
+  routes.raw = () => (held ? hold('raw') : okBody({}));
+  routes.bake = () => okBody(bakeHeader('K1'));
+  const view = makeView();
+  // 舞台先走到下 RAW 那一步（像 settle 一样反复 route，直到 RAW 请求挂起、引擎已起）
+  // rerun 像编辑器那样同步再走一遍 route：下载失败时舞台马上排上重试
+  const rerun = () => { gs.route(view, ctxFor(REC), rerun); };
+  for (let i = 0; i < 30 && !(deferred.get('raw')?.length && gs.gpuStageStateForTests?.(view)?.engine); i++) {
+    gs.route(view, ctxFor(REC), rerun);
+    await flush();
+  }
+  const REC2 = { kind: 'builtin', unit: 'jlaunch', slot: 2, levels: {} };
+  const card = gs.lookThumb(view, ctxFor(REC2), REC2, 300, () => true); // 卡片在等同一次下载
+  await flush();
+  held = false;
+  for (const d of deferred.get('raw') || []) d.resolve(fail(503));
+  out.cardInflight = await card;
+  out.retry = gs.gpuStageStateForTests?.(view)?.rawRetry ?? null;
+  fireTimers();
+  out.stageAfter = await settle(view, ctxFor(REC));
+  const after = await gs.lookThumb(view, ctxFor(REC2), REC2, 300, () => true);
+  out.cardAfter = after && typeof after === 'object' ? { w: after.w } : after;
 } else if (scenario.startsWith('raw-retry')) {
   // RAW 源图下载失败：等一秒再试一次（不马上退回服务器）；再失败才退回，重新打开这张照片时重来
   let fails = scenario === 'raw-retry-twice' ? 2 : scenario === 'raw-retry-404' ? 99 : 1;
