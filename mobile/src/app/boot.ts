@@ -121,7 +121,8 @@ class App implements AppApi {
     private readonly perfOn: boolean,
     private readonly pageErrors: string[],
   ) {
-    watchViewportLayout(shell, () => {}); // data-layout 跟着窗口走，图库和开始页上也一样（不只编辑器里）
+    // data-layout 跟着窗口走，图库和开始页上也一样（不只编辑器里）；跨过手机/iPad 时预烘焙按新的第一屏重排。
+    watchViewportLayout(shell, () => this.prebake.wake());
   }
 
   /** DNG 开头 256 KiB（拍摄配方标签、预烘焙要的镜头名）：交给读整份 DNG 的那个 Worker。 */

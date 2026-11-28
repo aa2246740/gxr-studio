@@ -1,11 +1,11 @@
 import { formatDay, groupByGap, groupCount, layoutRows, visibleRange, type GapMinutes, type TimeGroup, type VRow } from '../lib/group';
-import { cardHelpTitle, saveWord } from '../lib/device';
+import { cardHelpTitle } from '../lib/device';
 import { calibDetail } from './calib_ui';
 import { FOLDER_PICK_LABEL, FOLDER_PICK_NOTE, pickFolder } from './file_drop';
 import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
 import { button, el, icon } from './dom';
 import { isComputer } from '../lib/save_mode';
-import { fillCell } from './grid_cell';
+import { cardText, fillCell, rovingTabs } from './grid_cell';
 import { arrowTarget, gridOrder, rangeBetween, rowBox } from './grid_nav';
 import { modKey, setGridMode, type GridMode } from './keys';
 import { classifyLayout, gridColumns, isIpadLayout, viewportDims } from './layout';
@@ -49,6 +49,7 @@ export class GridView {
   private onResize: (() => void) | null = null;
   /** Shift 点选一段的起点：选择模式里上一次点的那张。 */
   private anchor: string | null = null;
+  private tabStop: string | null = null; // 电脑上 Tab 进网格时落在哪一张（上次有焦点的那张，rovingTabs）
   private readonly mode: GridMode = { active: () => this.selecting && !!this.scroller?.isConnected, leave: () => this.toggleSelect(false), selectAll: () => this.selectAll() };
   private readonly host: HTMLElement;
   private readonly api: AppApi;
@@ -200,6 +201,11 @@ export class GridView {
       { passive: true },
     );
     this.scroller.addEventListener('keydown', (ev) => this.onArrow(ev));
+    this.scroller.addEventListener('focusin', (ev) => {
+      // 格子拿到焦点（方向键、点、从编辑器回来）：电脑上下次 Tab 进网格就落在这一张。
+      this.tabStop = (ev.target instanceof HTMLElement ? ev.target.closest<HTMLElement>('.cell')?.dataset.id : undefined) ?? this.tabStop;
+      rovingTabs(this.cellNodes, this.tabStop);
+    });
     this.scroller.addEventListener('pointerup', () => this.api.watch('scroll', false));
     this.scroller.addEventListener('pointercancel', () => this.api.watch('scroll', false));
 
@@ -361,6 +367,7 @@ export class GridView {
       this.paint();
       this.paintHeads();
     }
+    rovingTabs(this.cellNodes, this.tabStop);
     this.scroller.classList.toggle('sel', this.selecting);
   }
 
@@ -680,7 +687,7 @@ export class GridView {
       el('p', 'ready', ''),
       el('p', 'missing', ''),
     );
-    this.cardText(sheet, ready, missing);
+    cardText(sheet, ready, missing);
     const acts = el('div', 'acts');
     acts.classList.add('col');
     const again = button('btn primary lg', '重新选照片');
@@ -695,16 +702,9 @@ export class GridView {
     return sheet;
   }
 
-  private cardText(sheet: HTMLElement, ready: number, missing: number): void {
-    const first = sheet.querySelector('p.ready');
-    const second = sheet.querySelector('p.missing');
-    if (first) first.textContent = `已经读进来的 ${ready} 张照片不受影响，可以接着换配方、${saveWord()}。`;
-    if (second) second.textContent = `还有 ${missing} 张没读完。把卡插回去，再点「重新选照片」，选同样的照片；做过的设置会保留。`;
-  }
-
   /** 拔卡提示还开着就改上面的数字；已经关掉的不重新打开。 */
   updateCard(ready: number, missing: number): void {
-    if (this.sheet?.dataset.state === 'card-removed' && this.sheet.isConnected) this.cardText(this.sheet, ready, missing);
+    if (this.sheet?.dataset.state === 'card-removed' && this.sheet.isConnected) cardText(this.sheet, ready, missing);
   }
 
   private menu(): void {

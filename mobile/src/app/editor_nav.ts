@@ -39,6 +39,13 @@ async function photoCopyright(photo: Photo): Promise<string | null> {
 }
 
 /** 当前照片生效的配方名（用于编辑器顶栏与照片信息；绝不返回文件名）。 */
+/** 编辑器顶栏的名字：配方，叠了 LUT 时是「配方 + LUT 名」（P3-18）。半格双联不在这里（顶栏写「半格」）。 */
+export function editorTitle(api: AppApi, photo: Photo): string {
+  const recipe = currentRecipeLabel(api, photo);
+  const lut = photo.lut ? api.lutBook().get(photo.lut) : undefined;
+  return lut ? `${recipe} + ${lut.name}` : recipe;
+}
+
 export function currentRecipeLabel(api: AppApi, photo: Photo): string {
   if (photo.diptych) return '半格双联';
   if (!photo.dng) return '相机 JPG';
@@ -283,7 +290,7 @@ export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, in
   // 半格双联：顶栏和图库角标一样写「半格」，悬停和读屏说清按相机拼好的双联图调整、没有 HDR（Import P3-3）。
   const recipeEl = el('b');
   const syncHead = () => {
-    recipeEl.textContent = photo.diptych ? DIPTYCH_BADGE : currentRecipeLabel(api, photo);
+    recipeEl.textContent = photo.diptych ? DIPTYCH_BADGE : editorTitle(api, photo);
     if (photo.diptych) {
       recipeEl.title = DIPTYCH_NOTE;
       recipeEl.setAttribute('role', 'img'); // 普通的 <b> 上 aria-label 会被读屏丢掉，标成 img 才把这句当名字
