@@ -4,7 +4,7 @@
 进程数来自环境变量 GXR_LOADGATE 指向的 loadgate.py（workers()，最多 6）。
 没设置或文件不存在时，改用 min(cpu_count - 1, 4)，至少 1。公共仓库不写死私有路径。
 收集只做一次。子进程只跑计划里的 node id，不再继承位置参数、-m 和 -k。
-标了 browser_serial 的用例在计算分片结束之后单独串行，不拿锁。
+标了 browser_serial 的用例在计算分片结束之后单独串行，不拿锁；GXR_BROWSER_LANES=2 时分两道，browser_alone 最后单独跑。
 exclusive 仍串行，并且用 lockf 拿 /tmp/gxr-heavy.lock。开始前和每个用例之前先等机器安静；
 只有墙钟预算（SpeedBudgetExceeded）没过的用例，安静后再跑一次，以第二次为准（run_tests_quiet.py）。
 JUnit 和覆盖率报告由父进程按合并后的数据写出。门槛 85。
@@ -30,7 +30,7 @@ from pathlib import Path
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
-from run_tests_plan import STOP_ENV, browser_plan, final_status, halted, shard_plan, stop_on_failure  # noqa: E402
+from run_tests_plan import STOP_ENV, browser_lanes, browser_plan, final_status, halted, lane_plan, shard_plan, stop_on_failure  # noqa: E402
 from run_tests_quiet import BUDGET_ENV, exclusive_plugin, load_gate, make_gate, run_exclusive  # noqa: E402
 from run_tests_report import combine_coverage, merge_junit  # noqa: E402
 
@@ -118,6 +118,8 @@ _SELECTION = {"-k", "--keyword", "-m", "--markexpr", "--deselect"}
 _SELECTION_EQ = ("-k=", "--keyword=", "-m=", "--markexpr=", "--deselect=")
 
 _shutdown: int | None = None
+_Paths = list[Path]
+_Codes = list[int]
 _gate_module: object | None = None
 _children: list[Running] = []
 
@@ -301,7 +303,7 @@ def collect_ids_main(args: list[str]) -> int:
                 if item.get_closest_marker("exclusive") is not None:
                     kind = "exclusive"
                 elif item.get_closest_marker("browser_serial") is not None:
-                    kind = "browser"
+                    kind = "alone" if item.get_closest_marker("browser_alone") is not None else "browser"
                 else:
                     kind = "normal"
                 print(f"NODEID {kind} {item.nodeid}", flush=True)
@@ -353,7 +355,7 @@ def _parse_plan(stdout: str) -> list[Planned]:
         if not line.startswith("NODEID "):
             continue
         kind, nodeid = line[len("NODEID ") :].split(" ", 1)
-        if kind not in {"normal", "exclusive", "browser"}:
+        if kind not in {"normal", "exclusive", "browser", "alone"}:
             raise SystemExit(f"不认识的收集标记：{line}")
         planned.append(Planned(nodeid, kind))
     return planned
@@ -526,19 +528,20 @@ def _collect(env: dict[str, str]) -> list[Planned]:
     return planned
 
 
-def _partition(planned: list[Planned]) -> tuple[list[str], list[str], list[str]]:
+def _partition(planned: list[Planned]) -> tuple[list[str], list[str], list[str], list[str]]:
     node_ids = [item.nodeid for item in planned]
     if len(node_ids) != len(set(node_ids)):
         print("收集到了重复的 node id。", flush=True)
         raise SystemExit(2)
     exclusive = [item.nodeid for item in planned if item.kind == "exclusive"]
-    browser = [item.nodeid for item in planned if item.kind == "browser"]
+    browser = [item.nodeid for item in planned if item.kind in {"browser", "alone"}]  # 一道时 alone 照原来的顺序跑
+    alone = [item.nodeid for item in planned if item.kind == "alone"]
     normal = [item.nodeid for item in planned if item.kind == "normal"]
     print(
         f"collected {len(planned)}; exclusive {len(exclusive)}; browser {len(browser)}; parallel {len(normal)}; node-id sets match",
         flush=True,
     )
-    return normal, browser, exclusive
+    return normal, browser, exclusive, alone
 
 
 def _child_env(base: dict[str, str], directory: Path, coverage_file: Path) -> dict[str, str]:
@@ -686,6 +689,21 @@ def _exclusive(work: Path, ids: list[str], env: dict[str, str], junit: list[Path
     return run_exclusive(make_gate(_gate_module, stopped=lambda: _shutdown is not None), work, ids, launch, _nap, _stopped)
 
 
+def _browser(work: Path, ids: list[str], alone: list[str], cpus: int, env: dict[str, str], junit: _Paths, cov: _Paths, stop: bool) -> _Codes:
+    """一道时照原来串行；GXR_BROWSER_LANES=2 时分道并行，browser_alone 等各道跑完再单独跑（见 run_tests_plan）。"""
+    halt = ("-x",) if stop else ()
+    if (lanes := browser_lanes(os.environ, cpus)) < 2:
+        print(f"浏览器阶段：串行，不拿锁，{len(ids)} 个用例。", flush=True)
+        return [_launch_ids("browser", work, browser_plan(ids, ROOT, os.environ), env, junit, cov, extra=halt)]
+    plans, solo = lane_plan(ids, alone, lanes, ROOT, os.environ)
+    print(f"浏览器阶段：{len(plans)} 道并行，不拿锁，{len(ids) - len(solo)} 个用例；之后单独阶段 {len(solo)} 个。", flush=True)
+    codes = _wait_all([_start_stage(f"browser-lane-{n}", work, plan, env, junit, cov, extra=halt) for n, plan in enumerate(plans)], stop)
+    if solo and _stopped() is None and not halted(stop, codes, "浏览器单独阶段"):
+        print(f"浏览器单独阶段：串行，{len(solo)} 个用例。", flush=True)
+        codes.append(_launch_ids("browser-alone", work, solo, env, junit, cov, extra=halt))
+    return codes
+
+
 def _run(parsed: Addopts) -> int:
     workers = decide_workers()
     if workers is None:
@@ -698,7 +716,7 @@ def _run(parsed: Addopts) -> int:
     child_env["PYTEST_ADDOPTS"] = shlex.join(parsed.kept)
     collect_env = dict(child_env)
     collect_env["PYTEST_ADDOPTS"] = shlex.join([*parsed.kept, *parsed.selection])
-    normal, browser, exclusive = _partition(_collect(collect_env))
+    normal, browser, exclusive, alone = _partition(_collect(collect_env))
     if (stopped := _stopped()) is not None:
         return stopped
     lock: list[str] | None = None
@@ -728,9 +746,7 @@ def _run(parsed: Addopts) -> int:
     if not browser:
         print("没有浏览器阶段。", flush=True)
     elif not halted(stop, codes, "浏览器阶段"):
-        print(f"浏览器阶段：串行，不拿锁，{len(browser)} 个用例。", flush=True)
-        ordered = browser_plan(browser, ROOT, os.environ)
-        codes.append(_launch_ids("browser", work, ordered, child_env, junit_parts, coverage_files, extra=halt))
+        codes.extend(_browser(work, browser, alone, workers, child_env, junit_parts, coverage_files, stop))
     if (stopped := _stopped()) is not None:
         return stopped
     if not exclusive:

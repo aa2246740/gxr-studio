@@ -9,6 +9,9 @@
   其他分片，后面的阶段不再开始。exclusive 阶段从不带 -x，它的速度重试要看到每个用例的结果。
 - GXR_CHANGED_TESTS：用 os.pathsep 隔开的测试文件路径。这些文件在各自的分片里、在浏览器阶段里先跑，
   其余的顺序不变。
+- GXR_BROWSER_LANES=2：浏览器阶段分 min(2, 计算分片的进程数) 道并行，按同样的用时分道，一个文件的用例
+  留在同一道里。标了 browser_alone 的用例等各道都跑完，再单独串行跑。没设或 1 时照原来一道串行；
+  别的值打印一行，按一道跑。
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from pathlib import Path
 TIMES_ENV = "GXR_TEST_TIMES_JUNIT"
 STOP_ENV = "GXR_STOP_ON_FAILURE"
 CHANGED_ENV = "GXR_CHANGED_TESTS"
+LANES_ENV = "GXR_BROWSER_LANES"
 
 
 def _file_of(node_id: str) -> str:
@@ -112,11 +116,17 @@ def check_union(plans: list[list[str]], node_ids: list[str]) -> None:
         raise SystemExit(2)
 
 
-def shard_plan(node_ids: list[str], workers: int, root: Path, env: Mapping[str, str]) -> list[list[str]]:
+def _grouped(node_ids: list[str]) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}
     for node_id in node_ids:
         grouped.setdefault(_file_of(node_id), []).append(node_id)
-    weights = file_weights(grouped, env)
+    return grouped
+
+
+def _balance(
+    grouped: Mapping[str, list[str]], weights: Mapping[str, float] | None, workers: int, root: Path, env: Mapping[str, str]
+) -> list[tuple[list[str], float]]:
+    """文件长的先放，放进当前合计最小的那份；没有用时就按用例数。返回非空的各份和它们的合计。"""
     commands: list[list[str]] = [[] for _ in range(workers)]
     sizes = [0.0 for _ in range(workers)]
     order = sorted(grouped) if weights is None else sorted(grouped, key=lambda path: (-weights[path], path))
@@ -125,7 +135,13 @@ def shard_plan(node_ids: list[str], workers: int, root: Path, env: Mapping[str, 
         items = sorted(grouped[path])
         sizes[slot] += len(items) if weights is None else weights[path]
         commands[slot].extend(items)
-    planned = [(changed_first(cmd, root, env), size) for cmd, size in zip(commands, sizes, strict=True) if cmd]
+    return [(changed_first(cmd, root, env), size) for cmd, size in zip(commands, sizes, strict=True) if cmd]
+
+
+def shard_plan(node_ids: list[str], workers: int, root: Path, env: Mapping[str, str]) -> list[list[str]]:
+    grouped = _grouped(node_ids)
+    weights = file_weights(grouped, env)
+    planned = _balance(grouped, weights, workers, root, env)
     shards = [cmd for cmd, _size in planned]
     check_union(shards, node_ids)
     counts = ", ".join(str(len(cmd)) for cmd in shards)
@@ -140,6 +156,44 @@ def browser_plan(node_ids: list[str], root: Path, env: Mapping[str, str]) -> lis
     ordered = changed_first(node_ids, root, env)
     check_union([ordered], node_ids)
     return ordered
+
+
+def browser_lanes(env: Mapping[str, str], workers: int) -> int:
+    """浏览器阶段分几道。只有 GXR_BROWSER_LANES=2 才分，道数不超过计算分片的进程数。"""
+    raw = env.get(LANES_ENV, "").strip()
+    if raw in {"", "1"}:
+        return 1
+    if raw != "2":
+        print(f"{LANES_ENV}={raw!r} 不认识（只认 1 和 2），浏览器阶段照原来一道串行。", flush=True)
+        return 1
+    lanes = min(2, workers)
+    print(f"{LANES_ENV}=2：浏览器阶段分 {lanes} 道（min(2, 计算分片的进程数 {workers})）。", flush=True)
+    return lanes
+
+
+def lane_plan(node_ids: list[str], alone: list[str], lanes: int, root: Path, env: Mapping[str, str]) -> tuple[list[list[str]], list[str]]:
+    """非 browser_alone 的浏览器用例按用时分 lanes 道，browser_alone 的按收集顺序留给最后单独跑。
+
+    一个文件里的用例要么都在同一道，要么（标了 browser_alone 的那几个）在单独阶段。
+    文件只有一部分标了 browser_alone 时，用时按用例数比例拆开估计。
+    """
+    solo_ids = set(alone)
+    grouped = _grouped(node_ids)
+    weights = file_weights(grouped, env)
+    rest = _grouped([node_id for node_id in node_ids if node_id not in solo_ids])
+    rest_weights = None if weights is None else {path: weights[path] * len(ids) / len(grouped[path]) for path, ids in rest.items()}
+    planned = _balance(rest, rest_weights, lanes, root, env)
+    solo = changed_first([node_id for node_id in node_ids if node_id in solo_ids], root, env)
+    plans = [cmd for cmd, _size in planned]
+    check_union([*plans, solo], node_ids)
+    if weights is None or rest_weights is None:
+        sizes = ", ".join(f"lane-{index} {len(cmd)} 个" for index, cmd in enumerate(plans))
+        print(f"浏览器分道（没有用时数据，按用例数）：{sizes}；单独阶段 {len(solo)} 个。", flush=True)
+    else:
+        solo_s = sum(weights[path] - rest_weights.get(path, 0.0) for path in grouped)
+        minutes = ", ".join(f"lane-{index} {size / 60:.1f}" for index, (_cmd, size) in enumerate(planned))
+        print(f"浏览器分道计划用时（分钟）：{minutes}；单独阶段 {solo_s / 60:.1f}（{len(solo)} 个用例）。", flush=True)
+    return plans, solo
 
 
 def stop_on_failure(env: Mapping[str, str]) -> bool:
