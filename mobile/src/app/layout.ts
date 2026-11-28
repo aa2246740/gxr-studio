@@ -127,7 +127,7 @@ export interface CellLabelInfo {
 export const DIPTYCH_BADGE = '半格';
 export const DIPTYCH_NOTE = '半格：按相机拼好的双联图调整，没有 HDR';
 
-/** 图库缩略图按钮的无障碍名称（仅含序号、类型与状态，绝不含文件名或拍摄时间）。 */
+/** 图库缩略图按钮的无障碍名称：序号、类型与状态，不含拍摄时间，也不含文件名；同名另外留下的那张由 labelCopy（new_photo.ts）在后面补上「名字 (N)」，好和原来那张分开。 */
 export function cellAriaLabel(pos: number | undefined, info: CellLabelInfo, edited: boolean, selected: boolean): string {
   const parts: string[] = [pos ? `第 ${pos} 张` : '照片'];
   if (info.diptych) parts.push(DIPTYCH_NOTE);
