@@ -28,7 +28,7 @@ from conftest import REAL_HOME
 from support.dng_writer import write_dng
 from test_mobile_ui_browser import MODULES, PKG, RUNTIME, _need
 
-pytestmark = pytest.mark.browser_serial
+pytestmark = [pytest.mark.browser_serial, pytest.mark.browser_alone]
 
 REPO = Path(__file__).resolve().parents[1]
 DIST = REPO / "mobile" / "dist"

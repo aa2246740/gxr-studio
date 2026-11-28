@@ -22,7 +22,7 @@ from test_g250 import _need_g185_or_g250
 from test_mobile_camera_recipe_browser import _card250_pair, _prereq
 from test_mobile_ui_browser import RUNTIME, _need
 
-pytestmark = pytest.mark.browser_serial
+pytestmark = [pytest.mark.browser_serial, pytest.mark.browser_alone]
 
 REPO = Path(__file__).resolve().parents[1]
 DIST = Path(os.environ.get("GXR_DESKTOP_LAYOUT_DIST", "") or REPO / "mobile" / "dist")
