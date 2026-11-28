@@ -39,7 +39,7 @@ import { ExportDetailsSheet } from './export_sheet';
 import { cachedFontPack, ensureFontPack, replaceFontBytesForDev } from './font_loader';
 import { logoStore } from './logo_store';
 import type { LutBook } from './lut_book';
-import { ensureCameraRecipes, needsCameraRecipe, type Photo } from './model';
+import { copyFileName, ensureCameraRecipes, needsCameraRecipe, photoName, type Photo } from './model';
 import './export.css';
 
 export { cardsFor, requestPhoto };
@@ -196,7 +196,8 @@ export class ExportFlow {
     if (this.dock) this.mountDock(); else this.clearSlotFlag();
     this.syncSave();
   }
-  private syncSave(): void { syncExportSaveButton(this.shell, this.dock, (s) => this.queue.photoExportState(this.app.photos().find((p) => p.stem === s)?.id ?? '', this.batch)); }
+  private syncSave(): void { // 编辑器顶栏记着这张的 id（同名的两张 stem 一样）；没有再按 stem 找
+    syncExportSaveButton(this.shell, this.dock, (s) => this.queue.photoExportState(this.shell.querySelector<HTMLElement>('.screen.editor .nav')?.dataset.photoId ?? this.app.photos().find((p) => p.stem === s)?.id ?? '', this.batch)); }
 
   /** 现在还没撤销的对象 URL 有几个（开发服务器的测试读）。 */
   liveUrls(): number {
@@ -262,7 +263,7 @@ export class ExportFlow {
       const item = batch.item(s.id);
       return {
         id: s.id,
-        stem: item?.stem ?? s.id,
+        stem: photoName({ stem: item?.stem ?? s.id, copy: this.app.photo(basePhotoId(s.id))?.copy }),
         file: s.file,
         position: this.positionOf(s.id),
         hdrRequested: Boolean(item?.req.hdr),
@@ -329,7 +330,7 @@ export class ExportFlow {
       session: () => this.app.session(),
       photo: (id) => {
         const p = this.app.photo(id);
-        return p ? { version: p.version, dng: p.dng, jpg: p.jpg } : null;
+        return p ? { version: p.version, dng: p.dng, jpg: p.jpg, copy: p.copy } : null;
       },
       markGone: (id, version) => this.app.markGone(id, version),
       busy: (on) => this.busy(on),
@@ -395,6 +396,7 @@ export class ExportFlow {
     const inkTrap = import.meta.env.DEV && d?.inkTrapAt === index;
     const canvasReport = import.meta.env.DEV && d?.canvasReportPrefix ? `${d.canvasReportPrefix}-${index}` : undefined;
     const forceCanvas = import.meta.env.DEV && d?.forceCanvas === true;
+    const copy = this.app.photo(item.sourcePhotoId ?? basePhotoId(item.id))?.copy; // 同名另外留下的那张：成片叫「名字 (2)_gxr.jpg」，不和第一份撞名
     return this.core.run({
       dng: item.dng,
       jpg: item.jpg,
@@ -405,7 +407,7 @@ export class ExportFlow {
       ...(inkTrap ? { devInkTrap: true } : {}),
       ...(canvasReport ? { devCanvasReport: canvasReport } : {}),
       ...(canvasReport && forceCanvas ? { devForceCanvas: true } : {}),
-    });
+    }).then((r) => (r.ok && copy && typeof r.result.file_name === 'string' ? { ...r, result: { ...r.result, file_name: copyFileName(r.result.file_name, item.stem, copy) } } : r));
   }
 
   private busy(on: boolean): void {
