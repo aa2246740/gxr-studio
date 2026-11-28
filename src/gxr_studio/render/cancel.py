@@ -99,10 +99,6 @@ class Flights:
         self._lock = threading.Lock()
         self._flights: dict[str, _Flight] = {}
 
-    def running(self) -> int:
-        with self._lock:
-            return len(self._flights)
-
     def run(self, key: str, work: Callable[[], Any]) -> tuple[Any, bool]:
         with self._lock:
             flight = self._flights.get(key)
