@@ -13,7 +13,7 @@ import { NOTHING_COPIED, ONLY_SOURCE } from '../lib/paste_text';
 import { button, el, icon, ICON } from './dom';
 import { arrowsOwned, sheetOpen } from './keys';
 import { openExportOptions } from './export_ui';
-import { onCameraRecipe, photoMs, type AppApi, type Photo } from './model';
+import { nameOf, onCameraRecipe, photoMs, photoName, type AppApi, type Photo } from './model';
 import { openOffImageSheet } from './off_image_sheet';
 import { closePasteSheets, groupBody, groupsNow, openConfirm, openCopySheet, overlay } from './paste_ui';
 import { groupsAnd, groupsText, pasteState, rangeOf } from './paste_state';
@@ -89,6 +89,7 @@ export function openPhotoInfoSheet(host: HTMLElement, api: AppApi, photo: Photo)
     ['格式', format],
     ['当前配方', currentRecipeLabel(api, photo)],
   ];
+  if (photo.copy) rows[0][1] += ` (${photo.copy})`; // 同名另外留下的那张：文件名后面加「(2)」
   const tailRows: Array<[string, string]> = [];
   if (photo.frame) tailRows.push(['尺寸', `${photo.frame.width} × ${photo.frame.height}`]);
   if (meta.lens) tailRows.push(['镜头', meta.lens]);
@@ -172,7 +173,7 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
       [
         'more-paste',
         '粘贴',
-        `来自 ${clip.from.stem} · ${groupsText(clip.groups)}`,
+        `来自 ${nameOf(api, clip.from)} · ${groupsText(clip.groups)}`,
         () => {
           const current = pasteState.clip;
           if (!current) {
@@ -186,7 +187,7 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
           }
           openConfirm(host, api, {
             title: '套用到这张？',
-            body: `这张会换成 ${current.from.stem} 的${groupsAnd(current.groups)}。别的设置不变。`,
+            body: `这张会换成 ${nameOf(api, current.from)} 的${groupsAnd(current.groups)}。别的设置不变。`,
             targets,
             range: rangeOf(targets),
             afterApply: () => undefined,
@@ -213,7 +214,7 @@ export function openEditorMoreSheet(host: HTMLElement, api: AppApi, photo: Photo
           }
           openConfirm(host, api, {
             title: `套用到这一组的 ${targets.length} 张？`,
-            body: groupBody(nowGroup?.rangeLabel ?? '', targets.length, ids.includes(current.from.id), current.from.stem),
+            body: groupBody(nowGroup?.rangeLabel ?? '', targets.length, ids.includes(current.from.id), nameOf(api, current.from)),
             targets,
             range: nowGroup?.rangeLabel ?? rangeOf(targets),
             afterApply: () => undefined,
@@ -271,6 +272,7 @@ export interface EditorNavHandle {
 /** 编辑器顶栏：返回「照片」、中间配方名 +「第几张 / 共几张」（不含文件名，长按看原图时第二行切为「原图」）、右侧 HDR 开关与可用 ⋯。 */
 export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, index: number, total: number): EditorNavHandle {
   const nav = el('header', 'nav');
+  nav.dataset.photoId = photo.id; // 导出条按它找这张（同名的两张 stem 一样）
   const back = button('nb nav-back', '');
   back.setAttribute('aria-label', '照片');
   back.append(icon(ICON.back), el('span', 'nav-back-lab', '照片'));
@@ -278,7 +280,7 @@ export function mountEditorNav(shell: HTMLElement, api: AppApi, photo: Photo, in
 
   const title = el('div', 't');
   const recipeEl = el('b', '', currentRecipeLabel(api, photo));
-  const posText = `${index + 1} / ${total}`;
+  const posText = photo.copy ? `${photoName(photo)} · ${index + 1} / ${total}` : `${index + 1} / ${total}`; // 同名另外留下的那张写上「名字 (2)」
   const posEl = el('small', 'num', posText);
   title.append(recipeEl, posEl);
 

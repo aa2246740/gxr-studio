@@ -8,7 +8,8 @@ import { fillCell } from './grid_cell';
 import { arrowTarget, gridOrder, rangeBetween, rowBox } from './grid_nav';
 import { modKey, setGridMode, type GridMode } from './keys';
 import { classifyLayout, gridColumns, isIpadLayout, viewportDims } from './layout';
-import { openable, photoMs, unread, type AppApi, type Photo } from './model';
+import { nameOf, openable, photoMs, photoName, unread, type AppApi, type Photo } from './model';
+import { labelCopy } from './new_photo';
 import { groupsText, pasteState, rangeOf } from './paste_state';
 import { groupBody, openConfirm, pasteBar, pickBody, PASTE_ICON } from './paste_ui';
 
@@ -400,6 +401,7 @@ export class GridView {
 
   private fill(cell: HTMLButtonElement, photo: Photo): void {
     fillCell(cell, photo, this.selected.has(photo.id), this.indexById.get(photo.id));
+    labelCopy(cell, photo); // 同名另外留下的那张标「(2)」
   }
 
   /** 选择模式里：Shift 点选上次点的那张到这张，Cmd/Ctrl 点一张勾上或取消。不在选择模式时 Cmd/Ctrl 点一张就进选择模式并勾上它。 */
@@ -544,7 +546,7 @@ export class GridView {
     this.api.dropPending();
     openConfirm(this.host, this.api, {
       title: `套用到这一组的 ${targets.length} 张？`,
-      body: groupBody(group.rangeLabel, targets.length, inside, clip.from.stem),
+      body: groupBody(group.rangeLabel, targets.length, inside, nameOf(this.api, clip.from)),
       targets,
       range: group.rangeLabel,
       afterApply: () => this.relayout(),
@@ -569,7 +571,7 @@ export class GridView {
     this.api.dropPending();
     openConfirm(this.host, this.api, {
       title: `套用到 ${targets.length} 张？`,
-      body: pickBody(targets.length, clip.from.stem),
+      body: pickBody(targets.length, nameOf(this.api, clip.from)),
       targets,
       range: rangeOf(targets),
       afterApply: () => this.relayout(),
@@ -589,7 +591,7 @@ export class GridView {
     const acc = el('span', 'accc');
     acc.append(icon(PASTE_ICON.copy));
     const text = el('div', 'tx');
-    text.append(el('b', '', groupsText(clip.groups)), el('small', '', `来自 ${clip.from.stem}`));
+    text.append(el('b', '', groupsText(clip.groups)), el('small', '', `来自 ${nameOf(this.api, clip.from)}`));
     const go = button('fbtn fill', `套用到 ${n} 张`);
     go.dataset.act = 'paste-picked';
     go.disabled = n === 0;
@@ -646,7 +648,7 @@ export class GridView {
     const sheet = el('div', 'ms');
     sheet.dataset.state = 'unreadable';
     const row = el('div', 'hd');
-    row.append(el('h2', 'bad', `${photo.stem} 读不了`));
+    row.append(el('h2', 'bad', `${photoName(photo)} 读不了`));
     sheet.append(
       el('div', 'grab'),
       row,

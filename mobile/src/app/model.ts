@@ -117,6 +117,28 @@ export interface Photo {
   dngCopyrightRead?: number | null;
   /** 拍摄配方标签在当前相机配方文件下的解析结果缓存；不写进 choice。 */
   cameraRecipe?: CameraRecipeCache | null;
+  /** 同名照片另外留下的第几份（2 起，new_photo.ts）。第一份没有。界面上写「名字 (N)」（photoName）。 */
+  copy?: number;
+  /** 文件所在的文件夹（webkitRelativePath 的目录）；浏览器没给就是空的。配对 RAW+JPG 和半格邻居先看它。 */
+  folder?: string;
+}
+
+/** 界面上这张照片叫什么：第一份是文件名，同名另外留下的写「名字 (2)」。网格、编辑器、复制套用和导出的字都用它。 */
+export function photoName(photo: { stem: string; copy?: number }): string {
+  return photo.copy ? `${photo.stem} (${photo.copy})` : photo.stem;
+}
+
+/** 同名另外留下的那张导出的文件名：核心起的名字以文件名开头（`R0001_gxr.jpg`），就在文件名后面加「 (2)」；不是的话加在扩展名前面。 */
+export function copyFileName(name: string, stem: string, copy: number): string {
+  if (name.startsWith(stem)) return `${stem} (${copy})${name.slice(stem.length)}`;
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? `${name.slice(0, dot)} (${copy})${name.slice(dot)}` : `${name} (${copy})`;
+}
+
+/** 剪贴板记的来源（`{ id, stem }`）叫什么：照片还在就按 photoName，不在了用记下的文件名。 */
+export function nameOf(api: { photo(id: string): Photo | undefined }, from: { id: string; stem: string }): string {
+  const photo = api.photo(from.id);
+  return photo ? photoName(photo) : from.stem;
 }
 
 /** stale：读的时候照片被重新选过，结果作废。 */

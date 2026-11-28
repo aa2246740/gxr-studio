@@ -27,8 +27,8 @@ import type { GridView } from './grid';
 import { dropGpuState, EngineSlot } from './gpu_loss';
 import { LutBook } from './lut_book';
 import { LutGpu } from './lut_gpu';
-import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, releaseLooks, unread, type AppApi, type FullRead, type Photo } from './model';
-import { newPhoto } from './new_photo';
+import { clearCameraRecipe, openable, photoMs, registerCameraRecipeReader, releaseBitmaps, unread, type AppApi, type FullRead, type Photo } from './model';
+import { Intake, keptNote } from './new_photo';
 import { othersReadable } from './card_probe';
 import { unusedNote } from './import_note';
 import { showToast } from './toast';
@@ -73,6 +73,9 @@ class App implements AppApi {
   private cardIsOut = false;
   /** 每张照片最后一次上传的尾巴。新的上传接在后面。 */
   private readonly uploads = new Map<string, Promise<unknown>>();
+  /** 选进来的照片落到 byId：同名的同一份替换，原来那张好好的又不是同一份就另外留下（new_photo.ts）。 */
+  private readonly intake = new Intake({ photos: this.byId, busy: (photo) => this.uploads.has(photo.id), session: () => this.generation,
+    read: (photo, session) => void this.readPhoto(photo, photo.version, session), settled: (kept) => this.intakeDone(kept) });
   private readonly queue = new ThumbQueue(2);
   /** 整份 DNG 单独一个 Worker：点开照片不排在缩略图后面。 */
   private readonly reader = new ThumbQueue(1);
@@ -281,7 +284,7 @@ class App implements AppApi {
   loading(): { done: number; total: number } {
     let done = 0;
     for (const photo of this.byId.values()) if (photo.status !== 'pending' || photo.gone) done += 1;
-    return { done, total: this.byId.size };
+    return { done, total: this.byId.size + this.intake.waiting() }; // 还在比对同名的也算没读完
   }
 
   uploadRaw(photo: Photo, version: number, layout: RawLayout, bytes: ArrayBuffer, scene: Scene | null): Promise<boolean> {
@@ -609,45 +612,20 @@ class App implements AppApi {
       classified.datCount,
       classified.binIndex !== null ? files[classified.binIndex] : null,
     );
-    const generation = this.generation;
-    for (const item of classified.photos) {
-      const id = item.stem.toLowerCase();
-      let photo = this.byId.get(id);
-      if (!photo) {
-        photo = newPhoto(id, item.stem, item.lastModified);
-        this.byId.set(id, photo);
-      }
-      if (item.jpgIndex !== null) {
-        photo.jpg = files[item.jpgIndex];
-        photo.diptych = false;
-      }
-      if (item.dngIndex !== null) {
-        if (!photo.diptych) photo.dng = files[item.dngIndex];
-        photo.stem = item.stem;
-      }
-      // 换了 File 就是新版本：之前在路上的读取结果回来时都作废。
-      photo.version += 1;
-      photo.gone = false;
-      photo.frameMeta = null;
-      clearCameraRecipe(photo);
-      photo.neutral?.bitmap.close();
-      photo.neutral = null;
-      releaseLooks(photo);
-      photo.lastModified = Math.max(photo.lastModified, item.lastModified);
-      if (photo.status !== 'pending') {
-        photo.bitmap?.close();
-        photo.bitmap = null;
-        photo.captureMs = null;
-        photo.status = 'pending';
-      }
-      void this.readPhoto(photo, photo.version, generation);
-    }
+    this.intake.take(files);
     // 重新选了照片：没有剩下没读完的，就不再算卡被拔出。
     this.cardIsOut = [...this.byId.values()].some((photo) => unread(photo));
     // 只选了相机配方文件（06d 的按钮）：留在这一屏，配方那边自己会刷新。
     if (!classified.photos.length) return;
     if (this.byId.size) this.showGrid(this.screen !== 'grid');
     else this.showStart();
+  }
+
+  /** 等过同名比对的那几张都落定了：另外留下了的说一句，再照 ingest 的最后几步刷新。 */
+  private intakeDone(kept: number): void {
+    if (kept) showToast(this.shell, keptNote(kept), 5000);
+    this.cardIsOut = [...this.byId.values()].some((photo) => unread(photo));
+    if (this.byId.size) this.showGrid(this.screen !== 'grid');
   }
 
   private async readPhoto(photo: Photo, version: number, generation: number): Promise<void> {

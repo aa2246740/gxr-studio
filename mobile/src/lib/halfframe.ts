@@ -635,6 +635,9 @@ export interface HalfframeNeighborCandidate {
   diptych?: boolean;
   jpg: File | null;
   frame?: { orientation: number } | null;
+  /** 所在的文件夹（知道的话）和拍摄时间：同名的第 1 张不止一张时用来挑（同一个文件夹的先，再挑拍摄时间最近的）。 */
+  folder?: string;
+  captureMs?: number | null;
 }
 
 /**
@@ -649,7 +652,12 @@ export async function findFirstHalfNeighbor<T extends HalfframeNeighborCandidate
   if (!photo.diptych || !photo.jpg) return null;
   const prevNames = new Set(neighborNames(photo.stem, -1).map((s) => s.toLowerCase()));
   if (!prevNames.size) return null;
-  const candidates = photos.filter((p) => p.id !== photo.id && !p.diptych && p.jpg !== null && prevNames.has(p.stem.toLowerCase()));
+  // 同名的另外留下了几张（2026-11-28）：同一个文件夹的先，再按拍摄时间离这张最近的排（和配 RAW+JPG 同一条规则）。只有一张时和以前一样。
+  const near = (p: T) => ((p.folder ?? '') === (photo.folder ?? '') ? 0 : 1);
+  const gap = (p: T) => (photo.captureMs != null && p.captureMs != null ? Math.abs(p.captureMs - photo.captureMs) : Number.POSITIVE_INFINITY);
+  const candidates = photos
+    .filter((p) => p.id !== photo.id && !p.diptych && p.jpg !== null && prevNames.has(p.stem.toLowerCase()))
+    .sort((a, b) => near(a) - near(b) || gap(a) - gap(b));
   if (!candidates.length) return null;
   const dipOri = photo.frame?.orientation ?? (await cachedOrientation(photo.jpg));
   if (dipOri === null || !VALID_HALFFRAME_ORIENTATIONS.has(dipOri)) return null;

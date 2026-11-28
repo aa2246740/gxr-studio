@@ -8,7 +8,7 @@ import { photoWithAdopted, shelf, shelves } from '../lib/recipes';
 import { NOT_SET, PASTE_GROUPS, chosenGroups, rememberGroups, type GroupId } from '../lib/paste_text';
 import { curveSummary, groupsPresent } from '../lib/paste';
 import { button, el, icon } from './dom';
-import { ensureCameraRecipe, needsCameraRecipe, photoMs, type AppApi, type Knobs, type Photo } from './model';
+import { ensureCameraRecipe, nameOf, needsCameraRecipe, photoMs, photoName, type AppApi, type Knobs, type Photo } from './model';
 import { groupsAnd, groupsText, pasteState, rangeOf } from './paste_state';
 import './paste.css';
 
@@ -214,7 +214,7 @@ export function openWhereSheet(host: HTMLElement, api: AppApi, photo: Photo, tit
   ok.append(icon(PASTE_ICON.check));
   head.append(ok, el('h2', '', title));
   const summary = clipSummary(api);
-  const lead = el('p', 'lead', `来自 ${photo.stem}${summary ? `：${summary}` : ''}。要套用到哪些照片？`);
+  const lead = el('p', 'lead', `来自 ${photoName(photo)}${summary ? `：${summary}` : ''}。要套用到哪些照片？`);
   const group = groupsNow(api).find((item) => item.ids.includes(photo.id));
   const ids = group?.ids ?? [photo.id];
   const targets = pasteState.targets(api, ids);
@@ -241,7 +241,7 @@ export function openWhereSheet(host: HTMLElement, api: AppApi, photo: Photo, tit
     view.close();
     openConfirm(host, api, {
       title: `套用到这一组的 ${targets.length} 张？`,
-      body: groupBody(group?.rangeLabel ?? '', targets.length, true, photo.stem),
+      body: groupBody(group?.rangeLabel ?? '', targets.length, true, photoName(photo)),
       targets,
       range: group?.rangeLabel ?? rangeOf(targets),
       afterApply: onApplied,
@@ -335,7 +335,7 @@ export function pasteBar(api: AppApi, onChange: () => void): HTMLElement | null 
   const acc = el('span', 'accc');
   acc.append(icon(PASTE_ICON.copy));
   const text = el('div', 'tx');
-  text.append(el('b', '', `已复制：${groupsText(clip.groups)}`), el('small', '', `来自 ${clip.from.stem} · 点组标题上的「套用到这一组」`));
+  text.append(el('b', '', `已复制：${groupsText(clip.groups)}`), el('small', '', `来自 ${nameOf(api, clip.from)} · 点组标题上的「套用到这一组」`));
   const drop = button('nb', '清除');
   drop.dataset.act = 'clear-clip';
   drop.addEventListener('click', () => {
