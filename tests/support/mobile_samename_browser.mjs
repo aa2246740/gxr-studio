@@ -62,8 +62,11 @@ async function waitGrid(page, n) {
       return sub && !sub.textContent.includes('正在读取') && document.querySelectorAll('.cell').length === want && !document.querySelector('.cell.skel');
     },
     n,
-    { timeout: 120_000 },
-  );
+    { timeout: 60_000 },
+  ).catch(async () => {
+    const cells = await page.evaluate(() => document.querySelectorAll('.cell').length);
+    throw new Error(`grid has ${cells} photos, want ${n}`);
+  });
 }
 
 /** 选一个文件夹：给选择框临时加上 webkitdirectory，Chromium 给每个文件填 webkitRelativePath（和「选文件夹」一样）。 */
