@@ -8,6 +8,7 @@
 // 四个 WASM 堆和缩略图网格。
 
 import type { Adjust, Engine, Geometry } from '../../../frontend/src/index';
+import { currentCardBakeEdge } from './layout.ts';
 import type { Photo } from './model';
 
 export const LOOK_CACHE_BYTES = 32 << 20;
@@ -600,7 +601,7 @@ export async function renderCardThumb(opts: CardThumbRunnerOpts): Promise<void> 
     look: { recipe: gpu, lut: null, lutStrength: 1, curve: null, adjust: opts.adjust },
     geometry,
     aspect: null,
-    maxEdge: 192,
+    maxEdge: currentCardBakeEdge(),
   });
   if (!out || !opts.alive()) return;
   const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));

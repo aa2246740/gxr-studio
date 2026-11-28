@@ -3,6 +3,7 @@
 import type { Engine } from '../../../frontend/src/index';
 import { describeDng, type Described } from '../core/api';
 import { NEUTRAL_BAKE_KEY } from '../lib/neutral';
+import { currentCardBakeEdge } from './layout';
 import { toAdjust } from './adjust_view';
 import type { CropStage } from './crop_stage';
 import { isGone, zeroKnobs, type AppApi, type Photo } from './model';
@@ -230,7 +231,7 @@ export class EditorMedia {
     const look = { recipe: NEUTRAL_BAKE_KEY, lut: null, lutStrength: 1, curve: null, adjust: toAdjust(zeroKnobs()) };
     const { geometry } = await cropStage.resolveBoxGeometry(photo);
     if (!alive()) return;
-    const out = await engine.thumb({ source: key, look, geometry, aspect: null, maxEdge: 192 });
+    const out = await engine.thumb({ source: key, look, geometry, aspect: null, maxEdge: currentCardBakeEdge() });
     if (!out || !alive()) return;
     const bitmap = await createImageBitmap(new ImageData(new Uint8ClampedArray(out.data), out.w, out.h));
     if (!alive()) {
