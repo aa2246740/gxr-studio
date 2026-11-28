@@ -39,6 +39,11 @@ export class BigThumbBudget {
     return total;
   }
 
+  /** 按 `want` 解一张现在放不放得下（只看，不占）。 */
+  room(want: number): boolean {
+    return want > GRID_THUMB_WIDTH && this.bytes() + this.reserved + thumbBytes(want) <= this.limit;
+  }
+
   /** 想按 `want` 解一张：放得下就先占上并返回 `want`，放不下返回 360。 */
   take(want: number): number {
     if (want <= GRID_THUMB_WIDTH) return GRID_THUMB_WIDTH;

@@ -2,6 +2,7 @@
 
 网页窗口宽 >= 2000、高 >= 1100 才放大：2560×1440（2 倍屏）上网格每格 200–240、右边栏 440–480，角标和拉直尺的字比 10 px 大一点，
 网格缩略图和配方卡小图的位图不小于显示尺寸 × 设备像素比，什么都不溢出。1440×900 和 1280×800 和原来一模一样。
+1440×900 读好照片以后把窗口拉到 2560×1440：看得见的格子重解成大位图，也不小于显示尺寸 × 设备像素比。
 
 只用本地 card250 实拍照片和 g250 相机配方；报告里只有盒子、字号和位图尺寸，没有文件名、拍摄时间或 EXIF。
 `GXR_BIG_SCREEN_DIST` 可以指到别的构建（比如旧 head 的 dist），用来证明检查在旧代码上失败。
@@ -38,7 +39,7 @@ def check(ok: bool, label: str) -> None:
     assert ok, label
 
 
-def _run(tmp_path: Path) -> list[dict[str, Any]]:
+def _run(tmp_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     _prereq()
     _need((DIST / "index.html").is_file(), "mobile/dist is missing; run make mobile-build")
     _raw250, _lib250, dat250, fx250 = _need_g185_or_g250(250)
@@ -50,6 +51,7 @@ def _run(tmp_path: Path) -> list[dict[str, Any]]:
         "files": [str(p) for pair in pairs for p in pair] + [str(solo_jpg), str(dat250), str(fx250)],
         "stem": pairs[0][0].stem,
         "cases": [list(c) for c in CASES],
+        "resize": {"from": [1440, 900], "to": [2560, 1440], "dpr": 2, "files": [str(p) for pair in pairs for p in pair] + [str(solo_jpg)]},
         "out": str(out),
     }
     manifest_path = tmp_path / "manifest.json"
@@ -64,13 +66,14 @@ def _run(tmp_path: Path) -> list[dict[str, Any]]:
         timeout=900,
     )
     assert proc.returncode == 0, f"driver failed ({proc.returncode}): {proc.stderr[-1500:]}"
-    rows: list[dict[str, Any]] = json.loads(out.read_text(encoding="utf-8"))["rows"]
+    report = json.loads(out.read_text(encoding="utf-8"))
+    rows: list[dict[str, Any]] = report["rows"]
     dump = os.environ.get("GXR_BIG_SCREEN_REPORT", "")
     if dump:
-        Path(dump).write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    for row in rows:
-        assert "error" not in row, f"{row['size']}: {row['error']}"
-    return rows
+        Path(dump).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    for row in [*rows, report["resize"]]:
+        assert "error" not in row, f"{row.get('size', 'resize')}: {row['error']}"
+    return rows, report["resize"]
 
 
 def _sharp(items: list[dict[str, float]], dpr: float, what: str) -> None:
@@ -95,7 +98,8 @@ def _no_overflow(row: dict[str, Any]) -> None:
 
 
 def test_mobile_big_screen_layout(tmp_path: Path) -> None:
-    rows = {row["size"]: row for row in _run(tmp_path)}
+    got, resize = _run(tmp_path)
+    rows = {row["size"]: row for row in got}
     for row in rows.values():
         _no_overflow(row)
         check(row["grid"]["layout"] == "ipad-landscape" and row["editor"]["layout"] == "ipad-landscape", f"{row['size']}: desktop layout")
@@ -136,3 +140,13 @@ def test_mobile_big_screen_layout(tmp_path: Path) -> None:
             editor["cards"] and all(max(c["cw"], c["ch"]) == 192 for c in editor["cards"]),
             f"{size}: recipe cards still baked at 192 ({editor['cards'][:2]})",
         )
+
+    # 窗口往大拉跨过大屏线：先是 360 宽的小位图，拉大以后看得见的格子重解成不小于格子 × 设备像素比的位图。
+    before, after = resize["before"], resize["after"]
+    check(
+        before["big"] is False and before["thumbs"] and all(t["cw"] == 360 for t in before["thumbs"]),
+        f"resize: starts at 360 ({before['thumbs'][:2]})",
+    )
+    check(after["big"] is True and len(after["thumbs"]) >= 4, f"resize: big grid with thumbnails ({after['big']}, {len(after['thumbs'])})")
+    check(resize["errors"] == [], f"resize: no page errors: {resize['errors']}")
+    _sharp(after["thumbs"], resize["dpr"], "1440x900 -> 2560x1440 grid thumbnail")

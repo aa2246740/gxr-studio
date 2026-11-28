@@ -34,6 +34,7 @@ import { unusedNote } from './import_note';
 import { showToast } from './toast';
 import { guardUnload } from './unload_guard';
 import { dropReply, ThumbQueue } from './queue';
+import { watchThumbUpsize } from './thumb_upsize';
 import { Prebaker } from './prebake';
 import { renderHelp, renderStart } from './start';
 import type { GapMinutes, Order } from '../lib/group';
@@ -123,6 +124,8 @@ class App implements AppApi {
   ) {
     // data-layout 跟着窗口走，图库和开始页上也一样（不只编辑器里）；跨过手机/iPad 时预烘焙按新的第一屏重排。
     watchViewportLayout(shell, () => this.prebake.wake());
+    const onGrid = () => this.screen === 'grid';
+    watchThumbUpsize(this.queue, { photo: (id) => this.byId.get(id), session: () => this.generation, onGrid, current: (photo, version, file) => this.current(photo.id, version, photo, file), repaint: (id) => this.grid?.update(id) });
   }
 
   /** DNG 开头 256 KiB（拍摄配方标签、预烘焙要的镜头名）：交给读整份 DNG 的那个 Worker。 */

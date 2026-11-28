@@ -172,6 +172,29 @@ async function caseRow(browser, url, [width, height, dpr]) {
   }
 }
 
+/** 1440×900 读好照片以后把窗口拉到 2560×1440（跨过大屏线）：看得见的格子换成按大格子重解的位图（最多等 30 秒）。 */
+async function resizeRow(browser, url, files, [width, height], [bigW, bigH], dpr) {
+  const { ctx, page, errors } = await newPage(browser, width, height, dpr);
+  try {
+    await load(page, url, files);
+    const before = await measureGrid(page);
+    await page.setViewportSize({ width: bigW, height: bigH });
+    const sharp = () => {
+      const cells = [...document.querySelectorAll('.gscroll .cell canvas')].filter((n) => n.getClientRects().length > 0 && n.width > 0);
+      return cells.length > 0 && cells.every((n) => {
+        const r = n.getBoundingClientRect();
+        return n.width >= r.width * devicePixelRatio - 0.5 && n.height >= r.height * devicePixelRatio - 0.5;
+      });
+    };
+    const upsized = await page.waitForFunction(sharp, null, { timeout: 30_000 }).then(() => true, () => false);
+    await settle(page, 300);
+    const after = await measureGrid(page);
+    return { size: `${width}x${height}->${bigW}x${bigH}@${dpr}`, dpr, upsized, before, after, errors };
+  } finally {
+    await ctx.close();
+  }
+}
+
 /** 大图库：读完以后 JS 堆的峰值，和画在格子里的缩略图位图尺寸（每张照片一张同样大小的位图）。 */
 async function heapRow(browser, url, files, [width, height, dpr]) {
   const { ctx, page, errors } = await newPage(browser, width, height, dpr);
@@ -239,6 +262,14 @@ try {
         report.rows.push(await caseRow(browser, server.url, size));
       } catch (err) {
         report.rows.push({ size: size.join('x'), error: String(err?.message ?? err).replace(/\/(?:Volumes|Users|private|var)\/\S+/g, '[path]').slice(0, 600) });
+      }
+    }
+    if (manifest.resize) {
+      const { from, to, dpr, files } = manifest.resize;
+      try {
+        report.resize = await resizeRow(browser, server.url, files, from, to, dpr);
+      } catch (err) {
+        report.resize = { error: String(err?.message ?? err).replace(/\/(?:Volumes|Users|private|var)\/\S+/g, '[path]').slice(0, 600) };
       }
     }
   }
