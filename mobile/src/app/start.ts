@@ -4,6 +4,7 @@ import { cardHelpTitle, deviceName, isComputerDevice, saveWord, thisDevice } fro
 import { FONT_LICENCE_LABELS, FONT_LICENCES } from '../lib/font_assets';
 import { button, el, icon, ICON } from './dom';
 import { FOLDER_PICK_LABEL, FOLDER_PICK_NOTE, pickFolder } from './file_drop';
+import './folder_pick.css';
 
 // 电脑上不画手机：同样的线条画一台笔记本（屏幕加底座），卡和箭头不变。
 const PHONE_SHAPE =

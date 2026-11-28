@@ -1,0 +1,25 @@
+/* 电脑上「选照片」「选文件夹」并排，下面一行小字（Import P3-6，2026-11-28）。只有电脑上才有 .pick-row 和 .folder-note。 */
+.pick-row {
+  display: flex;
+  gap: 10px;
+}
+.pick-row .btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.folder-note {
+  margin-top: -6px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 16px;
+}
+/* 矮窗口（900×590）首屏不出滚动条 */
+@media (max-height: 640px) {
+  .pick-row .btn {
+    min-height: 46px;
+  }
+  .folder-note {
+    line-height: 14px;
+  }
+}
