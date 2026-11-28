@@ -8,7 +8,7 @@
 // 四个 WASM 堆和缩略图网格。
 
 import type { Adjust, Engine, Geometry } from '../../../frontend/src/index';
-import { currentCardBakeEdge } from './layout';
+import { currentCardBakeEdge } from './layout.ts';
 import type { Photo } from './model';
 
 export const LOOK_CACHE_BYTES = 32 << 20;

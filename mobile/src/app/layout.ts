@@ -1,6 +1,6 @@
 // 响应式版式判定与 iPad 直方图默认开关记忆：手机竖屏 / 手机横屏 / iPad 横屏 / iPad 竖屏共用一套代码。
 
-import { isComputer } from '../lib/save_mode';
+import { isComputer } from '../lib/save_mode.ts';
 
 export type LayoutMode = 'phone-portrait' | 'phone-landscape' | 'ipad-landscape' | 'ipad-portrait';
 export type IpadSize = '13' | '11';
