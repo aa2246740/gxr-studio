@@ -378,6 +378,48 @@ def test_real_pair_planes(tmp_path: Path, pair: tuple[Path, Path]) -> None:
     print(f"{dng.name} {a.shape}: values differing per scale (libm) {stated}")
 
 
+HIGH_EV = 5.0  # the top exposure the ev-slowdown unit timed (round 6)
+
+
+def _pushed(rgb: np.ndarray, ev: float) -> np.ndarray:
+    """``rgb`` made ``ev`` stops brighter in linear light, clipped and encoded back to sRGB codes. The
+    highlights clip as in a high-EV render, which pulls the zero-shift correlation under 0.6."""
+    lin = np.minimum(g.srgb_to_linear(np.arange(256, dtype=np.uint8)).astype(np.float64)[rgb] * 2.0**ev, 1.0)
+    enc = np.where(lin <= 0.0031308, 12.92 * lin, 1.055 * lin ** (1 / 2.4) - 0.055)
+    return np.clip(np.round(enc * 255), 0, 255).astype(np.uint8)
+
+
+def test_real_high_ev_pair_full_search_matches_python(tmp_path: Path) -> None:
+    """ev-slowdown review r1, finding 2: real pairs at 0 EV take the ``corr > 0.6`` shortcut, so the
+    5-scale × 9-candidate search (shared SDR spectrum, zero-shift reuse) needs a real case. The first
+    sampled pair whose +5 EV grid peaks at zero shift with a correlation of 0.6 or less (a pair that
+    lines up, yet misses the shortcut) goes through Rust ``hdr-align`` and Python ``align``."""
+    from gxr_studio.raw import open_dng
+    from gxr_studio.raw.dng import RawDecodeError
+
+    if not REAL:
+        samples.missing(f"no RAW+JPG pairs under {hp.CAPTURES}")
+    for jpg, dng in REAL:
+        try:
+            raw = g.raw_luma(open_dng(dng))
+        except RawDecodeError:
+            continue
+        jpeg = jpg.read_bytes()
+        sdr = g.sdr_luma_grid(_pushed(g.decode_rgb(jpeg), HIGH_EV), 4)
+        stored = g.to_storage(raw.y, g.jpeg_orientation(jpeg))
+        a = g._norm(g._hp(sdr))
+        b = g._norm(g._hp(g.warp(stored, a.shape, 1.0, 0, 0)))
+        first = float(np.mean(a * b))
+        if g._phase_shift(a, b) == (0, 0) and 0.3 < first <= 0.6:
+            break
+    else:
+        pytest.fail(f"no sampled pair reaches the full search at +{HIGH_EV} EV")
+    al = g.align(sdr, stored)
+    rust = hp.ok(["hdr-align", "--sdr", hp.save(tmp_path / "s.npy", sdr), "--raw", hp.save(tmp_path / "r.npy", stored)])
+    assert rust == {"alignment": hp.alignment_fields(al), "check": hp.check_of(al)}
+    print(f"+{HIGH_EV} EV full search: first corr {first!r}, picked ({al.scale}, {al.dy}, {al.dx}) corr {al.correlation!r}")
+
+
 # ---------------------------------------------------------------- errors, sizes and WASM
 
 
