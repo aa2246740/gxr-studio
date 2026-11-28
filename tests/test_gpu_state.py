@@ -130,3 +130,38 @@ def test_a_gesture_that_starts_while_a_card_waits_for_its_table_stops_the_gpu_th
     assert out["startedStill"] == "wait" and out["bakeRequestsWhileDown"] == 0
     # 手松开以后：画一次
     assert out["afterRelease"]["w"] == 2 and out["thumbsAfterRelease"] == 1
+
+
+def test_a_raw_download_that_fails_once_is_retried_and_reaches_the_gpu(tmp_path):
+    out = run(tmp_path, "raw-retry-once")
+    # 第一次下载失败不马上退回服务器：等一秒的重试（脚本控制定时器）
+    assert out["first"] == "wait", out
+    assert out["during"] == {
+        "state": {"rawFailed": True, "rawRetry": "pending", "engine": True, "deviceLost": False},
+        "timers": 1,
+        "rawFetches": 1,
+    }
+    assert out["after"] == "gpu" and out["rawFetches"] == 2 and out["addedRaws"] == 1, out
+    assert out["stateAfter"]["rawFailed"] is False and out["stateAfter"]["rawRetry"] == "used" and out["timersLeft"] == 0, out
+
+
+def test_a_raw_download_that_fails_twice_stays_on_the_server_until_the_photo_is_reopened(tmp_path):
+    out = run(tmp_path, "raw-retry-twice")
+    assert out["first"] == "wait" and out["after"] == "server" and out["rawFetches"] == 2, out
+    assert out["again"] == "server" and out["timersLeft"] == 0 and out["timersAgain"] == 0, out  # 只重试一次
+    assert out["reopen"] == "gpu" and out["rawFetchesAfterReopen"] == 3, out  # 重新打开：再走一次显卡
+
+
+def test_a_raw_that_the_server_refuses_is_not_retried(tmp_path):
+    out = run(tmp_path, "raw-retry-404")
+    assert out["first"] == "server" and out["during"]["timers"] == 0 and out["during"]["state"]["rawRetry"] is None, out
+
+
+def test_a_pending_raw_retry_stops_on_close_generation_change_and_never_touches_a_closed_view(tmp_path):
+    out = run(tmp_path, "raw-retry-dispose")
+    assert out["first"] == "wait" and out["during"]["timers"] == 1, out
+    assert out["timersAfterOtherClose"] == 1 and out["timersAfterClose"] == 0, out
+    # 定时器在视图关掉之后才到：不清失败记号、不再下载
+    assert out["lateFirst"] == "wait" and out["late"]["rawFetches"] == 0 and out["late"]["state"]["rawFailed"] is True, out
+    # 等重试时换代：定时器停掉，换代自己重走一遍，画到显卡上
+    assert out["bumpFirst"] == "wait" and out["timersAfterBump"] == 0 and out["bumpAfter"] == "gpu", out
