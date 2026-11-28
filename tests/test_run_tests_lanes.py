@@ -56,6 +56,28 @@ def test_lanes_split_by_junit_time_keep_files_together_and_leave_alone_for_last(
     assert "浏览器分道计划用时（分钟）：lane-0 1.7, lane-1 0.5；单独阶段 0.7（1 个用例）。" in out
 
 
+def test_lane_weights_count_only_the_planned_browser_ids(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """a 里有一个 600 秒的非浏览器用例，不在浏览器计划里，不能把 a 算成 630 秒；b 的单独用例按自己的 40 秒拆，
+    不按用例数比例；d 没有用时，按全部用例的中位数 30 秒估计。"""
+    plan = _plan_module()
+    ids = ["tests/p/test_a.py::test_browser", "tests/p/test_b.py::test_one", "tests/p/test_b.py::test_alone[x::y]"]
+    ids += ["tests/p/test_c.py::test_one", "tests/p/test_d.py::TestK::test_new"]
+    times = [
+        ("tests.p.test_a", "test_browser", 30.0),
+        ("tests.p.test_a", "test_compute", 600.0),
+        ("tests.p.test_b", "test_one", 20.0),
+        ("tests.p.test_b", "test_alone[x::y]", 40.0),
+        ("tests.p.test_c", "test_one", 20.0),
+    ]
+    env = {plan.TIMES_ENV: str(_junit(tmp_path / "last.xml", times))}
+    lanes, solo = plan.lane_plan(ids, ids[2:3], 2, ROOT, env)
+    assert lanes == [[ids[0], ids[1]], [ids[4], ids[3]]]
+    assert solo == ids[2:3]
+    out = capsys.readouterr().out
+    assert "按 GXR_TEST_TIMES_JUNIT 的用时分道：4 个用例有时间，1 个没有，按中位数 30.000 秒估计。" in out
+    assert "浏览器分道计划用时（分钟）：lane-0 0.8, lane-1 0.8；单独阶段 0.7（1 个用例）。" in out
+
+
 def test_lanes_without_times_split_by_count(capsys: pytest.CaptureFixture[str]) -> None:
     plan = _plan_module()
     lanes, solo = plan.lane_plan(_IDS, _ALONE, 2, ROOT, {})
