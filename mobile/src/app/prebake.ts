@@ -102,6 +102,8 @@ export class Prebaker {
   private generation = -1;
   private plan: Want[] = [];
   private planned = false;
+  /** 这份计划按第一屏几张卡排的（手机 3、iPad 6）；版式跨过手机/iPad 时下一轮重排。 */
+  private plannedRow = 0;
   private readonly tried = new Set<string>();
   /** 这一版本、这一轮里替它解析过相机配方的照片（id 和版本；每张最多一次，解析失败就按默认卡排）。 */
   private readonly recipesAsked = new Set<string>();
@@ -212,8 +214,10 @@ export class Prebaker {
     if (quiet > 0) return this.schedule(quiet + 20);
     // 池子里有别人的活（打开照片、读 DAT、LUT……）或者导出在跑：先不开始新的。
     if (exportPaused() || this.load() > this.running) return this.schedule(RETRY_MS);
+    if (this.planned && this.host.firstRow() !== this.plannedRow) this.planned = false;
     if (!this.planned) {
-      const made = this.makePlan(book);
+      const row = this.host.firstRow();
+      const made = this.makePlan(book, row);
       if (made === null) {
         // 有单元还在核对校准，或者刚开始替一张照片解析相机配方（都在池子里）：做完会通知，这里只是兜底。
         this.report('busy');
@@ -221,6 +225,7 @@ export class Prebaker {
       }
       this.plan = made;
       this.planned = true;
+      this.plannedRow = row;
     }
     while (this.running < this.cap && this.made + this.running < PREBAKE_MAX) {
       const next = this.plan.find((want) => !this.tried.has(want.id) && !this.cached(book, want));
@@ -260,8 +265,7 @@ export class Prebaker {
    * 候选，按先后：第一张照片打开时舞台用的卡、它第一屏看得见的卡、别的照片打开时用的卡、别的（单元、ISO 模型）第一屏的卡。
    * 有单元还在核对校准、或者刚开始解析一张照片的相机配方时返回 null（一次只做一件，别一下子占满 Worker）。
    */
-  private makePlan(book: Book): Want[] | null {
-    const row = this.host.firstRow();
+  private makePlan(book: Book, row: number): Want[] | null {
     const openings: Want[] = [];
     const firstRows = new Map<string, Want[]>();
     let raws = 0;

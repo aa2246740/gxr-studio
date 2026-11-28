@@ -3,9 +3,11 @@
 // 2. 预烘焙在跑时点卡：前台的 resolve 和 bake 立刻交给空着的 Worker，不排在预烘焙后面；点了以后冷却期内不开始新的预烘焙。
 // 3. 换校准、换相机配方文件（目录）以后按新版本重新烘焙，旧版本晚到的表不算数也不进缓存；清空照片作废没开始的。
 // 4. 上限：每个版本最多 PREBAKE_MAX 张，同时最多 workers - 2 张，两个 Worker 以下不做；池子有别人的活、导出在跑时不开始。
+// 6. 版式跨过手机/iPad（第一屏 3 → 6 张卡）：下一轮按新的第一屏重排；boot.ts 在版式变的时候叫醒它。
 // GXR_TEST_CHECKOUT 换成旧版本的检出目录做负对照。
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
@@ -439,4 +441,31 @@ test('5. a MOUNT photo whose JPG has no lens name: the DNG head names the unit, 
     assert.equal(io2.bakes.length, 0, 'no guessed-unit bakes');
     pre2.stop();
   }
+});
+
+test('6. crossing the phone/iPad breakpoint re-plans the first screen: 3 cards on phone, 6 on iPad', async () => {
+  const { Prebaker } = await prebakeModule();
+  const io = makeIo({ hold: true });
+  const book = await readyBook(io);
+  let row = 3;
+  const h = host(book, [photo('a', 'jlaunch', 200)], { firstRow: () => row });
+  const pre = new Prebaker(h, 4, () => 0);
+  pre.start(null);
+  await until(() => io.held.length === 2, 'two phone-layout pre-bakes in flight');
+  // 窗口拉宽到 iPad 版式：没有别的事叫醒它，只有在路上的那两张回来时的下一轮。
+  row = 6;
+  while (!done(h)) {
+    for (const job of io.held.splice(0)) job.done();
+    await sleep(2);
+  }
+  const ipad = ['bake-jlaunch-4', 'bake-jlaunch-1', 'bake-jlaunch-2', 'bake-jlaunch-3', 'bake-jlaunch-5', 'bake-jlaunch-6'];
+  assert.deepEqual(io.bakes.map((b) => b.tag), ipad, 'the next round plans the iPad first screen (6 cards)');
+  // 已经做完了再跨（iPad → 手机 → iPad）：boot.ts 版式变了就 wake()，不重复烘焙已经在缓存里的。
+  row = 3;
+  pre.wake();
+  await sleep(20);
+  assert.equal(io.bakes.length, ipad.length, 'back to phone: everything needed is cached');
+  pre.stop();
+  const boot = readFileSync(new URL('mobile/src/app/boot.ts', checkout), 'utf8');
+  assert.match(boot, /watchViewportLayout\(shell, \(\) => this\.prebake\.wake\(\)\)/, 'boot.ts wakes the pre-baker when the layout changes');
 });
