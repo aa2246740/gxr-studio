@@ -95,7 +95,11 @@ try {
 
     const s1 = manifest.stems[0];
     const s2 = manifest.stems[1];
-    if (out.gridBadges[s2] !== 'JPG') {
+    // Import P3-3：双联的角标悬停和读屏文字。
+    out.gridBadgeNote = await page.locator(`${cellOf(s2)} .bl .bdg`).evaluate((n) => ({ title: n.title, aria: n.getAttribute('aria-label') }));
+    const headOf = () =>
+      page.locator('.editor .nav .t b').evaluate((n) => ({ text: n.textContent, title: n.getAttribute('title'), aria: n.getAttribute('aria-label'), role: n.getAttribute('role') }));
+    if (out.gridBadges[s2] !== '半格') {
       out.earlyExit = `grid badge mismatch for ${s2}: ${out.gridBadges[s2]}`;
     } else {
       // Photo 1 (single half-frame frame, has RAW)
@@ -104,6 +108,7 @@ try {
       await page.waitForFunction((want) => document.querySelector('.app')?.dataset.settled === want, s1, { timeout: 120_000 });
       await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
       const p1Layer = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
+      const p1Head = await headOf();
       await page.locator('.editor .toolbar [data-tool="recipe"]').click();
       await page.waitForSelector('.panel.recipe');
       let p1RecipeText = await page.locator('.editor .band').innerText();
@@ -124,6 +129,7 @@ try {
       await page.waitForFunction((want) => document.querySelector('.app')?.dataset.settled === want, s2, { timeout: 120_000 });
       await page.waitForFunction(() => document.querySelector('.app')?.dataset.frame === '1', null, { timeout: 120_000 });
       const p2Layer = await page.evaluate(() => window.__gxrEngine?.layerSize?.() ?? null);
+      const p2Head = await headOf();
       await page.locator('.stage .pv').screenshot({ path: manifest.stagePng });
       await page.locator('.editor .toolbar [data-tool="recipe"]').click();
       await page.waitForSelector('.panel.recipe');
@@ -140,8 +146,8 @@ try {
       const shared = await shareAll(page);
       const files = await sharedFiles(page, manifest.outDir, 'hf-');
 
-      out.photo1 = { layer: p1Layer, recipeHasDiptychNote: p1RecipeText.includes('这张是半格双联') };
-      out.photo2 = { layer: p2Layer, recipeText: p2RecipeText };
+      out.photo1 = { layer: p1Layer, head: p1Head, recipeHasDiptychNote: p1RecipeText.includes('这张是半格双联') };
+      out.photo2 = { layer: p2Layer, head: p2Head, recipeText: p2RecipeText };
       out.export = { ready, shared, files };
     }
   } else if (manifest.mode === 'desktop-note') {

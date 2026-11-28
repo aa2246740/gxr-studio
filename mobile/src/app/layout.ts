@@ -60,10 +60,14 @@ export interface CellLabelInfo {
   unread?: boolean;
 }
 
+/** 认出的半格双联（Import P3-3，机主 2026-11-28）：角标写「半格」，悬停和读屏写清按相机拼好的双联图调整、没有 HDR。真正只有 JPG 的照片仍是「JPG」。 */
+export const DIPTYCH_BADGE = '半格';
+export const DIPTYCH_NOTE = '半格：按相机拼好的双联图调整，没有 HDR';
+
 /** 图库缩略图按钮的无障碍名称（仅含序号、类型与状态，绝不含文件名或拍摄时间）。 */
 export function cellAriaLabel(pos: number | undefined, info: CellLabelInfo, edited: boolean, selected: boolean): string {
   const parts: string[] = [pos ? `第 ${pos} 张` : '照片'];
-  if (info.diptych) parts.push('半格双联');
+  if (info.diptych) parts.push(DIPTYCH_NOTE);
   else if (info.dng && info.jpg) parts.push('RAW+JPG');
   else if (info.dng) parts.push('RAW');
   else if (info.jpg) parts.push('JPG');
