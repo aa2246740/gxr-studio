@@ -69,6 +69,8 @@ interface Job {
   width: number;
   /** 要盖住的格高（设备像素）；0 只按宽解。 */
   height: number;
+  /** 网格缩略图：宽高到真发给 Worker 时才定（按那时的窗口和字节账），排队时不占账。 */
+  grid: boolean;
   resolve: (reply: Reply) => void;
 }
 
@@ -89,14 +91,7 @@ export class ThumbQueue {
    * 不给宽度就是网格缩略图：小版式 360；大屏按格宽 × 设备像素比解，受 `BIG_THUMB_BYTES` 管着。
    */
   run(file: File, role: 'jpg' | 'dng', width?: number, urgent = false): Promise<ThumbOk | ThumbFail> {
-    if (width !== undefined) return this.send(file, role, width, urgent) as Promise<ThumbOk | ThumbFail>;
-    const box = currentGridThumbBox();
-    const grid = this.budget.take(box.width);
-    const run = this.send(file, role, grid, urgent, grid > GRID_THUMB_WIDTH ? box.height : 0) as Promise<ThumbOk | ThumbFail>;
-    return run.then((reply) => {
-      this.budget.settle(grid, reply.ok ? reply.bitmap : null);
-      return reply;
-    });
+    return this.send(file, role, width ?? GRID_THUMB_WIDTH, urgent, width === undefined) as Promise<ThumbOk | ThumbFail>;
   }
 
   /** 整份文件，Worker 里读完转移过来。 */
@@ -104,14 +99,25 @@ export class ThumbQueue {
     return this.send(file, 'full', 0, true) as Promise<FullOk | ThumbFail>;
   }
 
-  private send(file: File, role: ThumbRequest['role'], width: number, urgent: boolean, height = 0): Promise<Reply> {
+  private send(file: File, role: ThumbRequest['role'], width: number, urgent: boolean, grid = false): Promise<Reply> {
     const kind = role === 'full' ? 'full' : 'thumb';
     return new Promise((resolve) => {
       if (this.closed) {
         resolve({ kind, name: file.name, id: 0, ok: false, gone: false });
         return;
       }
-      const job = { file, role, width, height, resolve };
+      const job: Job = {
+        file,
+        role,
+        width,
+        height: 0,
+        grid,
+        resolve: (reply) => {
+          // 发出去时占的账放掉；真拿到大位图就记上。没发出去（取消、关掉）的 job.width 还是 360，不用记。
+          if (job.grid) this.budget.settle(job.width, reply.kind === 'thumb' && reply.ok ? reply.bitmap : null);
+          resolve(reply);
+        },
+      };
       if (urgent) this.jobs.unshift(job);
       else this.jobs.push(job);
       this.pump();
@@ -161,6 +167,11 @@ export class ThumbQueue {
       const job = this.jobs.shift();
       if (!worker || !job) return;
       const id = this.seq++;
+      if (job.grid) {
+        const box = currentGridThumbBox();
+        job.width = this.budget.take(box.width);
+        job.height = job.width > GRID_THUMB_WIDTH ? box.height : 0;
+      }
       this.pending.set(id, { worker, job });
       const message: ThumbRequest = { id, file: job.file, role: job.role, width: job.width, height: job.height };
       try {

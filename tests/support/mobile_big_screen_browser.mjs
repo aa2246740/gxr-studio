@@ -197,7 +197,28 @@ async function heapRow(browser, url, files, [width, height, dpr]) {
     await sampler;
     const grid = await measureGrid(page);
     const per = grid.thumbs.length ? grid.thumbs[0].cw * grid.thumbs[0].ch * 4 : 0;
-    return { size: `${width}x${height}@${dpr}`, photos: files.length, readS, peakHeapMiB: Math.round((peak / 2 ** 20) * 10) / 10, firstThumb: grid.thumbs[0] ?? null, perThumbKiB: Math.round(per / 1024), cols: grid.cols, errors };
+    // 一屏一屏滚到底，按格子记下每张照片的缩略图位图：大屏上超过字节上限以后读的照片照旧是 360 宽。
+    const seen = await page.evaluate(async () => {
+      const scroller = document.querySelector('.gscroll');
+      const out = {};
+      if (!scroller) return out;
+      for (let top = 0; ; top += scroller.clientHeight) {
+        scroller.scrollTop = top;
+        await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(done, 150))));
+        for (const cell of scroller.querySelectorAll('.cell')) {
+          const canvas = cell.querySelector('canvas');
+          if (canvas && canvas.width > 0) out[cell.dataset.id] = [canvas.width, canvas.height];
+        }
+        if (top + scroller.clientHeight >= scroller.scrollHeight) break;
+      }
+      return out;
+    });
+    const dims = Object.values(seen);
+    const widths = {};
+    for (const [w] of dims) widths[w] = (widths[w] ?? 0) + 1;
+    const bitmapMiB = Math.round((dims.reduce((sum, [w, h]) => sum + w * h * 4, 0) / 2 ** 20) * 10) / 10;
+    const bigMiB = Math.round((dims.filter(([w]) => w > 360).reduce((sum, [w, h]) => sum + w * h * 4, 0) / 2 ** 20) * 10) / 10;
+    return { size: `${width}x${height}@${dpr}`, photos: files.length, readS, peakHeapMiB: Math.round((peak / 2 ** 20) * 10) / 10, firstThumb: grid.thumbs[0] ?? null, thumbsSeen: dims.length, widths, bitmapMiB, bigMiB, perThumbKiB: Math.round(per / 1024), cols: grid.cols, errors };
   } finally {
     stop = true;
     await ctx.close();

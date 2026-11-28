@@ -1,6 +1,6 @@
 // 27 寸大屏单元测试（Node --experimental-strip-types，不碰真实 DOM）：
 // 1) layout.ts：大屏门槛 2000×1100、网格分列、缩略图盒子和配方卡长边；小版式一直是 360 / 192；
-// 2) queue.ts：BigThumbBudget 按字节封顶，超了回到 360，关掉的位图不再算。
+// 2) queue.ts：BigThumbBudget 按字节封顶，超了回到 360，关掉的位图不再算；宽度到发给 Worker 时才定，排队的不占账。
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +18,7 @@ registerHooks({
 });
 
 const layout = await import('../../mobile/src/app/layout.ts');
-const { BigThumbBudget, BIG_THUMB_BYTES } = await import('../../mobile/src/app/queue.ts');
+const { BigThumbBudget, BIG_THUMB_BYTES, ThumbQueue } = await import('../../mobile/src/app/queue.ts');
 
 test('big screen: only windows at least 2000 x 1100', () => {
   assert.equal(layout.isBigScreen(2560, 1440), true);
@@ -84,4 +84,43 @@ test('BigThumbBudget: capped by bytes, falls back to 360, frees closed bitmaps',
   assert.equal(budget.take(470), 470, 'room again after closing');
   budget.settle(470, null);
   assert.equal(budget.stats().reserved, 0, 'a failed read releases its reservation');
+});
+
+test('ThumbQueue: a 300-photo import fills the budget, not the queue reservations', async () => {
+  const sent = [];
+  class FakeWorker {
+    constructor() {
+      this.onmessage = null;
+      this.onerror = null;
+    }
+    postMessage(msg) {
+      sent.push({ width: msg.width, height: msg.height });
+      const bmp = bitmap(msg.width, Math.round((msg.width * 2) / 3));
+      setTimeout(() => this.onmessage({ data: { kind: 'thumb', name: 'x', id: msg.id, ok: true, captureMs: null, bitmap: bmp, bad: false, meta: {}, frame: null } }), 0);
+    }
+    terminate() {}
+  }
+  const saved = { Worker: globalThis.Worker, window: globalThis.window, matchMedia: globalThis.matchMedia };
+  Object.assign(globalThis, { Worker: FakeWorker, window: { innerWidth: 2560, devicePixelRatio: 2 }, matchMedia: () => ({ matches: true }) });
+  try {
+    const queue = new ThumbQueue(2);
+    const file = { name: 'R0000001.JPG' };
+    const replies = await Promise.all(Array.from({ length: 300 }, () => queue.run(file, 'jpg')));
+    const big = replies.filter((r) => r.ok && r.bitmap.width > 360).length;
+    const stats = queue.budget.stats();
+    const each = 462 * 308 * 4;
+    assert.ok(stats.bytes <= BIG_THUMB_BYTES, JSON.stringify(stats));
+    assert.ok(big >= Math.floor(BIG_THUMB_BYTES / each) - 6, `only ${big} of 300 decoded big (${JSON.stringify(stats)})`);
+    assert.ok(big < 300, 'the cap stops big decodes');
+    assert.equal(stats.reserved, 0);
+    assert.ok(sent.filter((m) => m.width === 360).every((m) => m.height === 0), 'fallbacks are plain 360 width-only reads');
+    assert.ok(sent.filter((m) => m.width > 360).every((m) => m.height > 0), 'big reads carry the cell height');
+    // 显式宽度（编辑器要的大图）不进账、照原样发。
+    const still = await queue.run(file, 'jpg', 1024, true);
+    assert.equal(still.bitmap.width, 1024);
+    assert.equal(queue.budget.stats().count, big);
+    queue.stop();
+  } finally {
+    Object.assign(globalThis, saved);
+  }
 });
