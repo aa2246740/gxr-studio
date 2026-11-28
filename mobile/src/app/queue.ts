@@ -1,7 +1,7 @@
 // 同时最多两个 Worker 在读。滚动和点按留在主线程。整份 DNG 也在 Worker 里读（role 'full'）。
 
 import type { FullOk, ThumbFail, ThumbOk, ThumbRequest, WorkerReply } from '../workers/thumb';
-import { currentGridThumbWidth, GRID_THUMB_WIDTH } from './layout';
+import { currentGridThumbBox, GRID_THUMB_WIDTH } from './layout';
 
 /**
  * 大屏网格缩略图比 360 解得大的那部分，位图总字节的上限（机主 2026-11-28：照片多时设内存上限）。
@@ -10,9 +10,9 @@ import { currentGridThumbWidth, GRID_THUMB_WIDTH } from './layout';
  */
 export const BIG_THUMB_BYTES = 128 << 20;
 
-/** 按宽度估一张缩略图最多多大：竖拍 2:3 时高是宽的 1.5 倍。 */
+/** 按请求的宽估一张缩略图最多多大：Worker 为盖住格高最多把宽放到 2 倍（见 thumb.ts 的 coverWidth），竖拍 2:3 时高是宽的 1.5 倍。 */
 function thumbBytes(width: number): number {
-  return width * Math.ceil(width * 1.5) * 4;
+  return 2 * width * Math.ceil(width * 1.5) * 4;
 }
 
 /** 发出去的大缩略图（弱引用，不拦回收）；close() 以后宽高变 0，就不再算。 */
@@ -67,6 +67,8 @@ interface Job {
   file: File;
   role: ThumbRequest['role'];
   width: number;
+  /** 要盖住的格高（设备像素）；0 只按宽解。 */
+  height: number;
   resolve: (reply: Reply) => void;
 }
 
@@ -88,8 +90,9 @@ export class ThumbQueue {
    */
   run(file: File, role: 'jpg' | 'dng', width?: number, urgent = false): Promise<ThumbOk | ThumbFail> {
     if (width !== undefined) return this.send(file, role, width, urgent) as Promise<ThumbOk | ThumbFail>;
-    const grid = this.budget.take(currentGridThumbWidth());
-    const run = this.send(file, role, grid, urgent) as Promise<ThumbOk | ThumbFail>;
+    const box = currentGridThumbBox();
+    const grid = this.budget.take(box.width);
+    const run = this.send(file, role, grid, urgent, grid > GRID_THUMB_WIDTH ? box.height : 0) as Promise<ThumbOk | ThumbFail>;
     return run.then((reply) => {
       this.budget.settle(grid, reply.ok ? reply.bitmap : null);
       return reply;
@@ -101,14 +104,14 @@ export class ThumbQueue {
     return this.send(file, 'full', 0, true) as Promise<FullOk | ThumbFail>;
   }
 
-  private send(file: File, role: ThumbRequest['role'], width: number, urgent: boolean): Promise<Reply> {
+  private send(file: File, role: ThumbRequest['role'], width: number, urgent: boolean, height = 0): Promise<Reply> {
     const kind = role === 'full' ? 'full' : 'thumb';
     return new Promise((resolve) => {
       if (this.closed) {
         resolve({ kind, name: file.name, id: 0, ok: false, gone: false });
         return;
       }
-      const job = { file, role, width, resolve };
+      const job = { file, role, width, height, resolve };
       if (urgent) this.jobs.unshift(job);
       else this.jobs.push(job);
       this.pump();
@@ -159,7 +162,7 @@ export class ThumbQueue {
       if (!worker || !job) return;
       const id = this.seq++;
       this.pending.set(id, { worker, job });
-      const message: ThumbRequest = { id, file: job.file, role: job.role, width: job.width };
+      const message: ThumbRequest = { id, file: job.file, role: job.role, width: job.width, height: job.height };
       try {
         worker.postMessage(message);
       } catch {

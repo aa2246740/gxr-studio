@@ -68,27 +68,40 @@ export function gridColumns(width: number, ipad: boolean, big: boolean = isBigSc
   return Math.max(4, Math.floor((w + 2) / 160));
 }
 
-/** 网格缩略图解码宽度。小版式一直是 360；大屏按格宽 × 设备像素比（最多 2 倍）解，不比 360 小。 */
+/** 网格缩略图解码宽度。小版式一直是 360（只给宽）。 */
 export const GRID_THUMB_WIDTH = 360;
 
-export function gridThumbWidth(viewWidth: number, dpr: number, big: boolean): number {
-  if (!big || !Number.isFinite(viewWidth) || viewWidth <= 0) return GRID_THUMB_WIDTH;
-  // 网格按滚动区宽分列，比窗口窄一条滚动条：按少算 24 px 分列，列数只会少不会多，格宽只会估大。
+/** 解缩略图要盖住的盒子（设备像素）。height 为 0 时只按宽解。 */
+export interface ThumbBox {
+  width: number;
+  height: number;
+}
+
+/**
+ * 大屏按格子（宽 × 高，高是宽的 2/3 再加 2，见 grid.ts）× 设备像素比（最多 2 倍）解，宽不比 360 小；
+ * Worker 再按照片比例把宽放到盖得住格高（object-fit: cover）。小版式 { 360, 0 }。
+ */
+export function gridThumbBox(viewWidth: number, dpr: number, big: boolean): ThumbBox {
+  if (!big || !Number.isFinite(viewWidth) || viewWidth <= 0) return { width: GRID_THUMB_WIDTH, height: 0 };
+  // 网格按滚动区宽分列，比窗口窄一条滚动条：按少算 24 px 分列，列数只会少不会多，格子只会估大。
   const cols = gridColumns(viewWidth - 24, true, true);
   const cell = (viewWidth - (cols - 1) * 2) / cols;
   const scale = Number.isFinite(dpr) && dpr > 1 ? Math.min(2, dpr) : 1;
-  return Math.max(GRID_THUMB_WIDTH, Math.ceil(cell * scale));
+  return { width: Math.max(GRID_THUMB_WIDTH, Math.ceil(cell * scale)), height: Math.ceil((cell * (2 / 3) + 2) * scale) };
 }
 
-/** 现在这扇窗口的网格缩略图解码宽度（没有窗口时 360）。 */
-export function currentGridThumbWidth(): number {
-  if (typeof window === 'undefined') return GRID_THUMB_WIDTH;
-  return gridThumbWidth(window.innerWidth, window.devicePixelRatio, isBigScreen());
+/** 现在这扇窗口的网格缩略图盒子（没有窗口时 { 360, 0 }）。 */
+export function currentGridThumbBox(): ThumbBox {
+  if (typeof window === 'undefined') return { width: GRID_THUMB_WIDTH, height: 0 };
+  return gridThumbBox(window.innerWidth, window.devicePixelRatio, isBigScreen());
 }
 
-/** 配方卡小图的长边。小版式一直是 192；大屏按 13" 横屏配方卡宽（ipad.css 的 132）× 设备像素比（最多 2 倍）烘焙。 */
+/**
+ * 配方卡小图的长边。小版式一直是 192；大屏按 13" 横屏配方卡（ipad.css 的 132×88，object-fit: cover）× 设备像素比（最多 2 倍）烘焙。
+ * 用 136 不用 132：相机 3:2 实际是 1.506:1，132 宽解出来高只有 87.7，盖不住 88 的格高。
+ */
 export const CARD_BAKE_EDGE = 192;
-const BIG_CARD_WIDTH = 132;
+const BIG_CARD_WIDTH = 136;
 
 export function cardBakeEdge(dpr: number, big: boolean): number {
   if (!big) return CARD_BAKE_EDGE;
