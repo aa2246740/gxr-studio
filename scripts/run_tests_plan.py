@@ -4,7 +4,8 @@
 三个环境变量都可以不设，只有私有的合并检查外壳会设，公共仓库不依赖它们：
 - GXR_TEST_TIMES_JUNIT：上一次通过的 JUnit 文件。按里面每个测试文件的用时分片，数据里没有的文件按
   用例数 × 每个用例用时的中位数估计；文件长的先放，放进当前合计最小的分片。没设、读不了或没有用例时，
-  照原来按用例数分。
+  照原来按用例数分。浏览器分道只算计划进浏览器阶段的那些用例自己的用时（同一文件里的非浏览器用例不算），
+  数据里没有的用例按中位数估计。
 - GXR_STOP_ON_FAILURE=1：计算分片和浏览器阶段的子进程带 -x（重跑之后仍失败才算），一个分片失败就停掉
   其他分片，后面的阶段不再开始。exclusive 阶段从不带 -x，它的速度重试要看到每个用例的结果。
 - GXR_CHANGED_TESTS：用 os.pathsep 隔开的测试文件路径。这些文件在各自的分片里、在浏览器阶段里先跑，
@@ -38,8 +39,17 @@ def _module_key(file_part: str) -> str:
     return file_part.removesuffix(".py").replace("/", ".")
 
 
-def _junit_cases(path: str) -> list[tuple[str, float]] | str:
-    """JUnit 里每个 testcase 的 (classname, 秒)。读不了或没有用例时返回原因。"""
+def _case_key(node_id: str) -> tuple[str, str]:
+    """node id 在 JUnit 里的 (classname, name)：tests/a.py::K::t[x] -> (tests.a.K, t[x])。参数里的 :: 不拆。"""
+    path, bracket, params = node_id.partition("[")
+    names = path.split("::")
+    names[0] = _module_key(names[0])
+    names[-1] += bracket + params
+    return ".".join(names[:-1]), names[-1]
+
+
+def _junit_cases(path: str) -> list[tuple[str, str, float]] | str:
+    """JUnit 里每个 testcase 的 (classname, name, 秒)。读不了或没有用例时返回原因。"""
     try:
         root = ET.parse(path).getroot()  # noqa: S314 - 本机上一次检查自己写的 JUnit
     except (OSError, ET.ParseError) as exc:
@@ -50,7 +60,7 @@ def _junit_cases(path: str) -> list[tuple[str, float]] | str:
             seconds = float(case.attrib.get("time", "0") or 0)
         except ValueError:
             continue
-        cases.append((case.attrib.get("classname", ""), max(0.0, seconds)))
+        cases.append((case.attrib.get("classname", ""), case.attrib.get("name", ""), max(0.0, seconds)))
     return cases or "里面没有用例"
 
 
@@ -76,17 +86,40 @@ def file_weights(grouped: Mapping[str, list[str]], env: Mapping[str, str]) -> di
         return None
     keys = {_module_key(file_part): file_part for file_part in grouped}
     seconds: dict[str, float] = {}
-    for classname, spent in cases:
+    for classname, _name, spent in cases:
         found = _match(classname, keys)
         if found is not None:
             seconds[found] = seconds.get(found, 0.0) + spent
-    median = statistics.median(spent for _classname, spent in cases)
+    median = statistics.median(spent for _classname, _name, spent in cases)
     missing = len(grouped) - len(seconds)
     print(
         f"按 {TIMES_ENV} 的用时分片：{len(seconds)} 个文件有时间，{missing} 个没有，按用例数 × 中位数 {median:.3f} 秒估计。",
         flush=True,
     )
     return {file_part: seconds.get(file_part, len(items) * median) for file_part, items in grouped.items()}
+
+
+def node_weights(node_ids: list[str], env: Mapping[str, str]) -> dict[str, float] | None:
+    """每个 node id 自己的预计秒数（同一 node id 在 JUnit 里出现几次就加起来）。None 表示回退到按用例数分。"""
+    path = env.get(TIMES_ENV, "").strip()
+    if not path:
+        print(f"{TIMES_ENV} 没有设置，按用例数分道。", flush=True)
+        return None
+    cases = _junit_cases(path)
+    if isinstance(cases, str):
+        print(f"{TIMES_ENV} {cases}，按用例数分道。", flush=True)
+        return None
+    times: dict[tuple[str, str], float] = {}
+    for classname, name, spent in cases:
+        times[(classname, name)] = times.get((classname, name), 0.0) + spent
+    median = statistics.median(spent for _classname, _name, spent in cases)
+    keys = {node_id: _case_key(node_id) for node_id in node_ids}
+    found = sum(1 for key in keys.values() if key in times)
+    print(
+        f"按 {TIMES_ENV} 的用时分道：{found} 个用例有时间，{len(keys) - found} 个没有，按中位数 {median:.3f} 秒估计。",
+        flush=True,
+    )
+    return {node_id: times.get(key, median) for node_id, key in keys.items()}
 
 
 def changed_first(node_ids: list[str], root: Path, env: Mapping[str, str]) -> list[str]:
@@ -175,13 +208,12 @@ def lane_plan(node_ids: list[str], alone: list[str], lanes: int, root: Path, env
     """非 browser_alone 的浏览器用例按用时分 lanes 道，browser_alone 的按收集顺序留给最后单独跑。
 
     一个文件里的用例要么都在同一道，要么（标了 browser_alone 的那几个）在单独阶段。
-    文件只有一部分标了 browser_alone 时，用时按用例数比例拆开估计。
+    每个文件的分量只加它分进各道的用例自己的用时，不算同一文件里不在浏览器阶段的用例。
     """
     solo_ids = set(alone)
-    grouped = _grouped(node_ids)
-    weights = file_weights(grouped, env)
+    weights = node_weights(node_ids, env)
     rest = _grouped([node_id for node_id in node_ids if node_id not in solo_ids])
-    rest_weights = None if weights is None else {path: weights[path] * len(ids) / len(grouped[path]) for path, ids in rest.items()}
+    rest_weights = None if weights is None else {path: sum(weights[node_id] for node_id in ids) for path, ids in rest.items()}
     planned = _balance(rest, rest_weights, lanes, root, env)
     solo = changed_first([node_id for node_id in node_ids if node_id in solo_ids], root, env)
     plans = [cmd for cmd, _size in planned]
@@ -190,7 +222,7 @@ def lane_plan(node_ids: list[str], alone: list[str], lanes: int, root: Path, env
         sizes = ", ".join(f"lane-{index} {len(cmd)} 个" for index, cmd in enumerate(plans))
         print(f"浏览器分道（没有用时数据，按用例数）：{sizes}；单独阶段 {len(solo)} 个。", flush=True)
     else:
-        solo_s = sum(weights[path] - rest_weights.get(path, 0.0) for path in grouped)
+        solo_s = sum(weights[node_id] for node_id in solo)
         minutes = ", ".join(f"lane-{index} {size / 60:.1f}" for index, (_cmd, size) in enumerate(planned))
         print(f"浏览器分道计划用时（分钟）：{minutes}；单独阶段 {solo_s / 60:.1f}（{len(solo)} 个用例）。", flush=True)
     return plans, solo
