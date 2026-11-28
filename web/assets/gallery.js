@@ -13,7 +13,7 @@ import { fetchAllPhotos } from './photos.js';
 import { delayed } from './busy.js';
 import {
   expandSelectionIds, foldPhotos, halfframeBadge, isPairSecond, isPhotoSelected,
-  missingPartnerIds, pairCount, pairMemberIds, patchDayGrid, selectionNoun, selectionStats, togglePairSelection,
+  isUnpairedDiptych, missingPartnerIds, pairCount, pairMemberIds, patchDayGrid, selectionNoun, selectionStats, togglePairSelection,
 } from './halfframe.js';
 
 const ALL = null;
@@ -30,8 +30,12 @@ let libraryPairs = 0;
 let gridRo = null;
 let gridW = 0;
 
+// 没配上的半格双联按相机拼好的 JPG 调整（DNG 不用）：写「半格」，不写「只有 JPG」；悬停和读屏说清没有 HDR（Import P3-3）
+export const DIPTYCH_NOTE = '半格：按相机拼好的双联图调整，没有 HDR';
+
 export function pairTag(p) {
   if (p.has_raw && p.has_jpg) return h('span', { class: 'badge pair tag' }, 'RAW+JPG');
+  if (p.has_jpg && isUnpairedDiptych(p)) return h('span', { class: 'badge tag gray', title: DIPTYCH_NOTE, 'aria-label': DIPTYCH_NOTE }, '半格');
   if (p.has_jpg) return h('span', { class: 'badge tag gray' }, '只有 JPG');
   // 只有 RAW 的照片没有相机 JPG 可看，缩略图是电脑画的：如实标出来
   const look = p.preview_look || {};
