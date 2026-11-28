@@ -27,7 +27,7 @@ from test_mobile_lut_landscape_browser import _cube, _synth_pair
 from test_mobile_perf_startup_browser import _lazy_photos
 from test_mobile_ui_browser import MODULES, PKG, RUNTIME, _need
 
-pytestmark = pytest.mark.browser_serial
+pytestmark = [pytest.mark.browser_serial, pytest.mark.browser_alone]
 
 REPO = Path(__file__).resolve().parents[1]
 DIST = REPO / "mobile" / "dist"

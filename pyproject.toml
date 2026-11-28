@@ -56,7 +56,8 @@ python_functions = ["test_*"]
 addopts = "-ra -p no:cacheprovider"
 markers = [
     "exclusive: 断言依赖墙钟速度，必须单独跑，不能和其他测试并行",
-    "browser_serial: 长时间浏览器流程，等计算分片结束后再串行跑，不拿 exclusive 的锁",
+    "browser_serial: 长时间浏览器流程，等计算分片结束后再跑，不拿 exclusive 的锁；默认一道串行，合并检查外壳设 GXR_BROWSER_LANES=2 时分两道并行",
+    "browser_alone: 只和 browser_serial 一起用：会碰 mobile/dist 这类共用资源，分道时等两道都跑完再单独串行跑",
 ]
 
 [tool.ruff]
