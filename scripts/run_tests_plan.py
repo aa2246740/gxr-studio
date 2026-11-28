@@ -54,7 +54,7 @@ def _junit_cases(path: str) -> list[tuple[str, str, float]] | str:
         root = ET.parse(path).getroot()  # noqa: S314 - 本机上一次检查自己写的 JUnit
     except (OSError, ET.ParseError) as exc:
         return f"读不了（{type(exc).__name__}）"
-    cases: list[tuple[str, float]] = []
+    cases: list[tuple[str, str, float]] = []
     for case in root.iter("testcase"):
         try:
             seconds = float(case.attrib.get("time", "0") or 0)
